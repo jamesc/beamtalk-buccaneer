@@ -1,0 +1,6 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: BuccaneerTest
+
+  testBasic => self assert: (Buccaneer greet) equals: "Hello from buccaneer!"

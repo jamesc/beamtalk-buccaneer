@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Buccaneer — main class for the buccaneer library.
+Object subclass: Buccaneer
+
+  /// Return a greeting string.
+  class greet => "Hello from buccaneer!"

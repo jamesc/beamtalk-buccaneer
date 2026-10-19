@@ -7,4 +7,4 @@ version = "0.1.0"
 description = "Pure-Beamtalk HTTP server built on Catalina, a port of Bandit"
 
 [dependencies]
-catalina = { path = "../beamtalk-catalina" }
+catalina = { git = "https://github.com/jamesc/beamtalk-catalina", branch = "main" }

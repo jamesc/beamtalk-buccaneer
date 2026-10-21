@@ -1,7 +1,6 @@
 # ADR: Buccaneer's engine interface and the beamtalk-http adapter
 
-- **Status:** Accepted with decisions, 2026-10-21 (nothing implemented yet;
-  two beamtalk-http details remain open, see PLAN § Remaining open questions)
+- **Status:** Accepted with decisions, 2026-10-21 (nothing implemented yet)
 - **Date:** 2026-10-21
 - **Context:** [PLAN.md](../PLAN.md) § Decision, § Decisions, § Phases 1-4, 6 and 8
 
@@ -261,7 +260,8 @@ that is the `ExchangeHandler` Buccaneer calls. `HTTPServer` becomes a plain
 | `HTTPRouter` | matched with the router module, then as a block; 404 and 405 as today |
 | `HTTPResponse status/headers/body` | `ex sendResp: status headers: pairs-as-tuples body: body`; Buccaneer adds `date` and `content-length` |
 | `HTTPResponse file:...` | `ex sendFile:...` (Phase 3) |
-| `HTTPResponse upgradeWebSocket:` | `ex upgradeToWebSocket:options:` with an adapter `WebSock` (Phase 4) |
+| `HTTPResponse streamWith: aBlock` | the adapter runs `aBlock value: resp` in the connection process; `resp` wraps `ex sendChunked:`/`chunk:` (Phase 3) |
+| `HTTPResponse upgradeWebSocket: handlerClass` | `ex upgradeToWebSocket:options:` with an adapter `WebSock` that drives a `handlerClass` Value in the connection process (Phase 4) |
 | a raise, or an answer that is not an `HTTPResponse` | 500 `text/plain` "Internal Server Error", logged, as today |
 | `#bind` option | Catalina `#transportOptions => #({#ip, address})` |
 | `srv port` | `srv listenerInfo` port |
@@ -284,10 +284,14 @@ unit tests that build requests by hand). Every operation below that touches
 the connection works only from the connection process; from any other
 process it raises an error saying so (`#not_owner`: "request handles can
 only be used from the connection process that received the request").
-An `HTTPHandler` actor runs in its own process, so it gets the whole body
-already read and answers an ordinary `HTTPResponse`.
+Block and router handlers run in the connection process, so they can use
+every operation. An `HTTPHandler` actor runs in its own process: it gets the
+whole body already read, and it streams a response the same way every
+handler does, with `streamWith:` (A2), whose block the adapter runs back in
+the connection process.
 
-**A1. Request bodies (Phase 3).**
+**A1. Request bodies (Phase 3).** For block and router handlers (they run
+in the connection process); an actor handler uses `req body`, already read.
 
 ```beamtalk
 // Next part of the body; an empty Binary means the end of the body.
@@ -304,22 +308,45 @@ done := false
   chunk size =:= 0 ifTrue: [done := true] ifFalse: [total := total + chunk size]]
 ```
 
-**A2. Chunked responses (Phase 3).** Push, like Plug's
+**A2. Chunked responses (Phase 3).** One mechanism for every handler
+style. A handler (block, router route or `HTTPHandler` actor) answers a
+response value that carries a block; the adapter always runs the block in
+the connection process, so the owner-bound `resp` is always used from its
+owner and `#not_owner` cannot trip on this path. Push, like Plug's
 `send_chunked`/`chunk`:
 
 ```beamtalk
-resp startChunked: 200 headers: #(#("content-type", "text/plain"))   // -> Result
-resp sendChunk: "part 1"                                              // -> Result
-resp sendChunk: "part 2"
-resp finish                                                           // the closing chunk
+HTTPResponse streamWith: [:resp |
+  resp startChunked: 200 headers: #(#("content-type", "text/plain"))   // -> Result
+  resp sendChunk: "part 1"                                              // -> Result
+  resp sendChunk: "part 2"
+  resp finish]                                                          // the closing chunk
 ```
 
-`resp` is an owner-bound responder handle. How a handler obtains it and
-what it answers afterwards is still open (PLAN § Phase 3): the proposal is
-a two-argument block handler `[:req :resp | ...]` that answers `resp` once
-finished.
+Existing one-argument handlers are unchanged. If the block returns without
+`finish`, the adapter finishes the response; if it never called
+`startChunked:headers:`, the request is a 500. A raise after the headers
+went out cannot become a 500: the connection is closed and the error
+logged, as Bandit does. `sendChunk:` answers `Result error: #closed` when
+the client has gone.
 
-**A3. sendfile (Phase 3).** Values, so they also work from an actor:
+**What this gives an actor handler.** The block is created in the actor but
+runs in the connection process. Under ADR 0133 as amended by ADR 0137, it
+sees the actor's fields as they were when the block was made, assigning one
+raises `actor_state_unreachable`, and a message it sends to `self` is an
+ordinary sync message to the actor. So an actor can stream live data by
+having the block ask it for each chunk:
+
+```beamtalk
+Actor subclass: ReportHandler
+  handle: req :: HTTPRequest -> HTTPResponse =>
+    HTTPResponse streamWith: [:resp |
+      resp startChunked: 200 headers: #(#("content-type", "text/csv"))
+      [self hasMoreRows] whileTrue: [resp sendChunk: self nextRows]   // sync messages to the actor
+      resp finish]
+```
+
+**A3. sendfile (Phase 3).** Plain values, so they also work from an actor:
 
 ```beamtalk
 HTTPResponse file: "/srv/static/app.js"
@@ -335,21 +362,80 @@ if it answers without reading. The optional extra, also Phase 3:
 `req inform: 103 headers: #(#("link", "</app.css>; rel=preload")) ->
 Result` (`#not_supported` on HTTP/1.0).
 
-**A5. WebSocket (Phase 4).** `HTTPResponse upgradeWebSocket: handlerClass`
-answered by any handler, and a `WebSocketHandler` protocol living in
-beamtalk-http:
+**A5. WebSocket (Phase 4).** Any handler answers
+`HTTPResponse upgradeWebSocket: handlerClass`. `handlerClass` makes a
+**Value** handler that runs in the connection process, in the style of
+Bandit's WebSock and Catalina's `Handler`: no actor per connection and no
+extra hop per frame. The handler Value is its own state; each callback
+answers the next state, and frames go out through `ws`, a handle owned by
+the connection process.
 
 ```beamtalk
+// onInfo: is optional (detected with respondsTo:): any other message
+// sent to the connection process.
 Protocol define: WebSocketHandler
-  onText: text :: String -> Object
-  onBinary: data :: Binary -> Object
+  /// The connection is upgraded: answer the first state.
+  onOpen: ws :: WebSocket request: req :: HTTPRequest -> WebSocketHandler
+  onText: text :: String -> WebSocketHandler
+  onBinary: data :: Binary -> WebSocketHandler
   onClose: reason :: Object -> Object
 ```
 
-The adapter implements Buccaneer's `WebSock` over it. Still open (PLAN
-§ Phase 4): what `handlerClass` is instantiated as (an Actor per connection,
-proposed, or a Value in the connection process) and how a handler sends
-frames back.
+```beamtalk
+typed Value subclass: EchoSocket
+  field: ws :: WebSocket | Nil = nil
+  field: count :: Integer = 0
+
+  onOpen: ws :: WebSocket request: _req :: HTTPRequest -> WebSocketHandler =>
+    self withWs: ws
+
+  onText: text :: String -> WebSocketHandler =>
+    self.ws sendText: text
+    self withCount: self.count + 1
+
+  onBinary: data :: Binary -> WebSocketHandler =>
+    self.ws sendBinary: data
+    self
+
+  onClose: _reason :: Object -> Object => nil
+```
+
+`WebSocket` (beamtalk-http) offers `sendText:`, `sendBinary:`, `close:` and
+`pid` (the connection process). Using it from another process raises
+`#not_owner`. `handlerClass new` is the state before `onOpen:request:`; the
+request carries whatever the handler needs to set itself up (path params,
+headers).
+
+**A handler that wants an actor forwards to one itself.** It creates or
+looks up the actor in `onOpen:request:`, keeps it in a field and casts to
+it; the actor pushes back with a plain message to the connection process,
+which reaches `onInfo:`, which writes it:
+
+```beamtalk
+typed Value subclass: ChatSocket
+  field: ws :: WebSocket | Nil = nil
+  field: room :: ChatRoom | Nil = nil
+
+  onOpen: ws :: WebSocket request: req :: HTTPRequest -> WebSocketHandler =>
+    room := ChatRoom named: (req param: "room")
+    room join: ws pid
+    (self withWs: ws) withRoom: room
+
+  onText: text :: String -> WebSocketHandler =>
+    self.room post: text!
+    self
+
+  // ChatRoom sends {#chat, text} to each member's connection pid.
+  onInfo: msg :: Object -> WebSocketHandler =>
+    msg match: [
+      {#chat, text} -> self.ws sendText: text;
+      _ -> nil
+    ]
+    self
+
+  onBinary: _data :: Binary -> WebSocketHandler => self
+  onClose: _reason :: Object -> Object => self.room leave: self.ws pid
+```
 
 Not in scope: request metadata accessors (`scheme`, `host`, `peer`, ...),
 proposed in the first draft; they can follow when an app needs them.
@@ -367,6 +453,14 @@ framing. It is still how the engine's internals work.
 
 **Bodies as stdlib `Stream`s** (the first draft's P1/P2). Rejected: see
 § beamtalk-http API additions.
+
+**Two-argument handler blocks** (`[:req :resp | ...]`) for streaming.
+Rejected: they change the handler signature and do nothing for actor
+handlers. `streamWith:` covers every handler style with one mechanism.
+
+**An Actor per WebSocket connection** running the handler. Rejected: it
+doubles the process count and adds a hop per frame. A handler that wants
+an actor forwards to one itself (A5).
 
 **An Actor per request** that owns the state. Rejected: the socket's owner
 must do the sends (`controlling_process`, `sendfile`), and a process per

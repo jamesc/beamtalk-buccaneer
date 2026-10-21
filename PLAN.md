@@ -9,8 +9,7 @@ runs on cowboy today; Buccaneer replaces cowboy there.
 
 **Status: approved with decisions (2026-10-21; see § Decisions).** Nothing
 here is implemented yet. Phases whose spec is complete are `agent-ready` in
-Linear; Phases 3 and 4 stay `needs-spec` until the questions in § Remaining
-open questions are answered.
+Linear. The only open item is BT-4090's own spec, which gates Phase 6.
 
 ## Goals
 
@@ -195,8 +194,8 @@ does. Sizes: S ≈ a day, M ≈ 2-4 days, L ≈ a week, XL ≈ more than a week.
 | 0 Spikes | M | — | agent-ready |
 | 1 HTTP/1.1 engine | L | 0 | agent-ready |
 | 2 beamtalk-http adapter and backend switch | M | 1 | agent-ready |
-| 3 Streaming | M | 1, 2 | needs-spec (two questions below) |
-| 4 WebSocket | L | 1, 2 | needs-spec (one question below) |
+| 3 Streaming | M | 1, 2 | agent-ready |
+| 4 WebSocket | L | 1, 2 | agent-ready |
 | 5 HPACK (`jamesc/beamtalk-hpack`) | M | 0 | agent-ready |
 | 6 HTTP/2 | XL | 0, 1, 5, BT-4090 | agent-ready (blocked) |
 | 7 Release gate | L | 1-4, 6 | agent-ready (blocked) |
@@ -323,19 +322,36 @@ back to a pread loop over TLS), `inform:` for 1xx (refused on HTTP/1.0).
 
 **beamtalk-http** (minimal, as decided; details in the ADR § beamtalk-http
 API additions). Explicit operations on owner-bound handles, not the stdlib
-`Stream`:
+`Stream`, and **one streaming mechanism for every handler style**:
 
+- chunked responses: a handler (block, router route or `HTTPHandler`
+  actor) answers `HTTPResponse streamWith: [:resp | ...]`. The adapter
+  always runs that block in the connection process, so the owner-bound
+  `resp` is always used from its owner and `#not_owner` cannot trip on this
+  path. Inside it: `resp startChunked: status headers: h`,
+  `resp sendChunk: data -> Result`, `resp finish`. Existing one-argument
+  handlers are unchanged;
 - request bodies: `req readChunk -> Result(Binary, Error)`, an empty
-  Binary meaning the end of the body; `req body` stays and reads the rest
-  (Plug `read_body` semantics);
-- chunked responses: `resp startChunked: status headers: h`,
-  `resp sendChunk: data -> Result`, `resp finish`;
-- sendfile: `HTTPResponse file: path` and `file:offset:length:`, as values;
+  Binary meaning the end of the body, for handlers that run in the
+  connection process (blocks and router routes); `req body` stays and reads
+  the rest (Plug `read_body` semantics). An `HTTPHandler` actor gets the
+  whole body (`req body`), read before it is called;
+- sendfile: `HTTPResponse file: path` and `file:offset:length:`, plain
+  values;
 - 100-continue: automatic when the handler first reads the body;
   `req inform: 103 headers: h` as the optional extra.
 
-The handles work only from the connection process; from any other process
-they raise a clear error. An `HTTPHandler` actor still gets the whole body.
+What `streamWith:` gives an actor handler: the block runs in the
+connection process, not the actor's, so under ADR 0133 as amended by ADR
+0137 it sees the actor's fields as they were when the block was made,
+cannot assign them (`actor_state_unreachable`), and a message it sends to
+`self` is an ordinary sync message to the actor (so `[:resp | ... resp
+sendChunk: self nextBatch ...]` pulls each chunk from the live actor).
+
+If the block returns without `finish`, the adapter finishes the response;
+if it never called `startChunked:headers:`, the request is a 500. A raise
+after the headers went out cannot become a 500, so the connection is
+closed and the error logged, as Bandit does.
 
 **Tests to port:** `http1/protocol_test.exs` sendfile (5), informational
 responses (2), `Expect: 100-continue` (3), chunked responses (5);
@@ -346,18 +362,8 @@ operation, including the cross-process error.
 in bounded memory (asserted in a test). Blocked by Phase 1 (beamtalk-http
 parts by Phase 2).
 
-**Open questions (needs-spec until answered):**
-
-1. How does a handler get `resp`, and what does it answer once it has
-   streamed? Proposal: a block handler may take two arguments, `[:req :resp
-   | ...]`, where `resp` is the owner-bound `HTTPResponder`; after
-   `resp finish` the block answers `resp` (or `HTTPResponse sent`) and the
-   adapter checks the response was finished.
-2. What does "an actor handler delegates streaming back" look like?
-   Proposal: the actor answers `HTTPResponse streamWith: aBlock`, and the
-   adapter runs `aBlock value: req value: resp` in the connection process
-   (the block must not close over the actor's state, as with route blocks
-   today).
+**Rejected:** two-argument handler blocks (`[:req :resp | ...]`). They
+change the handler signature and do nothing for actor handlers.
 
 ### Phase 4: WebSocket (L)
 
@@ -369,9 +375,23 @@ engine-level `WebSock` protocol (WebSock's
 upgraded connection's process; `Exchange upgradeToWebSocket:`.
 
 **beamtalk-http:** `HTTPResponse upgradeWebSocket: handlerClass`, and a
-`WebSocketHandler` protocol living in beamtalk-http with `onText:`,
-`onBinary:` and `onClose:`. The adapter implements Buccaneer's `WebSock`
-over it.
+`WebSocketHandler` protocol living in beamtalk-http. `handlerClass` makes a
+**Value** handler that runs in the connection process, in the style of
+Bandit's WebSock and Catalina's `Handler`: no actor per connection and no
+extra hop per frame. The handler Value is its own state. An init callback,
+`onOpen: ws request: req`, answers the first state; `onText:`,
+`onBinary:` and the optional `onInfo:` (any other message to the
+connection process) answer the next state; `onClose:` ends it. Frames go
+out through `ws` (`sendText:`, `sendBinary:`, `close:`), a handle owned by
+the connection process, which the handler may keep in a field. The adapter
+implements Buccaneer's `WebSock` over it.
+
+A handler that wants an actor forwards to one itself: it creates or looks
+up the actor in `onOpen:`, keeps it in a field, and casts each message to
+it (`room post: text!`). The actor pushes back by sending a message to the
+connection process (`ws pid`), which arrives in the handler's `onInfo:`,
+which writes it with `ws sendText:`. The actor never touches `ws`, which
+would raise `#not_owner`.
 
 **Tests to port:** `websocket/*` (229 tests: frame deserialization 49,
 serialization 20, HTTP/1 handshake 14, protocol 43, sock 86, upgrade 3,
@@ -382,15 +402,8 @@ each callback.
 **Acceptance:** the ported tests pass; Autobahn|Testsuite runs in CI as a
 non-blocking job, promoted to blocking once green. Blocked by Phases 1-2.
 
-**Open question (needs-spec until answered):** what is `handlerClass`
-instantiated as, and how does a handler send? Proposal: an `Actor` spawned
-per connection (linked to the connection process), so `onText:` can keep
-mutable state and the handler can be told things by other actors; it sends
-with `ws sendText:` / `ws sendBinary:` / `ws close:`, where `ws` is a
-`WebSocket` value given to `onOpen:` that casts to the connection process
-(the one exception to "owner process only", because a send is a message,
-not a socket call). The alternative is a Value run in the connection
-process that answers its next self, as the engine's `WebSock` does.
+**Rejected:** an Actor per connection for the handler. It doubles the
+process count and adds a hop per frame.
 
 ### Phase 5: HPACK package (M)
 
@@ -596,18 +609,23 @@ friction in `typed` classes (BT-4061, BT-4039..BT-4044), as Catalina found.
 7. **Compression:** deferred out of Phase 1 into Phase 9 (35 tests).
 8. **h2spec and Autobahn:** CI jobs, non-blocking at first, promoted to
    blocking once green.
+9. **Phase 3 streaming:** one mechanism for every handler style, a handler
+   answering `HTTPResponse streamWith: [:resp | ...]`, run by the adapter in
+   the connection process. One-argument handlers are unchanged; two-argument
+   handler blocks are rejected. `req readChunk` is for handlers in the
+   connection process; actor handlers get `req body`. `HTTPResponse file:`
+   stays a plain value.
+10. **Phase 4 WebSocket:** `upgradeWebSocket: handlerClass` makes a Value
+    handler run in the connection process (`onOpen:request:`, `onText:`,
+    `onBinary:`, `onClose:`, optional `onInfo:`), sending through a
+    connection-owned `ws`. An actor per connection is rejected; a handler
+    that wants an actor forwards to one itself.
 
 ## Remaining open questions
 
-- **Phase 3:** how a handler obtains the responder handle and what it
-  answers after streaming; the form an actor handler uses to delegate
-  streaming back to the connection process. (Proposals in § Phase 3.)
-- **Phase 4:** what `upgradeWebSocket: handlerClass` instantiates (an Actor
-  per connection, or a Value run in the connection process) and how a
-  handler sends frames. (Proposal in § Phase 4.)
 - **BT-4090:** its spec (name, error replies, interaction with
-  `continueWith:` and `stopWith:`) is a Beamtalk decision; Phase 6 waits on
-  it.
+  `continueWith:` and `stopWith:`) is a Beamtalk decision, fed by Phase 0
+  spike 5's prototype; it only blocks Phase 6.
 
 ## Size and effort
 

@@ -1,0 +1,13 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 2: collects one row per request from `SpikeHandler` (casts, so
+/// the handler never waits), for the test to read afterwards. Spike-only.
+typed Actor subclass: SpikeProbe
+  state: rows :: List(Tuple) = #()
+
+  record: row :: Tuple -> Nil =>
+    self.rows := self.rows addFirst: row
+    nil
+
+  rows -> List(Tuple) => self.rows reversed

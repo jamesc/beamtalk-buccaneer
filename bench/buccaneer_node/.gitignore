@@ -1,0 +1,6 @@
+/_build/
+# Copied from ../../spikes/fixtures by bench/run.sh: `beamtalk build` skips
+# symlinked sources, so the spike's classes are copied in before building.
+/src/spike_*.bt
+/src/exchange_state.bt
+/src/not_owner.bt

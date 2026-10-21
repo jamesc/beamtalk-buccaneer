@@ -46,7 +46,10 @@ nothing mutable. The request's mutable state (`Bandit.Adapter`'s fields and
 the current transport value) lives in the owning process, keyed by the
 exchange's `Reference`, and is read and replaced by the Exchange's methods.
 Every method first checks that the caller is the owner and raises
-`#not_owner` otherwise, as `validate_calling_process!` does. The owner is
+`#not_owner` otherwise, as `validate_calling_process!` does. ("Raises
+`#x`" in this ADR means an `Error` subclass named for the reason, e.g.
+`NotOwner`, whose message starts with `x:`: `Exception signalKind:` takes
+only the runtime's closed `ExceptionKind` set. Phase 0 spike 2.) The owner is
 the Catalina connection handler (HTTP/1) or the stream process (HTTP/2): the
 process that runs the request handler.
 
@@ -106,10 +109,13 @@ sealed typed Value subclass: Exchange
   readAll: maxBytes :: Integer -> Result(Binary, Object)
 
   // === The response ===
-  sendResp: status :: Integer headers: hs :: List(Tuple) body: body :: Object -> Nil
+  // The sends answer the exchange itself: a Value method answering Nil is
+  // a compile warning (ADR 0042's "no side-effecting void methods on a
+  // Value"), an error under the typing rule (Phase 0 spike 2).
+  sendResp: status :: Integer headers: hs :: List(Tuple) body: body :: Object -> Exchange
   sendFile: status :: Integer headers: hs :: List(Tuple) path: path :: String
-    offset: offset :: Integer length: length :: Integer | #all -> Nil
-  sendChunked: status :: Integer headers: hs :: List(Tuple) -> Nil
+    offset: offset :: Integer length: length :: Integer | #all -> Exchange
+  sendChunked: status :: Integer headers: hs :: List(Tuple) -> Exchange
   /// One chunk; an empty one ends the response (Bandit's rule).
   chunk: data :: Object -> Result(Nil, Object)
   /// A 1xx response. error: #not_supported on HTTP/1.0.
@@ -130,11 +136,17 @@ sealed typed Value subclass: BodyPart
 ```
 
 `body` in `sendResp:` and `chunk:` is a `String`, a `Binary` or iodata
-(an Erlang list of them), passed to the socket as it is. Headers are
+(an Erlang list of them), passed to the socket as it is. Lengths are
+`byteSize`, never `size`: a binary that is valid UTF-8 is a `String`, whose
+`size` counts grapheme clusters (`"\r\n"` is one), so `size` undercounts
+every body and head with a CR LF in it (Phase 0 spike 2). Headers are
 `{name, value}` tuples because that is what `decode_packet` produces and
 what the socket writes; the adapter converts to beamtalk-http's pairs.
 
-Starting a server standalone:
+Starting a server standalone (until BT-4102, a handler block written inside
+the options Dictionary has an untyped `ex`, which a `typed` caller reports;
+Phase 1 also offers `Buccaneer start: options handler: aBlock`, whose typed
+parameter types the block):
 
 ```beamtalk
 srv := (Buccaneer start: #{

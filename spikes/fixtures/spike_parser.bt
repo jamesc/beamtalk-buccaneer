@@ -1,0 +1,91 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 1: the request line and headers read with `erlang:decode_packet`
+/// through the FFI, as `Bandit.HTTP1.Socket.read_headers/1`
+/// (`do_read_request_line!` and `do_read_headers!`, recursive as there):
+/// on `{more, _}` the socket is read (blocking) and the buffer grown.
+/// Limits and error statuses are left out; Phase 1 ports them. Spike-only.
+sealed typed Object subclass: SpikeParser
+
+  /// Parse a request head from `buffer`, reading more from `sock` while
+  /// it is incomplete (`sock` nil: fail instead). Answers
+  /// `{request, rest}`, where `rest` is the unconsumed bytes after the
+  /// head (the body, or a pipelined request), or an error reason.
+  class sealed readHead: buffer :: Binary socket: sock :: Socket | Nil -> Result(Tuple, Object) =>
+    (Erlang erlang
+      decode_packet: #http_bin
+      with: buffer
+      with: #()) match: [
+      {#ok, {#http_request, m, {#abs_path, p}, {1, minor}}, rest} -> self
+        readHeaders: rest
+        socket: sock
+        request: (SpikeRequest
+          method: (self methodName: m)
+          target: p
+          minor: minor
+          headers: #()
+          contentLength: 0)
+        headers: #()
+        length: 0;
+      {#more, _} -> (self more: sock) andThen: [:more |
+        self readHead: (buffer concat: more) socket: sock
+      ];
+      _ -> Result error: #bad_request_line
+    ]
+
+  class sealed readHeaders: buffer :: Binary socket: sock :: Socket | Nil request: request :: SpikeRequest headers: headers :: List(Tuple) length: length :: Integer -> Result(Tuple, Object) =>
+    // Named wildcards: two `_` in one pattern do not compile (BT-4098).
+    (Erlang erlang
+      decode_packet: #httph_bin
+      with: buffer
+      with: #()) match: [
+      {#ok, {#http_header, _n, field, _r, value}, rest} -> self
+        readHeaders: rest
+        socket: sock
+        request: request
+        headers: (headers addFirst: {self headerName: field, value})
+        length: (self
+          lengthFrom: field
+          value: value
+          else: length);
+      {#ok, #http_eoh, rest} -> Result ok: {(request withHeaders: headers reversed) withContentLength: length, rest};
+      {#more, _} -> (self more: sock)
+        andThen: [:more |
+          self
+            readHeaders: (buffer concat: more)
+            socket: sock
+            request: request
+            headers: headers
+            length: length
+        ];
+      _ -> Result error: #bad_header
+    ]
+
+  /// CR LF: Beamtalk string literals have no `\r`/`\n` escapes (BT-4100).
+  class sealed crlf -> String =>
+    (Character value: 13) asString ++ (Character value: 10) asString
+
+  /// Read more bytes for an incomplete head (Bandit's `read_available!`).
+  class sealed more: sock :: Socket | Nil -> Result(Binary, Object) =>
+    sock isNil ifTrue: [^Result error: #incomplete]
+    sock recv: 0 timeout: 15000
+
+  /// `decode_packet` answers well-known methods and header names as atoms,
+  /// others as binaries.
+  class sealed methodName: m :: Object -> String =>
+    m match: [
+      s :: Symbol -> s asString;
+      b :: String -> b;
+      _ -> ""
+    ]
+
+  class sealed headerName: field :: Object -> String =>
+    field match: [
+      s :: Symbol -> s asString lowercase;
+      b :: String -> b lowercase;
+      _ -> ""
+    ]
+
+  class sealed lengthFrom: field :: Object value: value :: String else: length :: Integer -> Integer =>
+    field =:= #'Content-Length' ifTrue: [value asInteger] ifFalse: [length]

@@ -102,6 +102,11 @@ never see the final adapter. So:
 
 Bandit 1.12.5 `lib/` → Buccaneer. One class per file, snake_case file names;
 subdirectories as Catalina's `src/transports/`. Line counts are Bandit's.
+File names follow the compiler's rule (Phase 0): a word break only before
+an upper-case letter that follows a lower-case one, so an acronym and a
+digit stay glued to the next word (`HTTPError` → `httperror.bt`,
+`HTTP1Socket` → `http1socket.bt`, `WebSocketResult` →
+`web_socket_result.bt`), as Catalina's `SSLTransport` → `ssltransport.bt`.
 
 | Bandit | LOC | Buccaneer | Phase |
 |---|---|---|---|
@@ -109,33 +114,33 @@ subdirectories as Catalina's `src/transports/`. Line counts are Bandit's.
 | `application.ex` | 14 | none: no OTP application callback. The clock is a node singleton started with `supervise` | 1 |
 | `clock.ex` | 56 | `src/clock.bt` (`Date` header cached in ETS, refreshed each second by a `supervise`d singleton actor) | 1 |
 | `adapter.ex` | 334 | `src/exchange.bt` (the engine interface), `src/exchange_state.bt` (the owner-process state) | 1, 3 |
-| `http_transport.ex` | 47 | `src/http_transport.bt` (Protocol: `readHeaders`, `readData:`, `sendHeaders:...`, `sendData:end:`, `sendfile:...`, `ensureCompleted`, `supportsUpgrade:`, `sendOnError:`) | 1 |
+| `http_transport.ex` | 47 | `src/httptransport.bt` (`HTTPTransport`, a Protocol: `readHeaders`, `readData:`, `sendHeaders:...`, `sendData:end:`, `sendfile:...`, `ensureCompleted`, `supportsUpgrade:`, `sendOnError:`) | 1 |
 | `pipeline.ex` | 246 | `src/pipeline.bt` (read headers → build Exchange → call handler → commit / upgrade / error) | 1 |
 | `initial_handler.ex` | 86 | `src/initial_handler.bt` (ALPN and wire sniffing: TLS-on-clear → close; `PRI * HTTP/2.0` → HTTP/2; else HTTP/1) | 1, 6 |
 | `delegating_handler.ex` | 78 | `src/connection_handler.bt`: the Catalina `Handler` subclass; delegates to the current protocol value in `userState`, switches protocol on `{switch, ...}` | 1 |
-| `http1/handler.ex` | 108 | `src/http1/http1_handler.bt` (keepalive, `maxRequests`, GC every n requests, process-dictionary clearing) | 1 |
-| `http1/socket.ex` | 627 | `src/http1/http1_socket.bt` (Value implementing `HTTPTransport`; request line and headers via `erlang:decode_packet` FFI; content-length and chunked bodies; response framing) | 1, 3 |
+| `http1/handler.ex` | 108 | `src/http1/http1handler.bt` (`HTTP1Handler`: keepalive, `maxRequests`, GC every n requests, process-dictionary clearing) | 1 |
+| `http1/socket.ex` | 627 | `src/http1/http1socket.bt` (`HTTP1Socket`, a Value implementing `HTTPTransport`; request line and headers via `erlang:decode_packet` FFI; content-length and chunked bodies; response framing) | 1, 3 |
 | `headers.ex` | 214 | `src/headers.bt` (header lookup, host/port parsing, content-length rules, `Connection` tokens) | 1 |
 | `compression.ex` | 208 | `src/compression.bt` (`Accept-Encoding` negotiation; `zlib` FFI for gzip/deflate; OTP 28 `zstd`) | 9 |
 | `socket_helpers.ex` | 74 | `src/socket_helpers.bt` (peer, sock and SSL data; iodata helpers) | 1 |
 | `telemetry.ex` | 250 | `src/buccaneer_telemetry.bt` (`[buccaneer, request\|websocket, ...]` spans over the stdlib `Telemetry` facade, parented to Catalina's connection span) | 1 |
 | `logger.ex` | 64 | `src/buccaneer_logger.bt` (`logProtocolErrors` `#short`/`#verbose`/`false`, `logClientClosures`) | 1 |
-| `http_error.ex`, `transport_error.ex` | 12 | `src/http_error.bt` (with `plugStatus`), `src/transport_error.bt` | 1 |
+| `http_error.ex`, `transport_error.ex` | 12 | `src/httperror.bt` (`HTTPError`, with `plugStatus`), `src/transport_error.bt` | 1 |
 | `extractor.ex` | 113 | `src/websocket/frame_extractor.bt` | 4 |
-| `primitive_ops/websocket.ex` | 34 | `src/websocket/websocket_ops.bt` (unmasking via `crypto:exor` FFI) | 4 |
+| `primitive_ops/websocket.ex` | 34 | `src/websocket/web_socket_ops.bt` (unmasking via `crypto:exor` FFI) | 4 |
 | `websocket/handshake.ex` | 105 | `src/websocket/handshake.bt` | 4 |
 | `websocket/upgrade_validation.ex` | 65 | `src/websocket/upgrade_validation.bt` | 4 |
-| `websocket/handler.ex` | 99 | `src/websocket/websocket_protocol.bt` (the protocol value `ConnectionHandler` delegates to) | 4 |
-| `websocket/connection.ex` | 352 | `src/websocket/websocket_connection.bt` | 4 |
-| `websocket/socket.ex` | 75 | `src/websocket/websocket_socket.bt` | 4 |
+| `websocket/handler.ex` | 99 | `src/websocket/web_socket_protocol.bt` (the protocol value `ConnectionHandler` delegates to) | 4 |
+| `websocket/connection.ex` | 352 | `src/websocket/web_socket_connection.bt` | 4 |
+| `websocket/socket.ex` | 75 | `src/websocket/web_socket_socket.bt` | 4 |
 | `websocket/frame.ex` + `frame/*.ex` (6) | 382 | `src/websocket/frame.bt` + one Value per frame type | 4 |
 | `websocket/permessage_deflate.ex` | 187 | `src/websocket/permessage_deflate.bt` | 4 |
-| (WebSock behaviour, `websock` 128) | — | `src/websocket/websock.bt` (the engine-level Protocol), `websocket_result.bt` | 4 |
+| (WebSock behaviour, `websock` 128) | — | `src/websocket/web_sock.bt` (`WebSock`, the engine-level Protocol), `web_socket_result.bt` | 4 |
 | (beamtalk-http side) | — | beamtalk-http: `WebSocketHandler` protocol (`onText:`, `onBinary:`, `onClose:`) and the adapter implementing `WebSock` over it | 4 |
 | (`hpax` 1.0.4, separate package) | 913 | **`beamtalk-hpack`**: `HPACK`, `HPACKTable`, `HPACKHuffman`, `HPACKTypes` | 5 |
-| `http2/handler.ex` | 207 | `src/http2/http2_protocol.bt` | 6 |
-| `http2/connection.ex` | 596 | `src/http2/http2_connection.bt` (process-free connection state, as in Bandit) | 6 |
-| `http2/stream.ex` | 647 | `src/http2/http2_stream.bt` (Value implementing `HTTPTransport`) | 6 |
+| `http2/handler.ex` | 207 | `src/http2/http2protocol.bt` | 6 |
+| `http2/connection.ex` | 596 | `src/http2/http2connection.bt` (process-free connection state, as in Bandit) | 6 |
+| `http2/stream.ex` | 647 | `src/http2/http2stream.bt` (Value implementing `HTTPTransport`) | 6 |
 | `http2/stream_process.ex` | 31 | `src/http2/stream_process.bt` (`Server`; runs the pipeline in a `continueWith:` step; monitored by the connection, not linked) | 6 |
 | `http2/stream_collection.ex`, `flow_control.ex`, `settings.ex`, `errors.ex` | 203 | `src/http2/` one class each | 6 |
 | `http2/frame.ex` + `frame/*.ex` (11) | 760 | `src/http2/frame.bt` + one Value per frame type | 6 |
@@ -254,6 +259,32 @@ Catalina's.
 spike 2's leak test is kept as a regression test for Phase 1; the module
 map and the ADR are amended where a spike fails; every Beamtalk gap found is
 filed in Linear with a minimal repro.
+
+#### Phase 0 findings (2026-10-21)
+
+Done in BT-4079; the tests, fixtures and full numbers are in
+[`spikes/README.md`](spikes/README.md), spike 1's bench in
+[`bench/README.md`](bench/README.md). Toolchain beamtalk main dc216bf52
+(rerun on 41c7f6ff6, BT-4065 merged, where noted), catalina 5ecc9ab, OTP
+28.5, on a shared machine (load 8-165).
+
+| # | Result | Decision and impact |
+|---|---|---|
+| 1 Parse cost | **Below cowboy, not because of the parser.** `decode_packet` through the FFI costs 0.12-0.2 µs a call and the head parses in 2.3 µs in Erlang, but 10-13 µs in Beamtalk: 87% of it waiting on class processes. End to end (keep-alive GET, 5 rounds): 0.62× cowboy's req/s at 1 connection, 0.61× at 10, 0.44× at 100, 0.29× at 1,000, p99 1.4-8×. Each request made 5 calls into node-wide class processes (`on: Exception do:` ×2, `Result ok:`, one per Value keyword constructor); BT-4065 removes 3, BT-4099 (filed) the constructors. **Rerun on beamtalk 41c7f6ff6 (BT-4065 merged), load 48-209:** class-process calls per request drop from 5 to 2 (the two Value constructors, BT-4099), the parse from 4.5× to 2.8× Erlang (7.4 µs), and the median req/s ratio to cowboy rises to 0.78 at 10 and 100 connections and 0.66 at 1,000 (0.16 at 1; rounds varied up to 10× with the load, so treat these as indicative); 66% of request stacks still wait on the constructors' class processes. | Keep `decode_packet` and the module map. Risk 1 is now concrete: the gate depends on BT-4099 as well as BT-4065/4069/4071 (added to § Beamtalk work). Phase 1 keeps per-request Value construction and `on:do:` off the hot path where it can until they land, and re-runs `just spike-bench`. |
+| 2 Exchange state | **Holds.** 10,000 keep-alive requests (plain, body read, body unread, chunked ended early, handler polluting the process dictionary): no leak, process dictionary 5 keys after every request, no exchange state left, heap after GC never grows. Owner check raises from another process; a handle read is 0.6-0.7 µs. | The leak test is Phase 1's regression test. Three amendments (ADR updated): `clear_process_dict` keeps the keys present at `handleConnection:` (the runtime keeps `$beamtalk_actor` and `$bt_actor_state` there; Bandit's three-key list would delete them) plus Catalina's and Buccaneer's own; the Exchange's sends answer the exchange, not Nil (a Value method answering Nil is a warning); `#not_owner` and the other misuse reasons are `Error` subclasses (`NotOwner`), since `Exception signalKind:` is closed. Raising requests close the connection, as Bandit, so they are tested on their own connections. |
+| 3 Blocking work in `handleData:` | **Holds.** Passive socket inside the callback, blocking body `recv`, a sync call to an actor, three pipelined requests from one `handleData:`. | None. |
+| 4 Byte codecs | **Holds with workarounds.** Decoding is 2-8× Elixir per operation (under 0.7 µs each); frame headers built as byte lists 40× (0.24 µs). Gaps: a size from an earlier segment (BT-4096), no bitstrings, literal segments or size expressions (BT-4097), two `_` in one pattern (BT-4098). | Phases 4 and 6 match header and payload in two steps until BT-4096. Phase 5's Huffman decoder is table-driven by byte or nibble, not hpax's bit walk, until BT-4097 (no scope change). |
+| 5 Deferred reply | **Holds.** Parking callers, out-of-order answers from `handleInfo:`, flow-controlled sends, expiry, late/dead callers and stop all work with only "park the caller" native; replying is plain Beamtalk over `gen_server:reply`. A parked call costs about 2× a plain one. | The HTTP/2 design needs nothing beyond BT-4090; its spec input is in `spikes/README.md` § Spike 5 and on BT-4090. |
+| 6 Monitors, not links | **Holds.** Abnormal `DOWN` resets, normal is forgotten, `terminate:` kills the rest, a stream learns of a dead connection on its next call. Monitor and link cost the same (~40 µs per stream with spawn). Lost: a `kill` of the connection leaves streams running until their next call. | Phase 6 rule: spawn a stream idle, monitor it, then start it (no atomic spawn-monitor, BT-4104). |
+
+Also found: test classes cannot call a dependency's class methods
+(BT-4094; Phase 1's tests start servers through fixtures until it is
+fixed); no `\r`/`\n` string escapes (BT-4100); `integer_to_binary/2`
+rejected by the FFI (BT-4101); a handler block in an options Dictionary is
+untyped (BT-4102, so `Buccaneer start:handler:` takes the block as an
+argument); `String size` counts graphemes, so every wire length is
+`byteSize`; module-map file names follow the compiler's acronym rule (map
+corrected).
 
 ### Phase 1: HTTP/1.1 engine (L)
 
@@ -563,7 +594,10 @@ Recorded properly when each phase is done; the expected ones:
    runtime fixes in flight (BT-4065, BT-4069, BT-4071) decide much of
    Buccaneer's speed, and the gate is now "match cowboy". Mitigation: parse
    with `erlang:decode_packet` (C), keep hot-path Values sealed and typed,
-   measure in spike 1 against cowboy, gate in Phase 7.
+   measure in spike 1 against cowboy, gate in Phase 7. **Spike 1 confirmed
+   it:** 0.29-0.62× cowboy's req/s, the parse itself cheap, the time in
+   class-process calls per request (`on: Exception do:`, `Result ok:`,
+   Value constructors; BT-4065, BT-4099). See § Phase 0 findings.
 2. **HTTP/2 depends on new stdlib work** (BT-4090, deferred reply).
    Mitigation: spike 5 prototypes the shape first; HTTP/2 is the last engine
    phase, and HTTP/1 + WebSocket ship without it.
@@ -643,9 +677,15 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 | A trapping Server handling linked `EXIT`s itself | BT-4052 | Backlog, needs-spec | related to Phase 6 (monitors meanwhile) |
 | Re-raise unchanged (`exit(normal)` in a handler) | BT-4057 | Backlog, needs-spec | deviation until fixed |
 | `late` slot holding nil | BT-4061 | Backlog | typing workaround |
-| Class references and `Result ok:` serialised through class processes | BT-4065 | In progress | performance (gate) |
+| Class references and `Result ok:` serialised through class processes | BT-4065 | Done (merged 2026-10-21) | performance (gate) |
 | Sends to a sealed-Value-typed parameter still dynamic | BT-4069 | Backlog | performance (gate) |
 | `hasField:` cost (~20 µs) | BT-4071 | In progress | performance (gate) |
+| Value construction is a call into the class process (Phase 0 spike 1) | BT-4099 | Backlog | performance (gate) |
+| Binary patterns: size from an earlier segment; bitstrings, literal segments, size expressions; two `_` | BT-4096, BT-4097, BT-4098 | Backlog | workarounds in Phases 4-6 (spike 4) |
+| Atomic spawn-and-monitor for an actor | BT-4104 | Backlog, needs-spec | Phase 6 rule meanwhile (spike 6) |
+| Test classes calling a dependency's class methods | BT-4094 | Backlog | tests use fixtures meanwhile |
+| Block parameter types from a Dictionary literal or `:: T` | BT-4102 | Backlog, needs-spec | `start:handler:` meanwhile |
+| Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | Backlog | none blocking |
 
 ## References
 

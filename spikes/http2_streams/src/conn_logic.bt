@@ -1,0 +1,131 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 5: the connection's decisions, in Beamtalk, run inside the
+/// `DeferredConn` process. Every sync call arrives parked with a
+/// `ReplyTo`; the logic answers it at once or keeps the token and answers
+/// from a later `handleInfo:`, in any order. Each method answers the next
+/// logic value (the gen_server stores it).
+///
+/// - `readData:` answers buffered DATA for the stream, or parks until a
+///   `{data, streamId, bytes}` message arrives.
+/// - `sendData:data:` answers at once if the connection window has room,
+///   or parks until `{window_update, n}` frees enough (FIFO, as Bandit's
+///   pending sends) or `sendTimeout` ms pass (Bandit: 15 s), when it
+///   answers with an error.
+///
+/// Spike-only.
+sealed typed Value subclass: ConnLogic
+  field: window :: Integer = 65535
+  field: sendTimeout :: Integer = 15000
+  field: readers :: Dictionary(Integer, ReplyTo) = #{}
+  field: buffered :: Dictionary(Integer, Binary) = #{}
+  // {tag, streamId, data, replyTo}, oldest first.
+  field: sends :: List(Tuple) = #()
+
+  class sealed window: window :: Integer sendTimeout: ms :: Integer -> ConnLogic =>
+    (self new withWindow: window) withSendTimeout: ms
+
+  /// A sync call, parked: answer it now or keep `from` for later.
+  call: selector :: Symbol args: args :: List(Object) from: from :: Tuple -> ConnLogic =>
+    r := ReplyTo from: from
+    selector match: [
+      #readData: -> self read: (self int: (args at: 1)) replyTo: r;
+      #sendData:data: -> self
+        send: (self int: (args at: 1))
+        data: (self bin: (args at: 2))
+        replyTo: r;
+      #ping -> self answer: r with: #pong;
+      #parked -> self answer: r with: self.readers size + self.sends size;
+      _ -> self answer: r with: nil
+    ]
+
+  handleInfo: msg :: Object -> ConnLogic =>
+    msg match: [
+      {#data, sid, bytes} -> self deliver: (self int: sid) data: (self bin: bytes);
+      {#window_update, n} -> self release: (self int: n);
+      {#expire, tag} -> self expire: tag;
+      _ -> self
+    ]
+
+  answer: r :: ReplyTo with: value :: Object -> ConnLogic =>
+    r reply: value
+    self
+
+  read: sid :: Integer replyTo: r :: ReplyTo -> ConnLogic =>
+    (self.buffered includesKey: sid)
+      ifTrue: [
+        r reply: (self.buffered at: sid)
+        ^self withBuffered: (self.buffered removeKey: sid)
+      ]
+    self withReaders: (self.readers at: sid put: r)
+
+  deliver: sid :: Integer data: bytes :: Binary -> ConnLogic =>
+    (self.readers includesKey: sid)
+      ifTrue: [
+        (self.readers at: sid) reply: bytes
+        ^self withReaders: (self.readers removeKey: sid)
+      ]
+    self withBuffered: (self.buffered at: sid put: bytes)
+
+  send: sid :: Integer data: bytes :: Binary replyTo: r :: ReplyTo -> ConnLogic =>
+    n := bytes byteSize
+    (self.sends isEmpty and: [n <= self.window])
+      ifTrue: [
+        r reply: self.window - n
+        ^self withWindow: self.window - n
+      ]
+    tag := Erlang erlang make_ref
+    Erlang erlang
+      send_after: self.sendTimeout
+      with: Erlang erlang self
+      with: {#expire, tag}
+    self withSends: (self.sends add: {tag, sid, bytes, r})
+
+  /// Release parked sends, oldest first, while the window has room.
+  release: n :: Integer -> ConnLogic =>
+    w := self.window + n
+    blocked := false
+    left := #()
+    self.sends
+      do: [:s |
+        size := (s at: 3) byteSize
+        (blocked not and: [size <= w])
+          ifTrue: [
+            w := w - size
+            (s at: 4) reply: w
+          ]
+          ifFalse: [
+            blocked := true
+            left := left add: s
+          ]
+      ]
+    (self withWindow: w) withSends: left
+
+  /// A parked send outlived `sendTimeout`: answer it with an error.
+  expire: tag :: Object -> ConnLogic =>
+    left := #()
+    self.sends
+      do: [:s |
+        (s at: 1) =:= tag ifTrue: [
+          (s at: 4) replyError: self timeoutError
+        ] ifFalse: [left := left add: s]
+      ]
+    self withSends: left
+
+  timeoutError -> Exception =>
+    [
+      Error signal: "send_timeout: the connection window stayed full"
+    ] on: Error do: [:e | e]
+
+  int: x :: Object -> Integer =>
+    x match: [
+      i :: Integer -> i;
+      _ -> 0
+    ]
+
+  bin: x :: Object -> Binary =>
+    x match: [
+      s :: String -> s;
+      _ -> ""
+    ]

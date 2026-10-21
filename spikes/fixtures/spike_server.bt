@@ -1,0 +1,28 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Starts a Catalina server running `SpikeHandler`. In a fixture because a
+/// test class cannot call a dependency's class methods (`Catalina start:`
+/// compiles to `bt@catalina:'class_start:'` there; BT-4094). Spike-only.
+sealed typed Object subclass: SpikeServer
+
+  /// Answers `{server, port}`.
+  class sealed start: handlerOptions :: Dictionary -> Tuple =>
+    srv := (Catalina start: #{
+      #port => 0,
+      #handler => SpikeHandler,
+      #handlerOptions => handlerOptions
+    }) unwrap
+    {_ip, port} := srv listenerInfo unwrap
+    {srv, port}
+
+  /// Start with `handler` (passed directly, so its parameter is typed
+  /// from this signature) and an optional probe.
+  class sealed serve: handler :: Block(SpikeExchange, Object) probe: probe :: SpikeProbe | Nil -> Tuple =>
+    opts :: Dictionary(Symbol, Object) := #{#handler => handler, #gcEvery => 5}
+    probe isNil ifFalse: [opts := opts at: #probe put: probe]
+    self start: opts
+
+  class sealed stop: srv :: ServerSupervisor -> Nil =>
+    srv stop
+    nil

@@ -19,10 +19,13 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.5"
+          # For the Bandit baseline of the spike bench smoke step.
+          elixir-version: "1.20.1"
 
       - name: Install Beamtalk
+        # edge tracks beamtalk main per merge; buccaneer and catalina depend on unreleased stdlib work (BT-3957)
         run: |
-          curl -fsSL https://beamtalk.dev/install.sh | sudo sh -s -- --nightly --prefix /usr/local
+          curl -fsSL https://beamtalk.dev/install.sh | sudo sh -s -- --edge --prefix /usr/local
           beamtalk --version
 
       - name: Install just
@@ -40,3 +43,14 @@ jobs:
 
       - name: Test
         run: just test
+
+      # Phase 0 spikes: loopback sockets and timing. The tests must pass;
+      # the numbers they print are informational.
+      - name: Spikes
+        run: just spikes
+
+      # Spike 1's three-way bench, one short round. Shared runners make the
+      # numbers noisy, so this is informational only.
+      - name: Spike bench smoke
+        run: just spike-bench --rows smoke
+        continue-on-error: true

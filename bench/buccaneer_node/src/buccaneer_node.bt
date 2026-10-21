@@ -1,0 +1,37 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// BuccaneerNode — what the Erlang bench harness (`bench/harness/hb_node.erl`)
+/// calls in the Buccaneer spike's peer node: a Catalina server running the
+/// spike's `SpikeHandler` (src/ links to `spikes/fixtures/`) with a request
+/// handler that answers a fixed `hello world`. Sealed class methods compile
+/// to plain exported functions, so the harness calls them directly.
+sealed typed Object subclass: BuccaneerNode
+
+  /// Start a server; `options` are `Catalina start:` options (`#port`,
+  /// `#numAcceptors`, ...). Answers the server. Raises if it cannot start.
+  class sealed start: options :: Dictionary -> ServerSupervisor =>
+    opts := (options at: #handler put: SpikeHandler)
+      at: #handlerOptions
+      put: (self
+        handlerOptions: [:ex |
+          ex
+            sendResp: 200
+            headers: #({"content-type", "text/plain"})
+            body: "hello world"
+        ])
+    (Catalina start: opts) unwrap
+
+  /// A method so the block's parameter type is inferred from this
+  /// signature (a block literal in a Dictionary gets none).
+  class sealed handlerOptions: handler :: Block(SpikeExchange, Object) -> Dictionary =>
+    #{#handler => handler, #gcEvery => 5}
+
+  /// The listening port of a started server.
+  class sealed port: srv :: ServerSupervisor -> Integer =>
+    {_ip, port} := srv listenerInfo unwrap
+    port
+
+  class sealed stop: srv :: ServerSupervisor -> Nil =>
+    srv stop
+    nil

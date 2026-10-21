@@ -1,0 +1,199 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 4: the byte codecs HTTP/2, WebSocket and HPACK need, written
+/// with binary patterns (BT-663) in `match:` for parsing and iodata (lists
+/// of byte integers and binaries) for construction, since Beamtalk has no
+/// binary construction syntax. Each method names the Elixir it stands for.
+/// Spike-only.
+sealed typed Object subclass: FrameCodec
+
+  // === HTTP/2 (Bandit.HTTP2.Frame.deserialize/2) ===
+
+  /// `<<length::24, type::8, flags::8, _reserved::1, stream_id::31,
+  /// rest::binary>>`. Answers `{length, type, flags, streamId, rest}`, or
+  /// nil when fewer than 9 bytes are buffered.
+  class sealed h2Header: bin :: Binary -> Tuple | Nil =>
+    bin match: [
+      <<len:24, type:8, flags:8, _r:1, sid:31, rest/binary>> -> {len, type, flags, sid, rest};
+      _ -> nil
+    ]
+
+  /// The header and its payload in one step. Elixir binds the payload's
+  /// size from an earlier segment (`payload::binary-size(length)`); the
+  /// same pattern here does not compile (BT-4096), so the payload is
+  /// matched in a second `match:` with the size in a local.
+  class sealed h2Frame: bin :: Binary -> Tuple | Nil =>
+    bin match: [
+      <<len:24, type:8, flags:8, _r:1, sid:31, rest/binary>> -> self
+        h2Payload: rest
+        length: len
+        type: type
+        flags: flags
+        stream: sid;
+      _ -> nil
+    ]
+
+  // A size taken only from a parameter counts as unused (BT-4097), so
+  // the guard mentions it.
+  class sealed h2Payload: rest :: Binary length: len :: Integer type: type :: Integer flags: flags :: Integer stream: sid :: Integer -> Tuple | Nil =>
+    rest match: [
+      <<payload:len/binary, tail/binary>> when: [len >= 0] -> {type, flags, sid, payload, tail};
+      _ -> nil
+    ]
+
+  /// `<<byte_size(payload)::24, type::8, flags::8, 0::1, id::31>>` plus
+  /// the payload, as iodata: a list of the nine header bytes and the
+  /// payload binary, ready for `Socket send:`.
+  class sealed h2Serialize: type :: Integer flags: flags :: Integer stream: sid :: Integer payload: payload :: Binary -> List =>
+    len := payload byteSize
+    #(#(len bitShift: -16, (len bitShift: -8) bitAnd: 255, len bitAnd: 255, type, flags, (sid bitShift: -24) bitAnd: 127, (sid bitShift: -16) bitAnd: 255, (sid bitShift: -8) bitAnd: 255, sid bitAnd: 255), payload)
+
+  // === WebSocket (Bandit.WebSocket.Frame.deserialize/2) ===
+
+  /// `<<fin::1, compressed::1, rsv::2, opcode::4, mask::1, length::7, ...>>`
+  /// with the 16- and 64-bit extended lengths, the 4-byte mask and the
+  /// payload. Answers `{fin, rsv, opcode, maskKey | nil, payload, rest}`
+  /// or nil if incomplete. The extended-length and payload segments are
+  /// separate matches (BT-4096).
+  class sealed wsFrame: bin :: Binary -> Tuple | Nil =>
+    bin match: [
+      <<fin:1, rsv:3, op:4, masked:1, len7:7, rest/binary>> -> self
+        wsLength: rest
+        short: len7
+        fin: fin
+        rsv: rsv
+        opcode: op
+        masked: masked;
+      _ -> nil
+    ]
+
+  class sealed wsLength: bin :: Binary short: len7 :: Integer fin: fin :: Integer rsv: rsv :: Integer opcode: op :: Integer masked: masked :: Integer -> Tuple | Nil =>
+    len7 < 126
+      ifTrue: [
+        ^self
+          wsPayload: bin
+          length: len7
+          fin: fin
+          rsv: rsv
+          opcode: op
+          masked: masked
+      ]
+    len7 =:= 126
+      ifTrue: [
+        ^bin match: [
+          <<len:16, rest/binary>> -> self
+            wsPayload: rest
+            length: len
+            fin: fin
+            rsv: rsv
+            opcode: op
+            masked: masked;
+          _ -> nil
+        ]
+      ]
+    bin match: [
+      <<len:64, rest/binary>> -> self
+        wsPayload: rest
+        length: len
+        fin: fin
+        rsv: rsv
+        opcode: op
+        masked: masked;
+      _ -> nil
+    ]
+
+  class sealed wsPayload: bin :: Binary length: len :: Integer fin: fin :: Integer rsv: rsv :: Integer opcode: op :: Integer masked: masked :: Integer -> Tuple | Nil =>
+    masked =:= 1
+      ifTrue: [
+        ^bin match: [
+          <<key:4/binary, payload:len/binary, rest/binary>> when: [len >= 0] -> {fin, rsv, op, key, self unmask: payload key: key, rest};
+          _ -> nil
+        ]
+      ]
+    bin match: [
+      <<payload:len/binary, rest/binary>> -> {fin, rsv, op, nil, payload, rest};
+      _ -> nil
+    ]
+
+  /// `Bandit.WebSocket.PrimitiveOps.ws_mask/2`: XOR with the key
+  /// repeated, through `crypto:exor/2`.
+  class sealed unmask: payload :: Binary key: key :: Binary -> Binary =>
+    n := payload byteSize
+    n =:= 0 ifTrue: [^payload]
+    whole := Erlang binary copy: key with: n  // 4 + 1
+    Erlang crypto exor: payload with: (whole part: 0 size: n)
+
+  /// A server frame header (unmasked): FIN, opcode and the length in 7,
+  /// 7+16 or 7+64 bits, as iodata.
+  class sealed wsSerialize: opcode :: Integer payload: payload :: Binary -> List =>
+    n := payload byteSize
+    first := 128 bitOr: opcode
+    head := n < 126
+      ifTrue: [#(first, n)]
+      ifFalse: [
+        n < 65536 ifTrue: [
+          #(first, 126, n bitShift: -8, n bitAnd: 255)
+        ] ifFalse: [#(first, 127) ++ (self bytes: n count: 8)]
+      ]
+    #(head, payload)
+
+  /// `n` as `count` big-endian bytes.
+  class sealed bytes: n :: Integer count: count :: Integer -> List(Integer) =>
+    out := #()
+    v := n
+    count
+      timesRepeat: [
+        out := out addFirst: (v bitAnd: 255)
+        v := v bitShift: -8
+      ]
+    out
+
+  // === HPACK (HPAX.Types.decode_integer/2, encode_integer/2) ===
+
+  /// An integer with an n-bit prefix (RFC 7541 5.1) at the start of
+  /// `bin`, the prefix's high bits ignored. Elixir matches a bitstring
+  /// after the flag bits (`<<value::size(prefix), rest::binary>>`);
+  /// Beamtalk has no bitstring segments (BT-4097), so the flag bits are
+  /// skipped inside the first byte. Answers `{value, rest}` or nil.
+  class sealed hpackInteger: bin :: Binary prefix: p :: Integer -> Tuple | Nil =>
+    skip := 8 - p
+    max := (1 bitShift: p) - 1
+    bin match: [
+      <<_flags:skip, v:p, rest/binary>> when: [skip >= 0] -> v < max
+        ifTrue: [{v, rest}]
+        ifFalse: [
+          self
+            hpackRest: rest
+            value: max
+            shift: 0
+        ];
+      _ -> nil
+    ]
+
+  /// The continuation bytes: `<<0::1, value::7, rest::binary>>` ends,
+  /// `<<1::1, ...>>` continues. A literal segment value does not parse
+  /// (BT-4097), so the bit is bound and tested in a guard.
+  class sealed hpackRest: bin :: Binary value: acc :: Integer shift: m :: Integer -> Tuple | Nil =>
+    bin match: [
+      <<c:1, v:7, rest/binary>> when: [c =:= 0] -> {acc + (v bitShift: m), rest};
+      <<_c:1, v:7, rest/binary>> -> self
+        hpackRest: rest
+        value: acc + (v bitShift: m)
+        shift: m + 7;
+      _ -> nil
+    ]
+
+  /// RFC 7541 5.1 encoding with an n-bit prefix and the high bits
+  /// `flags` (already shifted), as a list of bytes.
+  class sealed hpackEncode: value :: Integer prefix: p :: Integer flags: flags :: Integer -> List(Integer) =>
+    max := (1 bitShift: p) - 1
+    value < max ifTrue: [^#(flags bitOr: value)]
+    out := #(flags bitOr: max)
+    v := value - max
+    [v >= 128]
+      whileTrue: [
+        out := out ++ #((v bitAnd: 127) bitOr: 128)
+        v := v bitShift: -7
+      ]
+    out ++ #(v)

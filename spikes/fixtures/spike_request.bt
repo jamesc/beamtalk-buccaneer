@@ -1,0 +1,29 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A parsed HTTP/1 request head, as `Bandit.HTTP1.Socket.read_headers/1`
+/// produces it: the method, the raw target, the version and the headers
+/// with lowercased names, in order, duplicates kept. Spike-only.
+sealed typed Value subclass: SpikeRequest
+  field: method :: String = ""
+  field: target :: String = ""
+  // 0 for HTTP/1.0, 1 for HTTP/1.1.
+  field: minor :: Integer = 1
+  field: headers :: List(Tuple) = #()
+  // From `content-length`; 0 when absent.
+  field: contentLength :: Integer = 0
+
+  /// The first value of `name` (lowercase), or nil.
+  header: name :: String -> String | Nil =>
+    self.headers do: [:h | (h at: 1) =:= name ifTrue: [^h at: 2]]
+    nil
+
+  /// HTTP/1.1 keeps the connection unless `connection: close`; HTTP/1.0
+  /// closes unless `connection: keep-alive` (Bandit's rule).
+  keepalive -> Boolean =>
+    connection := self header: "connection"
+    connection isNil ifTrue: [^self.minor =:= 1]
+    token := connection lowercase
+    self.minor =:= 1 ifTrue: [
+      (token =:= "close") not
+    ] ifFalse: [token =:= "keep-alive"]

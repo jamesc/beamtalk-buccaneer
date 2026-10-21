@@ -1,0 +1,17 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 2: the per-request state an `SpikeExchange` keeps in its owner
+/// process, keyed by the exchange's `Reference` (the role of
+/// `Bandit.Adapter`'s fields plus the transport value). Spike-only.
+sealed typed Value subclass: ExchangeState
+  field: request :: SpikeRequest = SpikeRequest new
+  field: socket :: Socket | Nil = nil
+  // Bytes read past the request head and not yet consumed.
+  field: buffer :: Binary = ""
+  // Content-length bytes not yet read by the handler.
+  field: bodyUnread :: Integer = 0
+  field: bytesRead :: Integer = 0
+  // #unset | #sent | #chunked | #chunkedDone, as Plug.Conn's state.
+  field: respState :: Symbol = #unset
+  field: status :: Integer = 0

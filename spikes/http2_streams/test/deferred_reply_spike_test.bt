@@ -1,0 +1,243 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 5 (PLAN.md Phase 0): the deferred reply HTTP/2 needs (BT-4090),
+/// prototyped with a throwaway native-backed connection whose decisions
+/// are Beamtalk (`ConnLogic`, `ReplyTo`). Stream processes
+/// (`StreamWorker`) block on `conn readData:` and on a flow-controlled
+/// `conn sendData:data:`; the connection parks the calls and answers them
+/// later, out of order, from `handleInfo:`. Frames are simulated with
+/// `{data, sid, bytes}` and `{window_update, n}` messages. Results go to
+/// `_build/spikes/deferred_reply.txt`.
+typed TestCase subclass: DeferredReplySpikeTest
+
+  conn: window :: Integer timeout: ms :: Integer -> DeferredConn =>
+    DeferredConn window: window sendTimeout: ms
+
+  reader: sid :: Integer on: c :: DeferredConn to: r :: Recorder -> StreamWorker =>
+    StreamWorker spawnWith: #{
+      #conn => c,
+      #recorder => r,
+      #sid => sid,
+      #mode => #read
+    }
+
+  sender: sid :: Integer data: bytes :: Binary on: c :: DeferredConn to: r :: Recorder -> StreamWorker =>
+    StreamWorker spawnWith: #{
+      #conn => c,
+      #recorder => r,
+      #sid => sid,
+      #mode => #send,
+      #data => bytes
+    }
+
+  frame: msg :: Tuple to: c :: DeferredConn -> Nil =>
+    Erlang erlang send: c pid msg: msg
+    nil
+
+  /// Poll until `done` answers true, for up to 3 s.
+  waitUntil: done :: Block(Boolean) -> Boolean =>
+    deadline := (Erlang erlang monotonic_time: #millisecond) + 3000
+    ok := done value
+    [ok not and: [(Erlang erlang monotonic_time: #millisecond) < deadline]]
+      whileTrue: [
+        Timer sleep: 2
+        ok := done value
+      ]
+    ok
+
+  micros -> Integer => Erlang erlang monotonic_time: #microsecond
+
+  testParkedReadsAnsweredOutOfOrder -> Nil =>
+    c := self conn: 65535 timeout: 15000
+    r := Recorder spawn
+    #(1, 2, 3)
+      do: [:sid |
+        self
+          reader: sid
+          on: c
+          to: r
+      ]
+    self assert: (self waitUntil: [c parked =:= 3])
+    // One frame at a time, so the streams' records cannot race.
+    self frame: {#data, 3, "three"} to: c
+    self assert: (self waitUntil: [r size =:= 1])
+    self assert: c parked equals: 2
+    self frame: {#data, 1, "one"} to: c
+    self assert: (self waitUntil: [r size =:= 2])
+    self frame: {#data, 2, "two"} to: c
+    self assert: (self waitUntil: [r size =:= 3])
+    self assert: r order equals: #(3, 1, 2)
+    self assert: (r at: 1) equals: "one"
+    self assert: (r at: 3) equals: "three"
+    // DATA that arrives before the read is buffered and answered at once.
+    self frame: {#data, 4, "early"} to: c
+    self
+      reader: 4
+      on: c
+      to: r
+    self assert: (self waitUntil: [r size =:= 4])
+    self assert: (r at: 4) equals: "early"
+    c stop
+    nil
+
+  testFlowControlledSendWaitsForWindow -> Nil =>
+    c := self conn: 10 timeout: 15000
+    r := Recorder spawn
+    self
+      sender: 1
+      data: "12345678"
+      on: c
+      to: r
+    self assert: (self waitUntil: [r size =:= 1])
+    // 8 of 10 bytes used: 2 left.
+    self assert: (r at: 1) equals: 2
+    self
+      sender: 2
+      data: "123456"
+      on: c
+      to: r
+    self assert: (self waitUntil: [c parked =:= 1])
+    // Behind a parked send, even one that would fit waits (FIFO).
+    self
+      sender: 3
+      data: "1"
+      on: c
+      to: r
+    self assert: (self waitUntil: [c parked =:= 2])
+    self frame: {#window_update, 3} to: c
+    self assert: c parked equals: 2
+    self frame: {#window_update, 10} to: c
+    self assert: (self waitUntil: [r size =:= 3])
+    // Released oldest first: 2 + 3 + 10 = 15; minus 6 = 9; minus 1 = 8.
+    self assert: (r at: 2) equals: 9
+    self assert: (r at: 3) equals: 8
+    c stop
+    nil
+
+  testParkedSendExpiresWithAnError -> Nil =>
+    c := self conn: 0 timeout: 100
+    r := Recorder spawn
+    self
+      sender: 1
+      data: "hello"
+      on: c
+      to: r
+    self assert: (self waitUntil: [r size =:= 1])
+    answer := r at: 1
+    self
+      assert: (answer match: [
+        {#error, _k, message} -> message startsWith: "send_timeout";
+        _ -> false
+      ])
+    self assert: c parked equals: 0
+    c stop
+    nil
+
+  /// A caller whose call timed out (here the test process itself, with
+  /// `gen_server:call/3`) gets no stale reply later: OTP sends calls with a
+  /// process alias, and the alias is gone once the call returns.
+  testLateReplyToTimedOutCallerIsHarmless -> Nil =>
+    c := self conn: 65535 timeout: 15000
+    timedOut := [
+      Erlang gen_server
+        call: c pid
+        with: {#readData:, #(7)}
+        with: 100
+      false
+    ] on: Exception do: [:e | true]
+    self assert: timedOut
+    self assert: c parked equals: 1
+    self frame: {#data, 7, "late"} to: c
+    self assert: c ping equals: #pong
+    self assert: c parked equals: 0
+    self assert: (Erlang erlang process_info: Erlang erlang self with: #message_queue_len) equals: {#message_queue_len, 0}
+    c stop
+    nil
+
+  testReplyToDeadCallerIsHarmless -> Nil =>
+    c := self conn: 65535 timeout: 15000
+    r := Recorder spawn
+    w := self
+      reader: 9
+      on: c
+      to: r
+    self assert: (self waitUntil: [c parked =:= 1])
+    w kill
+    self frame: {#data, 9, "nobody"} to: c
+    self assert: c ping equals: #pong
+    self assert: c parked equals: 0
+    self assert: r size equals: 0
+    c stop
+    nil
+
+  testStopFailsParkedCallers -> Nil =>
+    c := self conn: 65535 timeout: 15000
+    r := Recorder spawn
+    #(1, 2)
+      do: [:sid |
+        self
+          reader: sid
+          on: c
+          to: r
+      ]
+    self assert: (self waitUntil: [c parked =:= 2])
+    c stop
+    self assert: (self waitUntil: [r size =:= 2])
+    kinds := (#(1, 2)
+      collect: [:sid |
+        (r at: sid) match: [
+          {#error, kind, _m} -> kind;
+          _ -> #none
+        ]
+      ]) asSet
+    File mkdirAll: "_build/spikes"
+    File writeAll: "_build/spikes/deferred_reply_stop.txt" contents: "deferred_reply stop: parked callers fail with {(r at: 1) printString}"
+    self deny: (kinds includes: #none)
+
+  testCost -> Nil =>
+    n := 10000
+    c := self conn: 65535 timeout: 15000
+    r := Recorder spawn
+    // Warm up.
+    100
+      timesRepeat: [
+        c directPing
+        c ping
+        r size
+      ]
+    t0 := self micros
+    n timesRepeat: [c directPing]
+    direct := self micros - t0
+    t1 := self micros
+    n timesRepeat: [c ping]
+    deferred := self micros - t1
+    t2 := self micros
+    n timesRepeat: [r size]
+    plain := self micros - t2
+    // 100 streams parked at once, answered in reverse order.
+    streams := 100
+    1
+      to: streams
+      do: [:sid |
+        self
+          reader: sid
+          on: c
+          to: r
+      ]
+    self assert: (self waitUntil: [c parked =:= streams])
+    t3 := self micros
+    streams
+      to: 1
+      by: -1
+      do: [:sid | self frame: {#data, sid, "x"} to: c]
+    self assert: (self waitUntil: [r size =:= streams])
+    reverse := self micros - t3
+    // Replies leave in reverse order; the streams then race to record, so
+    // only the set is checked.
+    self assert: r order asSet equals: (1 to: streams) asList asSet
+    c stop
+    report := "deferred_reply calls={n} native_direct_reply_us={direct / n} parked_then_replied_via_beamtalk_us={deferred / n} plain_beamtalk_actor_call_us={plain / n} reverse_100_parked_total_us={reverse} per_stream_us={reverse / streams}"
+    File mkdirAll: "_build/spikes"
+    File writeAll: "_build/spikes/deferred_reply.txt" contents: report
+    self assert: deferred < (n * 10000)

@@ -1,0 +1,31 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 5: the HTTP/2 connection as stream processes see it. A
+/// throwaway native-backed actor (ADR 0056; never shipped): the gen_server
+/// in `native/deferred_conn_spike.erl` only parks every call
+/// (`{noreply, ...}`) and hands its `From` to `ConnLogic`, where the
+/// Beamtalk code decides when to answer. That is the shape BT-4090 would
+/// give a pure-Beamtalk `Server`.
+typed Actor subclass: DeferredConn native: deferred_conn_spike
+
+  /// A connection with a send window of `window` bytes whose parked sends
+  /// expire after `ms`.
+  class window: window :: Integer sendTimeout: ms :: Integer -> DeferredConn =>
+    self spawnWith: #{#logic => (ConnLogic window: window sendTimeout: ms)}
+
+  /// The next DATA for `streamId`; blocks until it arrives.
+  readData: streamId :: Integer -> Binary => self delegate
+
+  /// Send `data` on `streamId`; blocks until the connection window has
+  /// room. Answers the window left.
+  sendData: streamId :: Integer data: data :: Binary -> Integer => self delegate
+
+  /// Answered at once by the logic (through `gen_server:reply`).
+  ping -> Symbol => self delegate
+
+  /// Answered directly by the gen_server (`{reply, ...}`), the baseline.
+  directPing -> Symbol => self delegate
+
+  /// How many calls are parked.
+  parked -> Integer => self delegate

@@ -1,0 +1,114 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 3 (PLAN.md Phase 0): the whole request runs inside Catalina's
+/// `handleData:`, as Bandit runs it inside `handle_data/3`.
+///
+/// - The body is read with blocking `Socket recv:timeout:` calls while the
+///   socket is passive: Catalina armed `{active, once}`, delivered one
+///   packet, and the socket stays `{active, false}` until the callback
+///   answers `continue:`.
+/// - The request handler calls an actor synchronously from there.
+/// - Requests pipelined in one packet are all served from the buffer in
+///   that one `handleData:` call, without re-arming the socket.
+typed TestCase subclass: BlockingWorkSpikeTest
+
+  testBodyReadWithBlockingRecvOnAPassiveSocket -> Nil =>
+    probe := SpikeProbe spawn
+    {srv, port} := SpikeServer serve: [:ex |
+      self echoBodyAndMode: ex
+    ] probe: probe
+    sock := SpikeClient connect: port
+    body := "0123456789" concat: (Erlang binary copy: "abcdefghij" with: 999)
+    whole := SpikeClient
+      post: "/upload"
+      headers: ""
+      body: body
+    // The head and the first 100 bytes first, then the rest in four parts
+    // with pauses, so the handler must recv while it runs.
+    headLength := whole byteSize - body byteSize + 100
+    SpikeClient send: sock data: (whole part: 0 size: headLength)
+    offset := headLength
+    [offset < whole byteSize]
+      whileTrue: [
+        Timer sleep: 20
+        left := whole byteSize - offset
+        n := left > 2500 ifTrue: [2500] ifFalse: [left]
+        SpikeClient send: sock data: (whole part: offset size: n)
+        offset := offset + n
+      ]
+    {status, _h, reply, _rest} := SpikeClient read: sock buffer: ""
+    SpikeClient close: sock
+    rows := probe rows
+    SpikeServer stop: srv
+    self assert: status equals: 200
+    // The handler saw the whole body and a passive socket.
+    self assert: reply equals: "{body byteSize} passive"
+    // One handleData: call for the whole request.
+    self assert: (rows collect: [:r | r at: 6]) equals: #(1)
+
+  echoBodyAndMode: ex :: SpikeExchange -> Object =>
+    received := ex readBody unwrap
+    mode := (ex socket ifNil: [nil] ifNotNil: [:s | s getopts: #(#active)])
+    active := mode match: [
+      r :: Result -> ((r value includes: {#active, false}) ifTrue: [
+        "passive"
+      ] ifFalse: ["active"]);
+      _ -> "none"
+    ]
+    ex
+      sendResp: 200
+      headers: #()
+      body: "{received byteSize} {active}"
+
+  testHandlerCallsAnActor -> Nil =>
+    counter := SpikeCounter spawn
+    {srv, port} := SpikeServer
+      serve: [:ex |
+        n := counter increment
+        ex
+          sendResp: 200
+          headers: #()
+          body: "{n}"
+      ]
+      probe: nil
+    sock := SpikeClient connect: port
+    buffer := ""
+    last := ""
+    1
+      to: 100
+      do: [:_i |
+        SpikeClient send: sock data: (SpikeClient get: "/count" headers: "")
+        {_s, _h, b, rest} := SpikeClient read: sock buffer: buffer
+        buffer := rest
+        last := b
+      ]
+    SpikeClient close: sock
+    SpikeServer stop: srv
+    self assert: last equals: "100"
+    self assert: counter increment equals: 101
+    counter stop
+    nil
+
+  testPipelinedRequestsServedWithoutRearming -> Nil =>
+    probe := SpikeProbe spawn
+    {srv, port} := SpikeServer
+      serve: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ex target
+      ]
+      probe: probe
+    sock := SpikeClient connect: port
+    three := ((SpikeClient get: "/a" headers: "") concat: (SpikeClient get: "/b" headers: "")) concat: (SpikeClient get: "/c" headers: "")
+    SpikeClient send: sock data: three
+    {_s1, _h1, a, r1} := SpikeClient read: sock buffer: ""
+    {_s2, _h2, b, r2} := SpikeClient read: sock buffer: r1
+    {_s3, _h3, c, _r3} := SpikeClient read: sock buffer: r2
+    SpikeClient close: sock
+    rows := probe rows
+    SpikeServer stop: srv
+    self assert: {a, b, c} equals: {"/a", "/b", "/c"}
+    // All three in the first handleData: call.
+    self assert: (rows collect: [:r | r at: 6]) equals: #(1, 1, 1)

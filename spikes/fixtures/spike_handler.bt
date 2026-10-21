@@ -1,0 +1,148 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spikes 1-3: a Catalina handler running Bandit's HTTP/1 request loop
+/// (`Bandit.HTTP1.Handler.handle_data/3` and `Bandit.Pipeline.run/5`, cut
+/// down) inside `handleData:`: parse the head (`SpikeParser`), open an
+/// `SpikeExchange`, call the request handler block, commit, complete,
+/// forget the exchange, clear the process dictionary, and serve a
+/// pipelined request already in the buffer before answering `continue:`.
+///
+/// `handlerOptions` is a Dictionary: `#handler` (a
+/// `Block(SpikeExchange, Object)`), and optionally `#probe` (a
+/// `SpikeProbe` that gets one row per request) and `#gcEvery` (Bandit's
+/// `gc_every_n_keepalive_requests`, default 5). Spike-only.
+typed Handler subclass: SpikeHandler
+  state: served :: Integer = 0
+  // The process-dictionary keys present when the connection started: the
+  // runtime's own, which clearing must keep (Bandit keeps `$ancestors`,
+  // `$initial_call` and `$process_label`).
+  state: baseline :: List = #()
+  // How many times Catalina called handleData: (spike 3: a pipelined
+  // request is served without another call).
+  state: dataCalls :: Integer = 0
+
+  handleConnection: _sock :: Socket state: st :: Object -> HandlerResult =>
+    self.baseline := Erlang erlang get_keys
+    HandlerResult continue: st
+
+  handleData: data :: Object socket: sock :: Socket state: st :: Object -> HandlerResult =>
+    self.dataCalls := self.dataCalls + 1
+    opts := st match: [
+      d :: Dictionary -> d;
+      _ -> #{}
+    ]
+    // Catalina delivers binaries; a String type pattern is an is_binary test.
+    buffer := data match: [
+      b :: String -> b;
+      _ -> ""
+    ]
+    keep := true
+    [keep and: [buffer byteSize > 0]]
+      whileTrue: [
+        outcome := self
+          serve: buffer
+          socket: sock
+          options: opts
+        outcome isNil ifTrue: [keep := false] ifFalse: [buffer := outcome]
+      ]
+    keep ifTrue: [HandlerResult continue: st] ifFalse: [HandlerResult close: st]
+
+  /// One request. Answers the bytes after it (empty, or a pipelined
+  /// request) to keep the connection, or nil to close it.
+  serve: buffer :: Binary socket: sock :: Socket options: opts :: Dictionary -> Binary | Nil =>
+    head := SpikeParser readHead: buffer socket: sock
+    head isError
+      ifTrue: [
+        nl := SpikeParser crlf
+        sock send: "HTTP/1.1 400 Bad Request{nl}content-length: 0{nl}connection: close{nl}{nl}"
+        ^nil
+      ]
+    {request, rest} := head value
+    ex := SpikeExchange
+      open: request
+      socket: sock
+      buffer: rest
+    handler := opts at: #handler ifAbsent: [nil]
+    raised := nil
+    [
+      handler isNil ifFalse: [handler value: ex]
+    ] on: Exception do: [:e | raised := e]
+    raised isNil ifFalse: [^self failed: ex options: opts]
+    ex commit
+    final := ex finish
+    request keepalive ifFalse: [^nil]
+    self afterRequest: opts
+    final buffer
+
+  /// The handler raised (Bandit's `handle_error`): a 500 if nothing was
+  /// sent, then close; the exchange state is forgotten either way.
+  failed: ex :: SpikeExchange options: opts :: Dictionary -> Nil =>
+    ex state =:= #unset
+      ifTrue: [
+        nl := SpikeParser crlf
+        ex load socket send: "HTTP/1.1 500 Internal Server Error{nl}content-length: 0{nl}connection: close{nl}{nl}"
+      ]
+    Erlang erlang erase: ex key
+    probe := opts at: #probe ifAbsent: [nil]
+    probe isNil ifFalse: [self record: probe]
+    nil
+
+  /// Bandit's `maybe_keepalive`: clear the process dictionary, count the
+  /// request, collect garbage every n requests.
+  afterRequest: opts :: Dictionary -> Nil =>
+    self clearProcessDictionary
+    self.served := self.served + 1
+    gcEvery := opts at: #gcEvery ifAbsent: [5]
+    (self.served % gcEvery) =:= 0 ifTrue: [Erlang erlang garbage_collect]
+    probe := opts at: #probe ifAbsent: [nil]
+    probe isNil ifFalse: [self record: probe]
+    nil
+
+  /// Erase every key that was not there when the connection started,
+  /// except Catalina's telemetry marker and Buccaneer's own connection
+  /// keys, as Bandit's `clear_process_dict`.
+  clearProcessDictionary -> Nil =>
+    base := self.baseline
+    keys :: List(Object) := Erlang erlang get_keys
+    keys
+      do: [:k |
+        ((base includes: k) or: [
+          self isEngineKey: k
+        ]) ifFalse: [Erlang erlang erase: k]
+      ]
+    nil
+
+  isEngineKey: k :: Object -> Boolean =>
+    k match: [
+      {#catalina_exception_emitted, _c} -> true;
+      {#buccaneer_connection, _v} -> true;
+      _ -> false
+    ]
+
+  /// Spike 2's measurement after each request: the process-dictionary
+  /// size, the heap after a full collection, and how many exchange states
+  /// are left.
+  record: probe :: Object -> Nil =>
+    Erlang erlang garbage_collect
+    keys :: List(Object) := Erlang erlang get_keys
+    exchanges := (keys
+      select: [:k |
+        k match: [
+          {#buccaneer_exchange, _r} -> true;
+          _ -> false
+        ]
+      ]) size
+    heap := Erlang erlang process_info: Erlang erlang self with: #total_heap_size
+    (probe match: [
+      p :: SpikeProbe -> p;
+      _ -> nil
+    ])
+      ifNotNil: [:p |
+        p record: {self.served, keys size, heap, exchanges, keys, self.dataCalls}!
+      ]
+    nil
+
+  served -> Integer => self.served
+
+  dataCalls -> Integer => self.dataCalls

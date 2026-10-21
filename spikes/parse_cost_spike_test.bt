@@ -1,0 +1,87 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 1 (PLAN.md Phase 0), in-VM part: `SpikeParser` reads a request
+/// head with `erlang:decode_packet` through the FFI, as Bandit's
+/// `read_headers`. The tests pin what `decode_packet` answers (atoms for
+/// well-known methods and header names, binaries otherwise; pipelined
+/// bytes left in `rest`) and time the parse per request.
+///
+/// The end-to-end numbers (requests/s and p99 against beamtalk-http on
+/// cowboy and Bandit) come from `just spike-bench` (bench/README.md).
+/// Results go to `_build/spikes/http1_parse.txt`.
+typed TestCase subclass: ParseCostSpikeTest
+
+  rounds -> Integer => 20000
+
+  /// A typical browser-ish GET: 7 headers, 300-odd bytes.
+  getRequest -> String =>
+    nl := SpikeParser crlf
+    "GET /hello/world?x=1 HTTP/1.1{nl}host: localhost:4000{nl}user-agent: spike/1.0{nl}accept: text/html,application/xhtml+xml{nl}accept-encoding: gzip, deflate{nl}accept-language: en-GB,en;q=0.9{nl}connection: keep-alive{nl}x-request-id: 6f1e1f5c-2a8b-4f0e-9d7e-1c2b3a4d5e6f{nl}{nl}"
+
+  parse: bytes :: String -> Tuple =>
+    (SpikeParser readHead: bytes socket: nil) unwrap
+
+  testParsesRequestLineAndHeaders -> Nil =>
+    {req, rest} := self parse: self getRequest
+    self assert: req method equals: "GET"
+    self assert: req target equals: "/hello/world?x=1"
+    self assert: req minor equals: 1
+    self assert: req headers size equals: 7
+    self assert: (req header: "host") equals: "localhost:4000"
+    self assert: (req header: "x-request-id") equals: "6f1e1f5c-2a8b-4f0e-9d7e-1c2b3a4d5e6f"
+    self assert: req keepalive
+    self assert: rest equals: ""
+
+  testUnknownMethodAndHeaderAreBinaries -> Nil =>
+    nl := SpikeParser crlf
+    {req, _rest} := self parse: "PURGE / HTTP/1.0{nl}X-Custom: A{nl}Content-Length: 3{nl}{nl}abc"
+    self assert: req method equals: "PURGE"
+    self assert: req headers equals: #({"x-custom", "A"}, {"content-length", "3"})
+    self assert: req contentLength equals: 3
+    self deny: req keepalive
+
+  testPipelinedBytesStayInRest -> Nil =>
+    nl := SpikeParser crlf
+    two := self getRequest ++ "GET /second HTTP/1.1{nl}host: x{nl}{nl}"
+    {_first, rest} := self parse: two
+    {second, tail} := self parse: rest
+    self assert: second target equals: "/second"
+    self assert: tail equals: ""
+
+  testIncompleteHeadWithoutSocketIsAnError -> Nil =>
+    nl := SpikeParser crlf
+    r := SpikeParser readHead: "GET / HTTP/1.1{nl}host: x{nl}" socket: nil
+    self assert: r isError
+    self assert: r error equals: #incomplete
+
+  testBadRequestLine -> Nil =>
+    nl := SpikeParser crlf
+    r := SpikeParser readHead: "NOT HTTP{nl}{nl}" socket: nil
+    self assert: r isError
+
+  micros -> Integer => Erlang erlang monotonic_time: #microsecond
+
+  testParseCost -> Nil =>
+    bytes := self getRequest
+    // Warm up.
+    1000 timesRepeat: [self parse: bytes]
+    started := self micros
+    self rounds timesRepeat: [self parse: bytes]
+    parse := self micros - started
+    // One bare FFI call to decode_packet (the request line only), for the
+    // FFI's share of the above.
+    started2 := self micros
+    self rounds
+      timesRepeat: [
+        Erlang erlang
+          decode_packet: #http_bin
+          with: bytes
+          with: #()
+      ]
+    ffi := self micros - started2
+    report := "http1_parse rounds={self rounds} parse_ns_per_request={parse * 1000 div: self rounds} decode_packet_ffi_ns_per_call={ffi * 1000 div: self rounds} headers=7 bytes={bytes byteSize}"
+    File mkdirAll: "_build/spikes"
+    File writeAll: "_build/spikes/http1_parse.txt" contents: report
+    // Loose sanity bound only: a millisecond per parse.
+    self assert: (parse * 1000 div: self rounds) < 1000000

@@ -1,0 +1,11 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 3: an actor a request handler calls synchronously from inside
+/// `handleData:`. Spike-only.
+typed Actor subclass: SpikeCounter
+  state: count :: Integer = 0
+
+  increment -> Integer =>
+    self.count := self.count + 1
+    self.count

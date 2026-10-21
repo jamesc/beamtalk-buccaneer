@@ -10,7 +10,20 @@ build:
 
 # Run the test suite
 test:
-    beamtalk test
+    beamtalk test --warnings-as-errors
+
+# Run the Phase 0 spikes (loopback sockets and timing; not part of `test`)
+spikes:
+    #!/usr/bin/env bash
+    status=0
+    # Also builds and runs the spikes/http2_streams package (spikes 5 and 6).
+    beamtalk test spikes -j 1 --warnings-as-errors || status=$?
+    for f in _build/spikes/*.txt; do cat "$f"; echo; done
+    exit $status
+
+# Spike 1: HTTP/1 GET against beamtalk-http on cowboy and Bandit, interleaved (bench/README.md)
+spike-bench *ARGS:
+    bench/run.sh {{ARGS}}
 
 # Check formatting
 fmt:

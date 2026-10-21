@@ -1,0 +1,193 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 2: the owner-bound `Exchange` handle of `docs/engine-interface.md`,
+/// cut down to what the spikes exercise. The handle is a sealed Value
+/// holding only an identity and the owner process; the request's mutable
+/// state is an `ExchangeState` in the owner's process dictionary under
+/// `{buccaneer_exchange, ref}`. Every method checks the caller is the
+/// owner first (Bandit's `validate_calling_process!`). Spike-only.
+sealed typed Value subclass: SpikeExchange
+  // Always set by `open:socket:buffer:`; nilable only because a Value
+  // field needs a default.
+  field: ref :: Reference | Nil = nil
+  field: owner :: Pid | Nil = nil
+
+  /// Engine side: start a request's state in the calling process.
+  class sealed open: request :: SpikeRequest socket: sock :: Socket | Nil buffer: buffer :: Binary -> SpikeExchange =>
+    ex := self ref: Erlang erlang make_ref owner: Erlang erlang self
+    initial := ExchangeState
+      request: request
+      socket: sock
+      buffer: buffer
+      bodyUnread: request contentLength
+      bytesRead: 0
+      respState: #unset
+      status: 0
+    Erlang erlang put: ex key with: initial
+    ex
+
+  /// The process-dictionary key of this exchange's state.
+  key -> Tuple => {#buccaneer_exchange, self.ref}
+
+  /// The state, after the owner check. Raises `NotOwner` from another
+  /// process, and an error once the exchange is finished.
+  load -> ExchangeState =>
+    me := Erlang erlang self
+    me =:= self.owner
+      ifFalse: [
+        NotOwner signal: "not_owner: an Exchange can only be used from the process that received the request (owner {self.owner printString}, caller {me printString})"
+      ]
+    (Erlang erlang get: self key) match: [
+      st :: ExchangeState -> st;
+      _ -> Error signal: "exchange_finished: this request is complete"
+    ]
+
+  store: st :: ExchangeState -> ExchangeState =>
+    Erlang erlang put: self key with: st
+    st
+
+  // === The request ===
+  method -> String => self load request method
+
+  target -> String => self load request target
+
+  header: name :: String -> String | Nil => self load request header: name
+
+  /// #unset | #sent | #chunked | #chunkedDone, as Plug.Conn's state.
+  state -> Symbol => self load respState
+
+  bytesRead -> Integer => self load bytesRead
+
+  /// The connection's socket (spike 3 inspects its mode).
+  socket -> Socket | Nil => self load socket
+
+  // === The request body ===
+
+  /// The rest of the content-length body: the buffered bytes, then a
+  /// blocking `recv` for the remainder (passive socket).
+  readBody -> Result(Binary, Object) =>
+    st := self load
+    n := st bodyUnread
+    n =:= 0 ifTrue: [^Result ok: ""]
+    buf := st buffer
+    body := ""
+    rest := ""
+    buf byteSize >= n
+      ifTrue: [
+        body := buf part: 0 size: n
+        rest := buf part: n size: buf byteSize - n
+      ]
+      ifFalse: [
+        sock := st socket
+        sock isNil ifTrue: [^Result error: #closed]
+        more := sock recv: n - buf byteSize timeout: 15000
+        more isError ifTrue: [^more]
+        body := buf concat: more value
+      ]
+    self store: (((st withBuffer: rest) withBodyUnread: 0) withBytesRead: st bytesRead + body byteSize)
+    Result ok: body
+
+  // === The response ===
+  sendResp: status :: Integer headers: hs :: List(Tuple) body: body :: Binary -> SpikeExchange =>
+    st := self load
+    st respState =:= #unset ifFalse: [
+      Error signal: "already_sent: a response was already sent for this request"
+    ]
+    nl := SpikeParser crlf
+    head := self
+      head: status
+      headers: hs
+      extra: "content-length: {body byteSize}{nl}"
+    self send: (head concat: body) on: st
+    self store: ((st withRespState: #sent) withStatus: status)
+    self
+
+  sendChunked: status :: Integer headers: hs :: List(Tuple) -> SpikeExchange =>
+    st := self load
+    st respState =:= #unset ifFalse: [
+      Error signal: "already_sent: a response was already sent for this request"
+    ]
+    nl := SpikeParser crlf
+    self
+      send: (self
+        head: status
+        headers: hs
+        extra: "transfer-encoding: chunked{nl}")
+      on: st
+    self store: ((st withRespState: #chunked) withStatus: status)
+    self
+
+  /// One chunk; an empty one ends the response (Bandit's rule).
+  chunk: data :: Binary -> Result(Nil, Object) =>
+    st := self load
+    st respState =:= #chunked ifFalse: [^Result error: #not_chunked]
+    nl := SpikeParser crlf
+    data byteSize =:= 0
+      ifTrue: [
+        self send: "0{nl}{nl}" on: st
+        self store: (st withRespState: #chunkedDone)
+        ^Result ok: nil
+      ]
+    // `integer_to_binary/2` is rejected by the FFI arity check (BT-4101).
+    hex := Erlang erlang list_to_binary: (Erlang erlang integer_to_list: data byteSize with: 16)
+    self send: (("{hex}{nl}" concat: data) concat: nl) on: st
+    Result ok: nil
+
+  head: status :: Integer headers: hs :: List(Tuple) extra: extra :: String -> Binary =>
+    nl := SpikeParser crlf
+    lines := hs inject: "" into: [:acc :h | acc ++ "{h at: 1}: {h at: 2}{nl}"]
+    reason := status =:= 200 ifTrue: [
+      "OK"
+    ] ifFalse: [
+      status =:= 500 ifTrue: ["Internal Server Error"] ifFalse: ["Status"]
+    ]
+    "HTTP/1.1 {status} {reason}{nl}{lines}{extra}{nl}"
+
+  /// Raises on a socket error, as Bandit raises `TransportError`.
+  send: data :: Binary on: st :: ExchangeState -> SpikeExchange =>
+    sock := st socket
+    sock isNil ifFalse: [(sock send: data) unwrap]
+    self
+
+  // === Engine side, after the handler returns ===
+
+  /// `commit_response!`: a 500 if nothing was sent, the closing chunk if
+  /// a chunked response was not ended.
+  commit -> SpikeExchange =>
+    st := self load
+    st respState match: [
+      #unset -> self
+        sendResp: 500
+        headers: #()
+        body: "";
+      #chunked -> self chunk: "";
+      _ -> nil
+    ]
+    self
+
+  /// `ensure_completed` then forget the state: discard an unread body
+  /// (from the buffer, then the socket) and answer the final state, whose
+  /// `buffer` holds the bytes after this request (a pipelined one). The
+  /// process-dictionary entry is erased.
+  finish -> ExchangeState =>
+    st := self load
+    n := st bodyUnread
+    buf := st buffer
+    final := st
+    n > 0
+      ifTrue: [
+        buf byteSize >= n
+          ifTrue: [
+            final := (st withBuffer: (buf part: n size: buf byteSize - n)) withBodyUnread: 0
+          ]
+          ifFalse: [
+            sock := st socket
+            sock isNil ifFalse: [
+              (sock recv: n - buf byteSize timeout: 15000) unwrap
+            ]
+            final := (st withBuffer: "") withBodyUnread: 0
+          ]
+      ]
+    Erlang erlang erase: self key
+    final

@@ -8,3 +8,9 @@ description = "Pure-Beamtalk HTTP server built on Catalina, a port of Bandit"
 
 [dependencies]
 catalina = { git = "https://github.com/jamesc/beamtalk-catalina", branch = "main" }
+
+# Every class is `typed`; a type warning fails the build (as Catalina's AGENTS.md).
+[diagnostics]
+type = "error"
+type-annotation = "error"
+dnu = "error"

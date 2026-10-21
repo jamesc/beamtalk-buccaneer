@@ -1,0 +1,11 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 6's cost row: a stream process that ends normally when cast
+/// `finish` (after its connection has monitored or linked it).
+/// Spike-only.
+typed Actor subclass: BenchStream
+
+  finish -> Nil =>
+    self stopWith: #normal
+    nil

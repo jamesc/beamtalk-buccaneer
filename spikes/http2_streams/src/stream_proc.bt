@@ -1,0 +1,29 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 6: an HTTP/2 stream process, started unlinked by
+/// `MonitoringConn`. It does nothing until the connection has monitored
+/// it and cast `run`: a stream that ended before the monitor was in place
+/// would only ever be seen as `noproc` (there is no atomic
+/// spawn-and-monitor for an actor). `run` does what `behaviour` says:
+/// `#exit` ends normally, `#crash` raises (a handler error), `#wait` stays
+/// alive until told to call its connection. Spike-only.
+typed Actor subclass: StreamProc
+  state: conn :: MonitoringConn | Nil = nil
+  state: sid :: Integer = 0
+  state: behaviour :: Symbol = #wait
+
+  run -> Nil =>
+    self.behaviour match: [
+      #exit -> self stopWith: #normal;
+      #crash -> Error signal: "stream handler raised";
+      _ -> nil
+    ]
+    nil
+
+  /// The stream's next call to its connection: how it learns the
+  /// connection is gone. Answers `#pong` or `{#error, kind, message}`.
+  callConn -> Object =>
+    c := self.conn
+    c isNil ifTrue: [^nil]
+    [c ping] on: Exception do: [:e | {#error, e kind, e message}]

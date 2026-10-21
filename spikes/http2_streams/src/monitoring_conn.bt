@@ -1,0 +1,75 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 6: an HTTP/2 connection that starts its stream processes
+/// unlinked and monitors each, instead of Bandit's `spawn_link` plus
+/// `{:EXIT, pid, reason}` in `handle_info` (BT-4052 makes the latter
+/// impossible for a Beamtalk `Server` today). A `DOWN` arrives in
+/// `handleInfo:`: a normal one forgets the stream, any other resets it
+/// (recorded as `{sid, reason}`, where Bandit sends RST_STREAM). On the
+/// way down `terminate:` kills the streams still running; overriding it
+/// makes this server trap exits. Spike-only.
+typed Server subclass: MonitoringConn
+  // monitor ref -> stream id
+  state: refs :: Dictionary(Reference, Integer) = #{}
+  state: streams :: Dictionary(Integer, StreamProc) = #{}
+  state: resets :: List(Tuple) = #()
+  state: downs :: Integer = 0
+
+  open: sid :: Integer behaviour: behaviour :: Symbol -> StreamProc =>
+    s := StreamProc spawnWith: #{
+      #conn => self,
+      #sid => sid,
+      #behaviour => behaviour
+    }
+    self.refs := self.refs at: s monitor put: sid
+    self.streams := self.streams at: sid put: s
+    // Only now may it run: see StreamProc.
+    s run!
+    s
+
+  handleInfo: msg :: Object -> Object =>
+    msg match: [
+      {#DOWN, ref, #process, _pid, reason} -> self onDown: ref reason: reason;
+      _ -> nil
+    ]
+
+  onDown: ref :: Reference reason: reason :: Object -> Nil =>
+    self.downs := self.downs + 1
+    sid := self.refs at: ref ifAbsent: [nil]
+    sid isNil ifTrue: [^nil]
+    self.refs := self.refs removeKey: ref
+    self.streams := self.streams removeKey: sid
+    reason =:= #normal ifFalse: [self.resets := self.resets add: {sid, reason}]
+    nil
+
+  terminate: _reason :: Object -> Nil =>
+    self.streams values do: [:s | Erlang erlang exit: s pid with: #kill]
+    nil
+
+  ping -> Symbol => #pong
+
+  resets -> List(Tuple) => self.resets
+
+  streamCount -> Integer => self.streams size
+
+  downs -> Integer => self.downs
+
+  /// Raise inside a cast: crashes this server (ADR 0134), so
+  /// `terminate:` runs.
+  explode -> Nil => Error signal: "connection error"
+
+  /// Spawn `n` BenchStreams, each ending at once, and answer the
+  /// microseconds the spawning took. `mode`: `#monitor` (monitor each;
+  /// its DOWN is counted in `downs`), `#link` (`erlang:link/1`, as
+  /// Bandit), or `#none`.
+  spawn: n :: Integer mode: mode :: Symbol -> Integer =>
+    t0 := Erlang erlang monotonic_time: #microsecond
+    n
+      timesRepeat: [
+        s := BenchStream spawn
+        mode =:= #monitor ifTrue: [s monitor]
+        mode =:= #link ifTrue: [Erlang erlang link: s pid]
+        s finish!
+      ]
+    (Erlang erlang monotonic_time: #microsecond) - t0

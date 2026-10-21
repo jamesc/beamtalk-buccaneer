@@ -1,0 +1,12 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 2: runs a block in another process and answers what it raised
+/// (or nil), so a test can use an exchange from a non-owner. Spike-only.
+typed Actor subclass: SpikeRunner
+
+  run: block :: Block(Object) -> Object =>
+    [
+      block value
+      nil
+    ] on: Exception do: [:e | e]

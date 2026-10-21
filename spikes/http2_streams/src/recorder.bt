@@ -1,0 +1,21 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spikes 5 and 6: where stream processes report what their calls
+/// answered, and the connection what it did, for the tests to read.
+/// Spike-only.
+typed Actor subclass: Recorder
+  state: results :: Dictionary(Integer, Object) = #{}
+  // Arrival order of the stream ids.
+  state: order :: List(Integer) = #()
+
+  record: sid :: Integer value: value :: Object -> Nil =>
+    self.results := self.results at: sid put: value
+    self.order := self.order add: sid
+    nil
+
+  at: sid :: Integer -> Object => self.results at: sid ifAbsent: [nil]
+
+  size -> Integer => self.results size
+
+  order -> List(Integer) => self.order

@@ -1,0 +1,16 @@
+# Copyright 2026 James Casey
+# SPDX-License-Identifier: Apache-2.0
+
+# Phase 0 spikes 5 and 6 (HTTP/2 stream processes). A separate package so
+# the throwaway native module in native/ is never part of buccaneer.
+[package]
+name = "http2_streams"
+version = "0.0.0"
+description = "Buccaneer Phase 0 spikes 5 and 6 (not published)"
+
+[dependencies]
+
+[diagnostics]
+type = "error"
+type-annotation = "error"
+dnu = "error"

@@ -1,0 +1,26 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// CowboyNode — what the Erlang bench harness calls in the cowboy peer
+/// node: beamtalk-http 0.1.10's `HTTPServer` (cowboy) with a block handler
+/// answering a fixed `hello world`, the release gate's baseline.
+sealed typed Object subclass: CowboyNode
+
+  /// Start a server on `port` (0: ephemeral). Answers the server.
+  class sealed start: port :: Integer -> HTTPServer =>
+    HTTPServer
+      start: port
+      handler: [:req |
+        HTTPResponse
+          new: #{
+            #status => 200,
+            #headers => #(#("content-type", "text/plain")),
+            #body => "hello world"
+          }
+      ]
+
+  class sealed port: srv :: HTTPServer -> Integer => srv port
+
+  class sealed stop: srv :: HTTPServer -> Nil =>
+    srv stop
+    nil

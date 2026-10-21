@@ -1,0 +1,47 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 5: an HTTP/2 stream process. Once started it makes one blocking
+/// call to the connection in a `continueWith:` step (so `spawn` returns
+/// first), as `Bandit.HTTP2.StreamProcess` runs the pipeline, and records
+/// the answer, or `{#error, kind, message}`, with the `Recorder`.
+///
+/// Spawn with `#{#conn => c, #recorder => r, #sid => n, #mode => #read |
+/// #send, #data => bytes, #timeout => ms}` (`#timeout` 0: the default
+/// 5 s of a sync send). Spike-only.
+typed Actor subclass: StreamWorker
+  state: conn :: DeferredConn | Nil = nil
+  state: recorder :: Recorder | Nil = nil
+  state: sid :: Integer = 0
+  state: mode :: Symbol = #read
+  state: data :: Binary = ""
+  state: timeout :: Integer = 0
+
+  initialize -> Nil =>
+    self continueWith: #run
+    nil
+
+  run -> Nil =>
+    c := self.conn
+    r := self.recorder
+    c isNil ifTrue: [^nil]
+    r isNil ifTrue: [^nil]
+    answer := [
+      self call: c
+    ] on: Exception do: [:e | {#error, e kind, e message}]
+    r record: self.sid value: answer
+    nil
+
+  call: c :: DeferredConn -> Object =>
+    self.timeout > 0 ifTrue: [^self call: c within: self.timeout]
+    self.mode =:= #send ifTrue: [^c sendData: self.sid data: self.data]
+    c readData: self.sid
+
+  call: c :: DeferredConn within: ms :: Integer -> Object =>
+    proxy := c withTimeout: ms
+    answer := [
+      self.mode =:= #send ifTrue: [
+        proxy sendData: self.sid data: self.data
+      ] ifFalse: [proxy readData: self.sid]
+    ] ensure: [proxy stop]
+    answer

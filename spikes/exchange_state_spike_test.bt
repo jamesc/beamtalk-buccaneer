@@ -1,0 +1,220 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 2 (PLAN.md Phase 0): the owner-bound Exchange state model of
+/// `docs/engine-interface.md`. `SpikeExchange` keeps its request state in
+/// the owner's process dictionary, keyed by a `Reference`.
+///
+/// `testNoLeakAcrossTenThousandKeepaliveRequests` is the leak test the
+/// plan requires, kept as a regression test for Phase 1: one keep-alive
+/// connection serves 10,000 sequential requests rotating through a plain
+/// GET, a body read in full, a body left unread, a chunked response ended
+/// without its last chunk, and a handler that writes its own
+/// process-dictionary key. Every handler first checks it sees no trace of
+/// its predecessor, and after each request the owner's process-dictionary
+/// size and its heap after a full collection must be the same as after
+/// the first ones.
+///
+/// Bandit closes the connection after a handler raises
+/// (`Pipeline.handle_error` answers `{:error, _}` and the handler
+/// `{:close, state}`), so raising requests cannot share that connection;
+/// `testRaiseClosesAndForgetsTheExchange` covers them, a raise before and a
+/// raise mid-response, each on its own connection. Results go to
+/// `_build/spikes/exchange_state.txt`.
+typed TestCase subclass: ExchangeStateSpikeTest
+
+  requests -> Integer => 10000
+
+  micros -> Integer => Erlang erlang monotonic_time: #microsecond
+
+  /// The request for variant `i % 5`, carrying id `i`.
+  request: i :: Integer -> Binary =>
+    nl := SpikeParser crlf
+    id := "x-id: {i}{nl}"
+    (i % 5) match: [
+      1 -> SpikeClient
+        post: "/read"
+        headers: id
+        body: "0123456789abcdef";
+      2 -> SpikeClient
+        post: "/unread"
+        headers: id
+        body: "unread-body-unread-body";
+      3 -> SpikeClient get: "/chunked" headers: id;
+      4 -> SpikeClient get: "/pollute" headers: id;
+      _ -> SpikeClient get: "/plain" headers: id
+    ]
+
+  /// What every request's handler does: check for leaks, then act on the
+  /// path. The body is "ok <id>" or "LEAK <what>".
+  leakCheck: ex :: SpikeExchange -> Object =>
+    leak := ""
+    (Erlang erlang get: #user_key) =:= #undefined ifFalse: [
+      leak := leak ++ " user_key"
+    ]
+    keys :: List(Object) := Erlang erlang get_keys
+    count := (keys
+      select: [:k |
+        k match: [
+          {#buccaneer_exchange, _r} -> true;
+          _ -> false
+        ]
+      ]) size
+    count =:= 1 ifFalse: [leak := leak ++ " exchanges={count}"]
+    ex state =:= #unset ifFalse: [leak := leak ++ " state"]
+    ex bytesRead =:= 0 ifFalse: [leak := leak ++ " bytesRead"]
+    id := ex header: "x-id"
+    body := leak size =:= 0 ifTrue: ["ok {id}"] ifFalse: ["LEAK{leak}"]
+    ex target match: [
+      "/read" -> ex
+        sendResp: 200
+        headers: #()
+        body: (body ++ " " concat: ex readBody unwrap);
+      "/chunked" -> [
+        ex sendChunked: 200 headers: #()
+        ex chunk: body
+      ] value;
+      "/pollute" -> [
+        Erlang erlang put: #user_key with: id
+        ex
+          sendResp: 200
+          headers: #()
+          body: body
+      ] value;
+      _ -> ex
+        sendResp: 200
+        headers: #()
+        body: body
+    ]
+
+  testNoLeakAcrossTenThousandKeepaliveRequests -> Nil =>
+    probe := SpikeProbe spawn
+    {srv, port} := SpikeServer serve: [:ex | self leakCheck: ex] probe: probe
+    sock := SpikeClient connect: port
+    buffer := ""
+    bad := #()
+    started := self micros
+    1
+      to: self requests
+      do: [:i |
+        SpikeClient send: sock data: (self request: i)
+        {status, _h, body, rest} := SpikeClient read: sock buffer: buffer
+        buffer := rest
+        expected := (i % 5) =:= 1 ifTrue: [
+          "ok {i} 0123456789abcdef"
+        ] ifFalse: ["ok {i}"]
+        (status =:= 200 and: [
+          body =:= expected
+        ]) ifFalse: [
+          bad size < 5 ifTrue: [bad := bad addFirst: {i, status, body}]
+        ]
+      ]
+    elapsed := self micros - started
+    SpikeClient close: sock
+    rows := probe rows
+    SpikeServer stop: srv
+    self assert: bad equals: #()
+    self assert: rows size equals: self requests
+    // Every row: {served, keys, {total_heap_size, words}, exchanges, keys, dataCalls}
+    sizes := (rows collect: [:r | r at: 2]) asSet
+    heaps := (rows collect: [:r | (r at: 3) at: 2]) asSet
+    exchanges := (rows collect: [:r | r at: 4]) asSet
+    self assert: exchanges asList equals: #(0)
+    self assert: sizes size equals: 1
+    // The heap after a full collection moves between a few sizes (the
+    // collector's heap-size steps, by which variant ran last), but never
+    // grows: the last 1,000 requests see no size the first 1,000 (after 10
+    // to warm up) did not.
+    early := ((rows drop: 10) take: 1000) collect: [:r | (r at: 3) at: 2]
+    late := (rows drop: rows size - 1000) collect: [:r | (r at: 3) at: 2]
+    first := rows at: 1
+    report := "exchange_state requests={self requests} us_per_request={elapsed div: self requests} pdict_sizes={sizes asList printString} heap_words_all={heaps asList printString} heap_words_early_max={(early inject: 0 into: [:a :b |
+      a max: b
+    ])} heap_words_late_max={(late inject: 0 into: [:a :b |
+      a max: b
+    ])} pdict_keys={(first at: 5) printString}"
+    File mkdirAll: "_build/spikes"
+    File writeAll: "_build/spikes/exchange_state.txt" contents: report
+    self assert: (late asSet asList allSatisfy: [:h | early includes: h])
+
+  testOwnerCheck -> Nil =>
+    req := SpikeRequest new withMethod: "GET"
+    ex := SpikeExchange
+      open: req
+      socket: nil
+      buffer: ""
+    self assert: ex method equals: "GET"
+    runner := SpikeRunner spawn
+    raised := runner run: [ex method]
+    runner stop
+    Erlang erlang erase: ex key
+    self assert: raised class equals: NotOwner
+    self
+      assert: ((raised match: [
+        e :: NotOwner -> e message;
+        _ -> ""
+      ]) startsWith: "not_owner: an Exchange can only be used from the process")
+
+  testFinishedExchangeRaises -> Nil =>
+    ex := SpikeExchange
+      open: SpikeRequest new
+      socket: nil
+      buffer: ""
+    ex finish
+    self should: [ex method] raise: #signal
+
+  testCostPerCall -> Nil =>
+    n := 100000
+    ex := SpikeExchange
+      open: (SpikeRequest new withMethod: "GET")
+      socket: nil
+      buffer: ""
+    req := SpikeRequest new withMethod: "GET"
+    // Warm up.
+    1000 timesRepeat: [ex method]
+    started := self micros
+    n timesRepeat: [ex method]
+    handle := self micros - started
+    started2 := self micros
+    n timesRepeat: [ex store: ex load]
+    roundTrip := self micros - started2
+    started3 := self micros
+    n timesRepeat: [req method]
+    plain := self micros - started3
+    Erlang erlang erase: ex key
+    report := "exchange_cost calls={n} handle_read_ns={handle * 1000 div: n} load_store_ns={roundTrip * 1000 div: n} plain_value_read_ns={plain * 1000 div: n}"
+    File mkdirAll: "_build/spikes"
+    File writeAll: "_build/spikes/exchange_cost.txt" contents: report
+    self assert: (handle * 1000 div: n) < 1000000
+
+  raiseIn: ex :: SpikeExchange -> Object =>
+    ex target =:= "/mid"
+      ifTrue: [
+        ex sendChunked: 200 headers: #()
+        ex chunk: "partial"
+      ]
+    Error signal: "boom"
+
+  testRaiseClosesAndForgetsTheExchange -> Nil =>
+    probe := SpikeProbe spawn
+    {srv, port} := SpikeServer serve: [:ex | self raiseIn: ex] probe: probe
+    // A raise before anything was sent: 500, connection: close, closed.
+    a := SpikeClient connect: port
+    SpikeClient send: a data: (SpikeClient get: "/before" headers: "")
+    {statusA, headersA, _bodyA, _restA} := SpikeClient read: a buffer: ""
+    self assert: statusA equals: 500
+    self assert: (headersA includes: {"connection", "close"})
+    self assert: (SpikeClient isClosed: a)
+    SpikeClient close: a
+    // A raise mid-response: the head and the chunk arrive, the closing
+    // chunk never does, and the connection closes.
+    b := SpikeClient connect: port
+    SpikeClient send: b data: (SpikeClient get: "/mid" headers: "")
+    {statusB, _hB, bodyB, _restB} := SpikeClient read: b buffer: ""
+    self assert: statusB equals: 0
+    self assert: (bodyB startsWith: "closed")
+    SpikeClient close: b
+    rows := probe rows
+    SpikeServer stop: srv
+    self assert: rows size equals: 2
+    self assert: (rows collect: [:r | r at: 4]) equals: #(0, 0)

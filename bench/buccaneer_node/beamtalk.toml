@@ -1,0 +1,16 @@
+# Copyright 2026 James Casey
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "buccaneer_node"
+version = "0.1.0"
+description = "Spike 1's Buccaneer side of the HTTP bench (not published)"
+
+[dependencies]
+catalina = { git = "https://github.com/jamesc/beamtalk-catalina", branch = "main" }
+
+# Typed as the library is: a type warning fails the build.
+[diagnostics]
+type = "error"
+type-annotation = "error"
+dnu = "error"

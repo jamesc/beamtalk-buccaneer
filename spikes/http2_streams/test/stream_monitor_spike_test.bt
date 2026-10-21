@@ -1,0 +1,116 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Spike 6 (PLAN.md Phase 0): HTTP/2 stream processes monitored, not
+/// linked (decided instead of waiting for BT-4052). `MonitoringConn`
+/// starts `StreamProc`s unlinked, monitors each, resets a stream whose
+/// process ends abnormally, forgets one that ends normally, and kills the
+/// rest in `terminate:`. A stream learns its connection is gone from its
+/// next call failing. What is lost against Bandit's links: a `kill` of the
+/// connection skips `terminate:`, so its streams keep running until that
+/// next call. Results go to `_build/spikes/stream_monitor.txt`.
+typed TestCase subclass: StreamMonitorSpikeTest
+
+  /// Poll until `done` answers true, for up to 3 s.
+  waitUntil: done :: Block(Boolean) -> Boolean =>
+    deadline := (Erlang erlang monotonic_time: #millisecond) + 3000
+    ok := done value
+    [ok not and: [(Erlang erlang monotonic_time: #millisecond) < deadline]]
+      whileTrue: [
+        Timer sleep: 2
+        ok := done value
+      ]
+    ok
+
+  micros -> Integer => Erlang erlang monotonic_time: #microsecond
+
+  testNormalExitIsForgottenAbnormalExitResets -> Nil =>
+    c := MonitoringConn spawn
+    waiting := c open: 1 behaviour: #wait
+    c open: 2 behaviour: #exit
+    c open: 3 behaviour: #crash
+    self assert: (self waitUntil: [c downs =:= 2])
+    self assert: c streamCount equals: 1
+    resets := c resets
+    self assert: resets size equals: 1
+    self assert: ((resets at: 1) at: 1) equals: 3
+    // The connection and its other stream are unaffected.
+    self assert: c ping equals: #pong
+    self assert: waiting isAlive
+    c stop
+    nil
+
+  testStopKillsRemainingStreams -> Nil =>
+    c := MonitoringConn spawn
+    a := c open: 1 behaviour: #wait
+    b := c open: 2 behaviour: #wait
+    c stop
+    self assert: (self waitUntil: [a isAlive not and: [b isAlive not]])
+    nil
+
+  testCrashRunsTerminateAndKillsStreams -> Nil =>
+    c := MonitoringConn spawn
+    a := c open: 1 behaviour: #wait
+    c explode!
+    self assert: (self waitUntil: [c isAlive not])
+    self assert: (self waitUntil: [a isAlive not])
+    nil
+
+  /// What links would have done and monitors cannot: `kill` skips
+  /// `terminate:`, so the stream survives until it next calls.
+  testKilledConnectionLeavesStreamsUntilTheirNextCall -> Nil =>
+    c := MonitoringConn spawn
+    s := c open: 1 behaviour: #wait
+    c kill
+    self deny: c isAlive
+    Timer sleep: 50
+    self assert: s isAlive
+    answer := s callConn
+    File mkdirAll: "_build/spikes"
+    File writeAll: "_build/spikes/stream_monitor_dead_conn.txt" contents: "stream_monitor dead connection: the stream's next call answers {answer printString}"
+    self
+      assert: (answer match: [
+        {#error, kind, _m} -> kind =:= #actor_dead;
+        _ -> false
+      ])
+    s stop
+    nil
+
+  /// Microseconds per stream for `n` streams in `mode`, the best of three
+  /// interleaved rounds (the machine is shared).
+  testCost -> Nil =>
+    n := 5000
+    c := MonitoringConn spawn
+    // Warm up.
+    c spawn: 100 mode: #monitor
+    best := #{#none => 0, #link => 0, #monitor => 0}
+    drain := 0
+    3
+      timesRepeat: [
+        #(#none, #link, #monitor)
+          do: [:mode |
+            before := c downs
+            took := c spawn: n mode: mode
+            // A sync call queues behind the DOWNs already in the mailbox, so
+            // this measures handling them.
+            t0 := self micros
+            c downs
+            handled := self micros - t0
+            self assert: (self waitUntil: [c downs >= before])
+            old := best at: mode
+            (old =:= 0 or: [
+              took < old
+            ]) ifTrue: [best := best at: mode put: took]
+            (mode =:= #monitor and: [
+              drain =:= 0 or: [handled < drain]
+            ]) ifTrue: [drain := handled]
+          ]
+      ]
+    self assert: (self waitUntil: [c downs =:= (3 * n + 100)])
+    self assert: c ping equals: #pong
+    c stop
+    report := "stream_monitor streams={n} spawn_cast_us={(best at: #none) / n} spawn_link_cast_us={(best at: #link) / n} spawn_monitor_cast_us={(best at: #monitor) / n} queued_down_handling_us={drain / n}"
+    File mkdirAll: "_build/spikes"
+    File writeAll: "_build/spikes/stream_monitor.txt" contents: report
+    self assert: (best at: #monitor) > 0
+    nil

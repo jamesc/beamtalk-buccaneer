@@ -1,8 +1,9 @@
-# ADR (draft): Buccaneer's engine interface and the beamtalk-http adapter
+# ADR: Buccaneer's engine interface and the beamtalk-http adapter
 
-- **Status:** Proposed (draft for review; nothing implemented)
+- **Status:** Accepted with decisions, 2026-10-21 (nothing implemented yet;
+  two beamtalk-http details remain open, see PLAN § Remaining open questions)
 - **Date:** 2026-10-21
-- **Context:** [PLAN.md](../PLAN.md) § Decision, § Phases 1-4 and 8
+- **Context:** [PLAN.md](../PLAN.md) § Decision, § Decisions, § Phases 1-4, 6 and 8
 
 ## Context
 
@@ -117,7 +118,7 @@ sealed typed Value subclass: Exchange
   /// Ask to switch protocol once the handler returns; the pipeline then
   /// validates the request, sends 101 and hands the connection over.
   /// error: #not_supported when disabled or not HTTP/1.1.
-  upgradeToWebSocket: handler :: WebSocketHandler options: opts :: Dictionary(Symbol, Object) -> Result(Nil, Object)
+  upgradeToWebSocket: handler :: WebSock options: opts :: Dictionary(Symbol, Object) -> Result(Nil, Object)
   /// #unset | #sent | #chunked | #upgraded, as Plug.Conn's state.
   state -> #unset | #sent | #chunked | #upgraded
 ```
@@ -187,17 +188,19 @@ is still sending.
   status is in `logExceptionsWithStatusCodes` (default 500-599). It is
   re-signalled, not re-raised unchanged, until BT-4057.
 
-### 5. Upgrade and WebSocket
+### 5. Upgrade and the engine-level `WebSock` protocol
 
 `upgradeToWebSocket:options:` records the request; the switch happens after
 the handler returns (Plug's model). The WebSocket handler then runs in the
-connection's process, like a Catalina handler:
+connection's process, like a Catalina handler. Buccaneer's protocol for it
+is named `WebSock`, after the Elixir behaviour it ports, so it does not
+collide with beamtalk-http's user-facing `WebSocketHandler` (below):
 
 ```beamtalk
 // Required: handleIn: and handleInfo:. The others are optional, detected
 // with respondsTo: (as Catalina's optional `handshake:timeout:`), so they
 // are documented here rather than required by the protocol.
-Protocol define: WebSocketHandler
+Protocol define: WebSock
   /// A data frame: message is {#text, String} or {#binary, Binary}.
   handleIn: message :: Tuple -> WebSocketResult
   /// Any other message to the connection process.
@@ -214,7 +217,7 @@ The implementor is a Value that **is** its state: each callback answers a
 `{:push, frames, state}`, `{:reply, ...}`, `{:stop, reason, state}`):
 
 ```beamtalk
-typed Value subclass: EchoSocket
+typed Value subclass: EchoSock
   field: count :: Integer = 0
 
   handleIn: message :: Tuple -> WebSocketResult =>
@@ -224,15 +227,20 @@ typed Value subclass: EchoSocket
 ```
 
 Pushing from elsewhere is a message to the connection process, which
-arrives in `handleInfo:`; the handler gets its pid from `init`
-(`Erlang erlang self`).
+arrives in `handleInfo:`.
 
 ### 6. HTTP/2
 
-The same `Exchange`, with the stream process as owner. Its body reads and
-its sends wait on the connection process; how they wait is open until Phase
-0 spike 5 (Beamtalk has no `receive` and no deferred reply for a pure
-`Server`). The interface does not change with the answer.
+The same `Exchange`, with the stream process as owner. The stream process
+never waits on its own mailbox (Beamtalk has no `receive`). Its body reads,
+its flow-controlled sends and its window waits are sync calls to the
+connection process, which parks each call with the stdlib deferred reply
+(**BT-4090**, decided) and answers it when the frame or window arrives,
+out of order, expiring parked sends after 15 s as Bandit does. The
+connection **monitors** its stream processes rather than linking them
+(decided; BT-4052 is related, not required): an abnormal `DOWN` resets the
+stream, and the connection's `terminate:` kills the remaining streams. The
+interface above does not change for HTTP/2.
 
 ## The beamtalk-http adapter
 
@@ -245,13 +253,15 @@ that is the `ExchangeHandler` Buccaneer calls. `HTTPServer` becomes a plain
 | `HTTPRequest method` | `ex method` |
 | `HTTPRequest path` | `ex path` (no query, as cowboy's `path`) |
 | `HTTPRequest headers` | `ex headers` as `#(name, value)` pairs; duplicates stay separate (cowboy joined them) |
-| `HTTPRequest body` | `ex readAll: maxBodyLength` (default 8 MB) → 413 when larger |
+| `HTTPRequest body` | Phase 2: `ex readAll: maxBodyLength` before the handler runs (default 8 MB, 413 when larger), as cowboy. Phase 3: read on first use by a block handler; still read in full before an `HTTPHandler` actor is called |
 | `HTTPRequest queryParams` | `ex query` through `uri_string:dissect_query`; a key without a value is `"true"`, as today |
 | `HTTPRequest params` | the router, unchanged |
 | block handler | called in the connection process, as cowboy calls it today |
-| `HTTPHandler` actor | `handler handle: request` (an actor send; the actor never sees the Exchange) |
+| `HTTPHandler` actor | `handler handle: request` (an actor send; the actor never touches the Exchange) |
 | `HTTPRouter` | matched with the router module, then as a block; 404 and 405 as today |
 | `HTTPResponse status/headers/body` | `ex sendResp: status headers: pairs-as-tuples body: body`; Buccaneer adds `date` and `content-length` |
+| `HTTPResponse file:...` | `ex sendFile:...` (Phase 3) |
+| `HTTPResponse upgradeWebSocket:` | `ex upgradeToWebSocket:options:` with an adapter `WebSock` (Phase 4) |
 | a raise, or an answer that is not an `HTTPResponse` | 500 `text/plain` "Internal Server Error", logged, as today |
 | `#bind` option | Catalina `#transportOptions => #({#ip, address})` |
 | `srv port` | `srv listenerInfo` port |
@@ -260,45 +270,89 @@ Every existing test keeps passing because the observable behaviour of
 these rows is cowboy's, except where the table says otherwise; those
 differences go in beamtalk-http's README.
 
-## Additions beamtalk-http's API needs
+## beamtalk-http API additions (decided)
 
-Small proposals, each its own PR in beamtalk-http after the backend switch
-(PLAN Phases 3-4). All are additive: existing handlers keep working.
+All in scope, each minimal and tied to its phase. They are **explicit
+operations on owner-bound handles**, not the stdlib `Stream`: a `Stream` is
+lazy and closure-based, evaluated in whichever process forces it, has no
+close or error protocol, and is pull-only, which is wrong for socket-owned
+bodies when handlers can be actors in another process. A `Stream` adapter
+over these operations is out of scope (a possible later convenience).
 
-**P1. Streaming request bodies.** A route or server option
-`#body => #stream` (default `#eager`) leaves the body unread, and
-`HTTPRequest` gains `bodyReader -> BodyReader` (a Value over the exchange):
-`read -> Result(String | Nil, Object)` (nil at the end) and
-`inject: acc into: [:acc :chunk | ...]`. `HTTPRequest body` raises in
-`#stream` mode. `#maxBodyLength` bounds `#eager` mode.
+**Owner-bound.** `HTTPRequest` carries its exchange (a new field, nil in
+unit tests that build requests by hand). Every operation below that touches
+the connection works only from the connection process; from any other
+process it raises an error saying so (`#not_owner`: "request handles can
+only be used from the connection process that received the request").
+An `HTTPHandler` actor runs in its own process, so it gets the whole body
+already read and answers an ordinary `HTTPResponse`.
 
-**P2. Streaming responses.** `HTTPResponse` gains `stream :: Stream(String)
-| Nil`: `HTTPResponse status: 200 headers: h stream: (File lines: path)
-unwrap`. The adapter sends chunked (or length-delimited when the headers
-set `content-length`) and writes each element with `chunk:`. A `Stream` is
-lazy, so the body is produced while it is sent. Open: a long-lived stream
-(server-sent events) fed by another actor needs a generator the stdlib does
-not expose yet (`Stream` has no public unfold); P2 ships without it.
+**A1. Request bodies (Phase 3).**
 
-**P3. sendfile.** `HTTPResponse status: 200 headers: h file: path` (and
-`file:offset:length:`). The adapter calls `sendFile:`; over TLS Catalina
-falls back to a read-and-send loop.
+```beamtalk
+// Next part of the body; an empty Binary means the end of the body.
+req readChunk -> Result(Binary, Error)
+// The rest of the body (Plug read_body semantics); bounded by #maxBodyLength.
+req body -> String
+```
 
-**P4. WebSocket upgrade.** A router entry `r webSocket: "/ws" handler:
-[:req | EchoSocket new]` and a response form `HTTPResponse webSocket:
-aHandler options: opts` for block handlers. The `WebSocketHandler` protocol
-and `WebSocketResult` live in buccaneer; whether beamtalk-http re-exports
-them depends on spike 7 (transitive package visibility).
+```beamtalk
+total := 0
+done := false
+[done] whileFalse: [
+  chunk := (req readChunk) unwrap
+  chunk size =:= 0 ifTrue: [done := true] ifFalse: [total := total + chunk size]]
+```
 
-**P5. Informational responses.** `req inform: 103 headers: #(#("link",
-"</app.css>; rel=preload"))`, answering `Result`. This needs `HTTPRequest`
-to carry its exchange (a new field, nil in unit tests that build requests
-by hand). `Expect: 100-continue` is handled by the engine on the first body
-read; in `#eager` mode that is before the handler runs, as cowboy does.
+**A2. Chunked responses (Phase 3).** Push, like Plug's
+`send_chunked`/`chunk`:
 
-**P6. Request metadata.** `HTTPRequest` gains `scheme`, `host`, `port`,
-`queryString`, `httpVersion` and `peer`, all read from the exchange. Small,
-but every real app asks for one of them.
+```beamtalk
+resp startChunked: 200 headers: #(#("content-type", "text/plain"))   // -> Result
+resp sendChunk: "part 1"                                              // -> Result
+resp sendChunk: "part 2"
+resp finish                                                           // the closing chunk
+```
+
+`resp` is an owner-bound responder handle. How a handler obtains it and
+what it answers afterwards is still open (PLAN § Phase 3): the proposal is
+a two-argument block handler `[:req :resp | ...]` that answers `resp` once
+finished.
+
+**A3. sendfile (Phase 3).** Values, so they also work from an actor:
+
+```beamtalk
+HTTPResponse file: "/srv/static/app.js"
+HTTPResponse file: "/srv/video.mp4" offset: 0 length: 1048576
+```
+
+with `status`/`headers` set as on any `HTTPResponse`. The adapter calls
+`sendFile:`; over TLS Catalina falls back to a read-and-send loop.
+
+**A4. 100-continue (Phase 3).** Automatic: the engine sends `100 Continue`
+when the handler first reads the body (`readChunk` or `body`), and not at all
+if it answers without reading. The optional extra, also Phase 3:
+`req inform: 103 headers: #(#("link", "</app.css>; rel=preload")) ->
+Result` (`#not_supported` on HTTP/1.0).
+
+**A5. WebSocket (Phase 4).** `HTTPResponse upgradeWebSocket: handlerClass`
+answered by any handler, and a `WebSocketHandler` protocol living in
+beamtalk-http:
+
+```beamtalk
+Protocol define: WebSocketHandler
+  onText: text :: String -> Object
+  onBinary: data :: Binary -> Object
+  onClose: reason :: Object -> Object
+```
+
+The adapter implements Buccaneer's `WebSock` over it. Still open (PLAN
+§ Phase 4): what `handlerClass` is instantiated as (an Actor per connection,
+proposed, or a Value in the connection process) and how a handler sends
+frames back.
+
+Not in scope: request metadata accessors (`scheme`, `host`, `peer`, ...),
+proposed in the first draft; they can follow when an app needs them.
 
 ## Alternatives considered
 
@@ -306,14 +360,21 @@ but every real app asks for one of them.
 next value (`ex := ex sendChunked: 200 headers: h`), the handler answers the
 final one, and the engine needs no process-local state. Faithful to Bandit,
 easy to test in isolation. Rejected for the public interface because
-beamtalk-http's handlers answer an `HTTPResponse`, so P1-P5 would each need
+beamtalk-http's handlers answer an `HTTPResponse`, so A1-A4 would each need
 the handler to hand the exchange back as well, and because a stale value
 used by mistake (sending on an old exchange) silently corrupts the response
 framing. It is still how the engine's internals work.
 
+**Bodies as stdlib `Stream`s** (the first draft's P1/P2). Rejected: see
+§ beamtalk-http API additions.
+
 **An Actor per request** that owns the state. Rejected: the socket's owner
 must do the sends (`controlling_process`, `sendfile`), and a process per
 request costs what Bandit avoids on HTTP/1.
+
+**Waiting in HTTP/2 stream processes through a native helper or a mailbox
+facade.** Rejected for a stdlib deferred reply (BT-4090), which is standard
+OTP and keeps Buccaneer pure Beamtalk.
 
 **Keeping cowboy behind beamtalk-http** and porting nothing. Rejected by
 the agreed architecture: beamtalk-http should end up pure Beamtalk.
@@ -323,12 +384,15 @@ the agreed architecture: beamtalk-http should end up pure Beamtalk.
 - beamtalk-http's handlers keep their shape; streaming and WebSocket are
   opt-in additions.
 - The engine's correctness depends on the exchange state being created,
-  replaced and cleared exactly per request. Phase 0 spike 2 proves it, and
-  the keepalive tests (16 in `http1/protocol_test.exs`) and the leak stress
-  test guard it.
+  replaced and cleared exactly per request. Phase 0 spike 2 must prove no
+  state leaks across keep-alive requests; its test stays as a regression
+  test, and the keepalive tests (16 in `http1/protocol_test.exs`) and the
+  leak stress test guard it.
 - Bandit's plug tests that assert on the returned conn are adapted to
   assert on the response and on `ex state`; recorded as deviations per
   phase.
-- An Actor cannot be an `ExchangeHandler`. beamtalk-http keeps its actor
-  style by doing the exchange work in the connection process and sending
-  only the `HTTPRequest` to the actor.
+- An Actor cannot be an `ExchangeHandler`, and cannot use request or
+  response handles. beamtalk-http keeps its actor style by doing the
+  exchange work in the connection process and sending only the
+  `HTTPRequest` (with its body read) to the actor.
+- HTTP/2 waits on BT-4090.

@@ -7,8 +7,10 @@ Thousand Island. Its first consumer is
 [beamtalk-http](https://github.com/jamesc/beamtalk-http), whose `HTTPServer`
 runs on cowboy today; Buccaneer replaces cowboy there.
 
-**Status: draft for review.** Nothing here is implemented. Every phase issue
-is `needs-spec` until this plan is approved.
+**Status: approved with decisions (2026-10-21; see § Decisions).** Nothing
+here is implemented yet. Phases whose spec is complete are `agent-ready` in
+Linear; Phases 3 and 4 stay `needs-spec` until the questions in § Remaining
+open questions are answered.
 
 ## Goals
 
@@ -20,7 +22,7 @@ is `needs-spec` until this plan is approved.
 - A small, low-level **engine interface** (the role of Bandit's
   `Plug.Conn.Adapter` callbacks) that beamtalk-http adapts onto
   `HTTPRequest`/`HTTPResponse`, and that is also usable on its own.
-  [`docs/engine-interface.md`](docs/engine-interface.md) is the draft ADR.
+  [`docs/engine-interface.md`](docs/engine-interface.md) is the ADR.
 - beamtalk-http's existing server and router tests pass **unchanged** on
   Buccaneer before cowboy is removed.
 - Pure Beamtalk, as Catalina is: no `native/*.erl`. OTP is reached through
@@ -40,6 +42,9 @@ is `needs-spec` until this plan is approved.
   debugging aid, revisit after 1.0), HTTP/2 server push (Bandit answers
   `{:error, :not_supported}` too), h2c upgrade (Bandit does not support it
   either), HTTP/3.
+- A `Stream`-based body API in beamtalk-http. Bodies are explicit
+  operations on owner-bound handles (§ Decisions 5); a `Stream` adapter over
+  them is a possible later convenience.
 - The HTTP client. A Mint-style client replacing gun is a separate, later
   epic ("Pure-Beamtalk HTTP client (Mint port) under beamtalk-http"). It
   shares the HPACK package designed here.
@@ -61,8 +66,9 @@ app ──► beamtalk-http   HTTPServer, HTTPRouter, Plug, PlugChain, HTTPReque
   and never names `HTTPRequest`, `HTTPResponse` or `HTTPRouter`.
 - Buccaneer depends on catalina only through catalina's README § Public API
   (pinned by catalina's `SurfaceTest`). Anything else is internal.
-- HPACK is its own package (`beamtalk-hpack`, Phase 5) so the future HTTP
-  client can depend on it without depending on a server.
+- HPACK is its own repository and package (`jamesc/beamtalk-hpack`,
+  Phase 5) so the future HTTP client can depend on it without depending on
+  a server.
 - Until Phase 8, beamtalk-http carries both backends and can switch between
   them, so the switch is reversible.
 
@@ -87,7 +93,11 @@ never see the final adapter. So:
   `http2/stream.ex` stays line-for-line.
 - Calls are imperative: `ex sendResp: 200 headers: h body: "ok"`. The ADR
   lists the full interface, the error rules and the alternative (a threaded
-  Value) with its trade-offs. Phase 0 spike 2 proves the state model.
+  Value) with its trade-offs. Phase 0 spike 2 proves the state model,
+  including that nothing leaks from one keep-alive request to the next.
+- beamtalk-http builds its own owner-bound handles (`req readChunk`,
+  `resp sendChunk:`) on the Exchange. Using any handle from another process
+  raises a clear error.
 
 ## Module map
 
@@ -107,7 +117,7 @@ subdirectories as Catalina's `src/transports/`. Line counts are Bandit's.
 | `http1/handler.ex` | 108 | `src/http1/http1_handler.bt` (keepalive, `maxRequests`, GC every n requests, process-dictionary clearing) | 1 |
 | `http1/socket.ex` | 627 | `src/http1/http1_socket.bt` (Value implementing `HTTPTransport`; request line and headers via `erlang:decode_packet` FFI; content-length and chunked bodies; response framing) | 1, 3 |
 | `headers.ex` | 214 | `src/headers.bt` (header lookup, host/port parsing, content-length rules, `Connection` tokens) | 1 |
-| `compression.ex` | 208 | `src/compression.bt` (`Accept-Encoding` negotiation; `zlib` FFI for gzip/deflate; OTP 28 `zstd`) | 1 |
+| `compression.ex` | 208 | `src/compression.bt` (`Accept-Encoding` negotiation; `zlib` FFI for gzip/deflate; OTP 28 `zstd`) | 9 |
 | `socket_helpers.ex` | 74 | `src/socket_helpers.bt` (peer, sock and SSL data; iodata helpers) | 1 |
 | `telemetry.ex` | 250 | `src/buccaneer_telemetry.bt` (`[buccaneer, request\|websocket, ...]` spans over the stdlib `Telemetry` facade, parented to Catalina's connection span) | 1 |
 | `logger.ex` | 64 | `src/buccaneer_logger.bt` (`logProtocolErrors` `#short`/`#verbose`/`false`, `logClientClosures`) | 1 |
@@ -121,12 +131,13 @@ subdirectories as Catalina's `src/transports/`. Line counts are Bandit's.
 | `websocket/socket.ex` | 75 | `src/websocket/websocket_socket.bt` | 4 |
 | `websocket/frame.ex` + `frame/*.ex` (6) | 382 | `src/websocket/frame.bt` + one Value per frame type | 4 |
 | `websocket/permessage_deflate.ex` | 187 | `src/websocket/permessage_deflate.bt` | 4 |
-| (WebSock behaviour, `websock` 128) | — | `src/websocket/websocket_handler.bt` (Protocol), `websocket_result.bt`, `websocket_message.bt` | 4 |
+| (WebSock behaviour, `websock` 128) | — | `src/websocket/websock.bt` (the engine-level Protocol), `websocket_result.bt` | 4 |
+| (beamtalk-http side) | — | beamtalk-http: `WebSocketHandler` protocol (`onText:`, `onBinary:`, `onClose:`) and the adapter implementing `WebSock` over it | 4 |
 | (`hpax` 1.0.4, separate package) | 913 | **`beamtalk-hpack`**: `HPACK`, `HPACKTable`, `HPACKHuffman`, `HPACKTypes` | 5 |
 | `http2/handler.ex` | 207 | `src/http2/http2_protocol.bt` | 6 |
 | `http2/connection.ex` | 596 | `src/http2/http2_connection.bt` (process-free connection state, as in Bandit) | 6 |
 | `http2/stream.ex` | 647 | `src/http2/http2_stream.bt` (Value implementing `HTTPTransport`) | 6 |
-| `http2/stream_process.ex` | 31 | `src/http2/stream_process.bt` (`Server`; runs the pipeline in a `continueWith:` step) | 6 |
+| `http2/stream_process.ex` | 31 | `src/http2/stream_process.bt` (`Server`; runs the pipeline in a `continueWith:` step; monitored by the connection, not linked) | 6 |
 | `http2/stream_collection.ex`, `flow_control.ex`, `settings.ex`, `errors.ex` | 203 | `src/http2/` one class each | 6 |
 | `http2/frame.ex` + `frame/*.ex` (11) | 760 | `src/http2/frame.bt` + one Value per frame type | 6 |
 | `phoenix_adapter.ex` | 116 | not ported | — |
@@ -143,7 +154,7 @@ Bandit's tests are not in the hex package. Counted from the `1.12.5` tag
 
 | File | Tests | Lines | Phase |
 |---|---|---|---|
-| `http1/protocol_test.exs` | 174 | 2,851 | 1 (153), 3 (15), 4 (6) |
+| `http1/protocol_test.exs` | 174 | 2,851 | 1 (118), 3 (15), 4 (6), 9 (35) |
 | `http1/plug_test.exs` | 39 | 637 | 1 (29), 3 (9 `send_file`), 4 (1 upgrade) |
 | `http1/telemetry_test.exs` | 13 | 363 | 1 |
 | `http1/logging_test.exs` | 9 | 203 | 1 |
@@ -158,12 +169,12 @@ Bandit's tests are not in the hex package. Counted from the `1.12.5` tag
 | `websocket/protocol_test.exs` | 43 | 908 | 4 |
 | `websocket/sock_test.exs` | 86 | 1,555 | 4 |
 | `websocket/upgrade_test.exs`, `upgrade_validation_test.exs` | 10 | 226 | 4 |
-| `websocket/autobahn_test.exs` | 1 | 102 | 7 (conformance) |
+| `websocket/autobahn_test.exs` | 1 | 102 | 4 (CI job) |
 | `http2/frame_deserialization_test.exs` | 54 | 475 | 6 |
 | `http2/frame_serialization_test.exs` | 19 | 231 | 6 |
 | `http2/protocol_test.exs` | 178 | 3,944 | 6 |
 | `http2/plug_test.exs` | 60 | 1,148 | 6 |
-| `http2/h2spec_test.exs` | 1 | 31 | 7 (conformance) |
+| `http2/h2spec_test.exs` | 1 | 31 | 6 (CI job) |
 | hpax `test/` | 37 (7 properties) | — | 5 |
 
 The suites drive Bandit with raw-socket clients (`test/support/simple_*_client.ex`)
@@ -179,6 +190,19 @@ Each phase ends green on `just ci` and with one PR. Tests mirror Bandit's
 done, records the tests ported and every deviation, as Catalina's PLAN.md
 does. Sizes: S ≈ a day, M ≈ 2-4 days, L ≈ a week, XL ≈ more than a week.
 
+| Phase | Size | Blocked by | Linear state |
+|---|---|---|---|
+| 0 Spikes | M | — | agent-ready |
+| 1 HTTP/1.1 engine | L | 0 | agent-ready |
+| 2 beamtalk-http adapter and backend switch | M | 1 | agent-ready |
+| 3 Streaming | M | 1, 2 | needs-spec (two questions below) |
+| 4 WebSocket | L | 1, 2 | needs-spec (one question below) |
+| 5 HPACK (`jamesc/beamtalk-hpack`) | M | 0 | agent-ready |
+| 6 HTTP/2 | XL | 0, 1, 5, BT-4090 | agent-ready (blocked) |
+| 7 Release gate | L | 1-4, 6 | agent-ready (blocked) |
+| 8 Remove cowboy | M | 2, 3, 7 | agent-ready (blocked) |
+| 9 Response compression (later) | M | 1 | agent-ready |
+
 ### Phase 0: Spikes (M)
 
 Prove the riskiest assumptions before the module map is trusted. Each spike
@@ -187,14 +211,20 @@ Catalina's.
 
 1. **HTTP/1 parsing cost.** A Catalina `Handler` that parses a request with
    `erlang:decode_packet(http_bin | httph_bin, ...)` through FFI and answers
-   a fixed response. Measure requests/s and p99 against Bandit's
-   hello-world on the same machine, with today's `edge` (BT-4065, BT-4069,
-   BT-4071 status recorded). This sets the expectation for the release gate.
+   a fixed response. Measure requests/s and p99 against
+   beamtalk-http-on-cowboy (the gate's baseline) and Bandit (context) on the
+   same machine, with today's `edge` (BT-4065, BT-4069, BT-4071 status
+   recorded).
 2. **The Exchange state model.** Owner-process state keyed by a
-   `Reference`: owner check, cost per call, behaviour when the handler
-   raises mid-response, and clearing between keepalive requests without
-   dropping Catalina's telemetry marker or Buccaneer's own keys
-   (Bandit's `clear_process_dict`).
+   `Reference`: owner check (a call from another process raises
+   `#not_owner` with a clear message), cost per call, a raise mid-response.
+   **It must prove there is no state leak across keep-alive requests**: on a
+   connection serving 10,000 sequential requests (including ones whose
+   handler raised, left a body unread, or ended a chunked response early),
+   no request sees its predecessor's state, and the owner process's
+   dictionary size and heap return to the same value after each request.
+   Clearing must not drop Catalina's telemetry marker or Buccaneer's own
+   keys (Bandit's `clear_process_dict`).
 3. **Blocking request work inside `handleData:`.** The handler runs the
    whole request (including a blocking `Socket recv:timeout:` for the body
    and a user block that calls an actor) inside `handleData:`; the socket is
@@ -205,32 +235,26 @@ Catalina's.
    WebSocket header with a variable-size payload segment bound by an earlier
    segment, and HPACK's prefixed integers. Measure against Elixir. Frame
    construction (there is no binary construction syntax) through iodata and
-   `binary:encode_unsigned` FFI. Outcome: which codecs need a Beamtalk issue.
-5. **Waiting inside an HTTP/2 stream process.** Bandit's stream process runs
-   the plug in one `handle_continue` and blocks on selective `receive ...
-   after` for body data, window updates and resets (`http2/stream.ex`
-   lines 300-480, 560-620), and the connection answers a stream's
-   `send_data` call later with `GenServer.reply/2` (flow-control
-   backpressure). Beamtalk has neither a `receive` nor a deferred reply for
-   a pure-Beamtalk `Server` (only native-backed actors can, ADR 0056).
-   Try the candidates: (a) a stdlib deferred reply on `Server` (the
-   connection parks the caller and replies when a frame arrives); (b) a
-   stdlib mailbox-wait facade; (c) restructuring so the stream process only
-   ever makes sync calls the connection can answer at once (polling; likely
-   rejected). File the chosen stdlib gap with a repro.
-6. **Stream exits without BT-4052.** Can the connection **monitor** its
-   stream processes (a `DOWN` reaches `handleInfo:`) and kill them in
-   `terminate:`, instead of linking? Record what is lost against Bandit's
-   links (a `kill` of the connection leaves streams running until their
-   next call to it fails). This decides whether HTTP/2 must wait for
-   BT-4052 or can ship with a documented deviation.
-7. **Transitive package visibility.** Can an app that depends only on
-   `http` name a class from `buccaneer` (for WebSocket handlers), or must
-   beamtalk-http re-export? Decides where the WebSocket types live.
+   `binary:encode_unsigned` FFI. File any language gap with numbers.
+5. **Deferred reply, prototyped.** Exercise the shape BT-4090 specifies
+   with a throwaway native-backed actor (ADR 0056, spike-only, never
+   shipped): a stream process blocks on `conn readData:` and on a
+   flow-controlled `conn sendData:` while the connection parks the calls and
+   answers them out of order from `handleInfo:`. Confirms the HTTP/2 design
+   needs nothing beyond BT-4090, and feeds its spec.
+6. **Stream processes with monitors, not links.** The connection starts
+   stream processes unlinked, monitors each (a `DOWN` reaches
+   `handleInfo:`, where Bandit handles `EXIT`), resets the stream on an
+   abnormal `DOWN`, and kills the remaining streams in `terminate:`. A
+   stream process learns of a dead connection from its next call failing.
+   Record the cost and what is lost against Bandit's links (a `kill` of the
+   connection skips `terminate:`, so its streams run until their next call
+   to it).
 
 **Acceptance:** each spike has a result and numbers in `spikes/README.md`;
-the module map and the ADR are amended where a spike fails; every Beamtalk
-gap found is filed in Linear with a minimal repro.
+spike 2's leak test is kept as a regression test for Phase 1; the module
+map and the ADR are amended where a spike fails; every Beamtalk gap found is
+filed in Linear with a minimal repro.
 
 ### Phase 1: HTTP/1.1 engine (L)
 
@@ -239,44 +263,43 @@ gap found is filed in Linear with a minimal repro.
 chunked request bodies, response framing by status and method, keepalive
 and `Connection: close`, `maxRequests`, request-line and header limits);
 `Pipeline` (host and port determination, request targets: origin,
-absolute, authority, asterisk); `Exchange` with `readBody`, `sendResp:...`
-and the commit rules; `InitialHandler` for HTTP/1 and TLS-on-clear;
-`ConnectionHandler`; `HTTP1Handler`; response compression (gzip, deflate;
-zstd when OTP has it); request telemetry spans and `BuccaneerLogger`;
-`HTTPError` → status, `TransportError` → close.
+absolute, authority, asterisk); `Exchange` with `readBody`, `readAll:`,
+`sendResp:...` and the commit rules; `InitialHandler` for HTTP/1 and
+TLS-on-clear; `ConnectionHandler`; `HTTP1Handler`; request telemetry spans
+and `BuccaneerLogger`; `HTTPError` → status, `TransportError` → close.
+**No response compression** (Phase 9): `Accept-Encoding` is ignored and
+responses are identity-encoded.
 
-**Tests to port:** `http1/protocol_test.exs` except the four sections in
-Phases 3-4 (153 tests: invalid requests 4, method coverage 4, method case 1,
+**Tests to port:** `http1/protocol_test.exs` except the sections in Phases
+3, 4 and 9 (118 tests: invalid requests 4, method coverage 4, method case 1,
 request line limits 1, origin-form 17, absolute-form 11, authority-form 2,
 asterisk-form 2, Host 2, request headers 7, content-length bodies 14,
 content-length framing by status 14, chunked request bodies 13,
-transfer-encoding edge cases 4, content negotiation and encoding 35,
-closure and errors 6, keepalive 16); `http1/plug_test.exs` except
-`send_file` and upgrade (29); `http1/telemetry_test.exs` (13);
-`http1/logging_test.exs` (9); `headers_test.exs` (20);
-`initial_handler_test.exs`' HTTP/1 and TLS cases; `server_test.exs` (6);
-`adapter_test.exs` (6); `clock_test.exs` and `socket_helpers_test.exs`.
+transfer-encoding edge cases 4, closure and errors 6, keepalive 16);
+`http1/plug_test.exs` except `send_file` and upgrade (29);
+`http1/telemetry_test.exs` (13); `http1/logging_test.exs` (9);
+`headers_test.exs` (20); `initial_handler_test.exs`' HTTP/1 and TLS cases;
+`server_test.exs` (6); `adapter_test.exs` (6); `clock_test.exs` and
+`socket_helpers_test.exs`. Plus spike 2's keep-alive leak test.
 
-**Acceptance:** about 250 BUnit tests pass on TCP and TLS; a standalone
+**Acceptance:** about 215 BUnit tests pass on TCP and TLS; a standalone
 example (`examples/hello.bt`) serves requests with only buccaneer and
 catalina; zero type warnings (every class `typed`, Catalina's typing rule);
 every deviation recorded here.
 
-The 35 content-negotiation tests are compression; if Phase 1 runs long they
-split out into their own PR.
-
 ### Phase 2: beamtalk-http adapter and backend switch (M)
 
 **Scope (in beamtalk-http, on a branch):** a Beamtalk adapter in
-`src/server/` mapping `Exchange` → `HTTPRequest` (eager body, query
-parsing with cowboy's `?flag` → `"true"` rule, header pairs) and
-`HTTPResponse` → `sendResp:`; dispatch to a block, an `HTTPHandler` actor
-(a real actor send, as today) or an `HTTPRouter` (the router matcher stays
-native until Phase 8); 500 on a raise or a non-`HTTPResponse` answer, as
-today. `HTTPServer` becomes a plain Beamtalk `Actor` (it stays an `Actor`
-subclass, which `testClassIdentity` checks) owning a Buccaneer server, with
-a `#backend => #cowboy | #buccaneer` option, default `#cowboy` in this
-phase. `#bind` maps to Catalina's `{ip, ...}` transport option.
+`src/server/` mapping `Exchange` → `HTTPRequest` (whole body read before the
+handler runs, as cowboy does today; query parsing with cowboy's `?flag` →
+`"true"` rule; header pairs) and `HTTPResponse` → `sendResp:`; dispatch to
+a block, an `HTTPHandler` actor (a real actor send, as today) or an
+`HTTPRouter` (the router matcher stays native until Phase 8); 500 on a raise
+or a non-`HTTPResponse` answer, as today. `HTTPServer` becomes a plain
+Beamtalk `Actor` (it stays an `Actor` subclass, which `testClassIdentity`
+checks) owning a Buccaneer server, with a `#backend => #cowboy |
+#buccaneer` option, default `#cowboy` in this phase. `#bind` maps to
+Catalina's `{ip, ...}` transport option. No new public API in this phase.
 
 **Tests:** none new to port. `httpserver_test.bt` (12), `httprouter_test.bt`
 (16), `plug_chain_test.bt` (6) and `plugs/request_logger_test.bt` (2) pass
@@ -292,49 +315,92 @@ comma-joined) are documented in beamtalk-http's README. Blocked by Phase 1.
 
 ### Phase 3: Streaming (M)
 
-**Scope:** `Exchange` incremental `readBody:` (`length`, `readLength`,
+**Engine:** `Exchange` incremental `readBody:` (`length`, `readLength`,
 `readTimeout`), automatic `100 Continue` on the first body read,
 `sendChunked:` / `chunk:` (and length-delimited streaming when the caller
 sets `content-length`), `sendFile:...` (Catalina's `sendfile`, which falls
 back to a pread loop over TLS), `inform:` for 1xx (refused on HTTP/1.0).
-In beamtalk-http: the streaming proposals P1-P3 and P5 of the ADR.
+
+**beamtalk-http** (minimal, as decided; details in the ADR § beamtalk-http
+API additions). Explicit operations on owner-bound handles, not the stdlib
+`Stream`:
+
+- request bodies: `req readChunk -> Result(Binary, Error)`, an empty
+  Binary meaning the end of the body; `req body` stays and reads the rest
+  (Plug `read_body` semantics);
+- chunked responses: `resp startChunked: status headers: h`,
+  `resp sendChunk: data -> Result`, `resp finish`;
+- sendfile: `HTTPResponse file: path` and `file:offset:length:`, as values;
+- 100-continue: automatic when the handler first reads the body;
+  `req inform: 103 headers: h` as the optional extra.
+
+The handles work only from the connection process; from any other process
+they raise a clear error. An `HTTPHandler` actor still gets the whole body.
 
 **Tests to port:** `http1/protocol_test.exs` sendfile (5), informational
 responses (2), `Expect: 100-continue` (3), chunked responses (5);
-`http1/plug_test.exs` `send_file` (9); beamtalk-http tests for each new API.
+`http1/plug_test.exs` `send_file` (9); beamtalk-http tests for each new
+operation, including the cross-process error.
 
 **Acceptance:** the ported tests pass; a 1 GiB upload and download stream
-in constant memory (asserted in a test with a process memory bound).
-Blocked by Phase 1 (beamtalk-http parts by Phase 2).
+in bounded memory (asserted in a test). Blocked by Phase 1 (beamtalk-http
+parts by Phase 2).
+
+**Open questions (needs-spec until answered):**
+
+1. How does a handler get `resp`, and what does it answer once it has
+   streamed? Proposal: a block handler may take two arguments, `[:req :resp
+   | ...]`, where `resp` is the owner-bound `HTTPResponder`; after
+   `resp finish` the block answers `resp` (or `HTTPResponse sent`) and the
+   adapter checks the response was finished.
+2. What does "an actor handler delegates streaming back" look like?
+   Proposal: the actor answers `HTTPResponse streamWith: aBlock`, and the
+   adapter runs `aBlock value: req value: resp` in the connection process
+   (the block must not close over the actor's state, as with route blocks
+   today).
 
 ### Phase 4: WebSocket (L)
 
-**Scope:** frames, extractor, handshake and upgrade validation,
+**Engine:** frames, extractor, handshake and upgrade validation,
 `WebSocketConnection` (fragmentation, control frames, close codes, UTF-8
-validation, `maxFrameSize`, timeouts), permessage-deflate; the
-`WebSocketHandler` protocol (WebSock's `init`/`handle_in`/`handle_info`/
-`handle_control`/`terminate`), run in the upgraded connection's process;
-`Exchange upgrade:`. In beamtalk-http: proposal P4 (router
-`webSocket:handler:`).
+validation, `maxFrameSize`, timeouts), permessage-deflate; Buccaneer's
+engine-level `WebSock` protocol (WebSock's
+`init`/`handle_in`/`handle_info`/`handle_control`/`terminate`), run in the
+upgraded connection's process; `Exchange upgradeToWebSocket:`.
+
+**beamtalk-http:** `HTTPResponse upgradeWebSocket: handlerClass`, and a
+`WebSocketHandler` protocol living in beamtalk-http with `onText:`,
+`onBinary:` and `onClose:`. The adapter implements Buccaneer's `WebSock`
+over it.
 
 **Tests to port:** `websocket/*` (229 tests: frame deserialization 49,
 serialization 20, HTTP/1 handshake 14, protocol 43, sock 86, upgrade 3,
 upgrade validation 7, plus `http1/protocol_test.exs` upgrade handling 6 and
-`http1/plug_test.exs` upgrade 1).
+`http1/plug_test.exs` upgrade 1); beamtalk-http tests for the upgrade and
+each callback.
 
-**Acceptance:** the ported tests pass; Autobahn|Testsuite runs clean
-locally (in CI if Docker is available; see Phase 7). Blocked by Phase 1 and
-spike 7.
+**Acceptance:** the ported tests pass; Autobahn|Testsuite runs in CI as a
+non-blocking job, promoted to blocking once green. Blocked by Phases 1-2.
+
+**Open question (needs-spec until answered):** what is `handlerClass`
+instantiated as, and how does a handler send? Proposal: an `Actor` spawned
+per connection (linked to the connection process), so `onText:` can keep
+mutable state and the handler can be told things by other actors; it sends
+with `ws sendText:` / `ws sendBinary:` / `ws close:`, where `ws` is a
+`WebSocket` value given to `onOpen:` that casts to the connection process
+(the one exception to "owner process only", because a send is a message,
+not a socket call). The alternative is a Value run in the connection
+process that answers its next self, as the engine's `WebSock` does.
 
 ### Phase 5: HPACK package (M)
 
-**Scope:** a new repository and package, `beamtalk-hpack`, porting hpax
-1.0.4 (913 lines): static and dynamic tables with eviction and size updates,
-prefixed integers, string literals, the Huffman code (the table built once
-into `persistent_term`, not generated at compile time as in Elixir), and
-`encode`/`decode` with hpax's error reasons. No dependency on Buccaneer or
-Catalina, so the future HTTP client can use it. Independent of Phases 1-4;
-can run in parallel with them.
+**Scope:** a new repository, **`jamesc/beamtalk-hpack`** (package
+`hpack`), porting hpax 1.0.4 (913 lines): static and dynamic tables with
+eviction and size updates, prefixed integers, string literals, the Huffman
+code (the table built once into `persistent_term`, not generated at compile
+time as in Elixir), and `encode`/`decode` with hpax's error reasons. No
+dependency on Buccaneer or Catalina, so the future HTTP client can use it.
+Independent of Phases 1-4; can run in parallel with them.
 
 **Tests to port:** hpax's 37 (the 7 StreamData properties become seeded
 random loops, as Catalina's stress fuzz does), plus the RFC 7541 Appendix C
@@ -353,48 +419,63 @@ GOAWAY, pending sends with expiry), `HTTP2Stream` implementing
 `InitialHandler` ALPN `h2` and prior-knowledge preface; `Exchange` over a
 stream (owner = the stream process).
 
+How the stream process waits: it calls the connection (`readData:`,
+`sendData:`, window waits) and the connection parks each call with
+**BT-4090**'s deferred reply until the frame or window it needs arrives,
+answering out of order, and expiring parked sends after 15 s as Bandit does.
+Stream processes are **monitored, not linked** (spike 6): an abnormal
+`DOWN` resets that stream, and `terminate:` kills the rest. BT-4052 is
+related, not a blocker; when it lands, links can replace monitors.
+
 **Tests to port:** `http2/frame_deserialization_test.exs` (54),
 `frame_serialization_test.exs` (19), `protocol_test.exs` (178),
 `plug_test.exs` (60); `initial_handler_test.exs`' h2 cases.
 
 **Acceptance:** the ported tests pass over TLS (ALPN) and clear (prior
-knowledge); h2spec runs clean. **Blocked by BT-4052** (or by spike 6's
-monitor-based deviation, if the user accepts it), by the stdlib gap spike 5
-files, and by Phase 5.
+knowledge); h2spec runs in CI as a non-blocking job, promoted to blocking
+once green. Blocked by BT-4090, Phase 5, Phase 1 and Phase 0.
 
 ### Phase 7: Release gate (L)
 
 Reuse Catalina's harness (`bench/harness`, `test/stress`, the peer-VM
-runner) and extend it with an HTTP load generator. Three servers run side by
-side, interleaved round by round: **Buccaneer**, **Bandit 1.12.5**
-(a mix project with the equivalent handler as a bare Plug), and
-**beamtalk-http 0.1.10 on cowboy** (the current backend) next to
-**beamtalk-http on Buccaneer** (the same app, so the adapter's cost is
-visible on its own).
+runner) and extend it with an HTTP load generator. Servers run side by side,
+interleaved round by round: **beamtalk-http on Buccaneer** against
+**beamtalk-http 0.1.10 on cowboy** (the gate), with **Buccaneer
+standalone** (the adapter's cost on its own) and **Bandit 1.12.5** (a mix
+project with the equivalent handler as a bare Plug) reported for context.
 
-**`just bench`** rows: GET hello at 1/10/100/1,000 keepalive connections
-(requests/s, p50/p99/p99.9); POST 64 KiB echo; a 1 MiB chunked response;
-`sendFile` 1 MiB; connection churn (`Connection: close`); TLS handshakes/s
-and TLS keepalive GET; memory and processes per idle keepalive connection
-(10,000); HTTP/2 GET at 100 streams over 10 connections; WebSocket echo at
-100 connections. `bench/RESULTS.md` holds medians, every round, the ratios
-and the machine and versions; profile any row more than 2× Bandit, and file
-each Beamtalk cost found with numbers, as BT-4051 did.
+**Rows:** GET hello at 1/10/100/1,000 keepalive connections (requests/s,
+p50/p99/p99.9); POST 64 KiB echo; a 1 MiB chunked response; `file:` 1 MiB;
+connection churn (`Connection: close`); TLS handshakes/s and TLS keepalive
+GET; memory and processes per idle keepalive connection (10,000); and, for
+context only (cowboy is not serving them in beamtalk-http today), HTTP/2 GET
+at 100 streams over 10 connections and WebSocket echo at 100 connections.
 
-**`just stress`**: request fuzz (random framing, random chunk splits,
+**`just stress`:** request fuzz (random framing, random chunk splits,
 pipelining; bytes checked), leak churn (processes, ports, ETS,
 process-dictionary size of a long keepalive connection), slow-loris on the
 request line, headers and body, limits (`maxRequests`, header count and
 length, `numConnections`), chaos (kill connection and stream processes
 under load), lifecycle (suspend, resume, `stop:` draining in-flight
 requests), a 30-minute mixed soak (HTTP/1, TLS, HTTP/2, WebSocket).
-Conformance: h2spec and Autobahn|Testsuite.
+Conformance: h2spec and Autobahn in CI (non-blocking until green).
 
-**Acceptance:** the harness runs with `just bench` / `just stress`, RESULTS.md
-is written, every stress test passes on Buccaneer (and on Bandit where the
-expectation is "as Bandit does"), a summary is posted for the user's
-go/no-go on removing cowboy and on tagging `v0.1.0`. **Don't tag.** Blocked
-by Phases 1-4 and 6 (the HTTP/2 rows) and Phase 2 (the beamtalk-http rows).
+**The gate (decided):**
+
+- beamtalk-http on Buccaneer **matches beamtalk-http on cowboy on
+  throughput and p99 on every HTTP/1.1 and TLS gate row** (medians over
+  ≥ 5 interleaved rounds; "matches" means not worse beyond the rounds'
+  spread, which RESULTS.md reports);
+- **zero correctness regressions**: every stress test passes;
+- **beamtalk-http's full suite is green on Buccaneer.**
+
+Bandit's numbers are context, not a gate. Any row worse than cowboy is
+profiled, and each Beamtalk cost found is filed with numbers, as BT-4051 did.
+
+**Acceptance:** the harness runs with `just bench` / `just stress`;
+`bench/RESULTS.md` is written; the gate is met or the misses are filed; a
+summary is posted for the user's go/no-go on removing cowboy and on tagging
+`v0.1.0`. **Don't tag.** Blocked by Phases 1-4 and 6.
 
 ### Phase 8: Remove cowboy from beamtalk-http (M)
 
@@ -411,8 +492,24 @@ stays until the client epic. README and version bump (0.2.0).
 
 **Acceptance:** beamtalk-http builds with no cowboy or ranch in its
 dependency tree; every BUnit test passes; the only native modules left are
-the gun client's. Blocked by Phase 7 (the user's go-ahead) and Phase 3 (the
-streaming API it ships).
+the gun client's. Blocked by Phase 7 (the user's go-ahead), Phase 2 and
+Phase 3.
+
+### Phase 9: Response compression (M, later)
+
+**Scope:** `Compression` (`Accept-Encoding` negotiation, gzip and deflate
+through `zlib` FFI, zstd when the OTP release has it), Bandit's `#http`
+options `compress`, `responseEncodings`, `deflateOptions`, `zstdOptions`,
+and compression of chunked responses (skipped when the caller sets
+`content-length`, as Bandit does).
+
+**Tests to port:** `http1/protocol_test.exs` "content negotiation and
+encoding" (35); the compression cases of `http2/plug_test.exs` if Phase 6
+has landed.
+
+**Acceptance:** the ported tests pass; beamtalk-http needs no change
+(compression is a server option). Blocked by Phase 1; deferred out of
+Phase 1 by decision.
 
 ## Deviations we expect
 
@@ -424,9 +521,10 @@ Recorded properly when each phase is done; the expected ones:
   with `receive ... after 0` becomes a field of the exchange state.
 - **No `receive`.** Every selective receive in Bandit (`http1/socket.ex`
   `send_on_error`, `http2/stream.ex` reads and window waits,
-  `ensure_completed`) is replaced, by state flags in HTTP/1 and by the
-  mechanism spike 5 chooses in HTTP/2.
-- **Links to stream processes** may become monitors (spike 6) until BT-4052.
+  `ensure_completed`) is replaced: by state flags in HTTP/1, and in HTTP/2
+  by sync calls to the connection that it answers later (BT-4090).
+- **Stream processes are monitored, not linked** (until BT-4052). A `kill`
+  of the connection leaves its streams running until their next call to it.
 - **Re-raise.** Where Bandit re-raises with `:erlang.raise/3`, Buccaneer
   re-signals (BT-4057), so an `exit(normal)` inside a handler ends the
   request as an error. Switch when `Exception>>pass` lands.
@@ -435,9 +533,10 @@ Recorded properly when each phase is done; the expected ones:
   `thousand_island_options`). Telemetry events are `[buccaneer, ...]`.
 - **Clock** is a `supervise`d node singleton, since there is no application
   callback.
-- **WebSock** becomes the `WebSocketHandler` protocol, whose implementor is
-  a Value that is also its state (`handleIn:` answers a `WebSocketResult`
+- **WebSock** becomes Buccaneer's `WebSock` protocol, whose implementor is
+  a Value that is also its state (each callback answers a `WebSocketResult`
   carrying the next value), rather than a module plus a state term.
+- **Compression** arrives in Phase 9, after the engine, not with HTTP/1.
 - **Errors**: `HTTPError` carries Bandit's `plug_status`; there is no
   `Plug.Exception.status/1` protocol, so any other raised error is a 500.
   Transport errors are bare reasons, as in Catalina.
@@ -446,21 +545,19 @@ Recorded properly when each phase is done; the expected ones:
 
 ## Risks
 
-1. **Per-request cost.** A 1-byte Catalina echo took 2-7 ms against Thousand
-   Island's ~60 µs before BT-4053 (BT-4051's first run); the runtime fixes in flight (BT-4065, BT-4069,
-   BT-4071) decide much of Buccaneer's speed. HTTP adds parsing and many
-   Value sends per request. Mitigation: parse with `erlang:decode_packet`
-   (C), keep hot-path Values sealed and typed, measure in spike 1 and gate
-   in Phase 7 against both Bandit and cowboy.
-2. **HTTP/2 needs primitives Beamtalk lacks:** no selective receive, no
-   deferred reply in a pure-Beamtalk `Server`, and BT-4052. Mitigation:
-   spikes 5-6 before Phase 6 starts; HTTP/2 is the last engine phase, and
-   HTTP/1 + WebSocket can ship without it.
+1. **Per-request cost.** A 1-byte Catalina echo took 2-7 ms against
+   Thousand Island's ~60 µs before BT-4053 (BT-4051's first run); the
+   runtime fixes in flight (BT-4065, BT-4069, BT-4071) decide much of
+   Buccaneer's speed, and the gate is now "match cowboy". Mitigation: parse
+   with `erlang:decode_packet` (C), keep hot-path Values sealed and typed,
+   measure in spike 1 against cowboy, gate in Phase 7.
+2. **HTTP/2 depends on new stdlib work** (BT-4090, deferred reply).
+   Mitigation: spike 5 prototypes the shape first; HTTP/2 is the last engine
+   phase, and HTTP/1 + WebSocket ship without it.
 3. **The Exchange state model** departs from Bandit's threaded adapter.
-   Risks: state leaks across keepalive requests, interaction with
-   exceptions, and test adaptation cost (Bandit's plug tests assert on the
-   returned conn). Mitigation: spike 2; the ADR keeps the transports
-   Bandit-shaped so most porting is mechanical.
+   Risks: state leaking across keepalive requests, interaction with
+   exceptions, test adaptation cost. Mitigation: spike 2's leak test, kept
+   as a regression test; the transports stay Bandit-shaped.
 4. **Byte-level codecs** (HTTP/2 frames, WebSocket masking, HPACK Huffman)
    with binary patterns but no binary construction syntax. Mitigation:
    spike 4; FFI to `binary`, `crypto:exor` and `zlib`; file language gaps
@@ -473,48 +570,64 @@ Recorded properly when each phase is done; the expected ones:
 Also: porting volume (~810 tests, ~14,000 lines of Elixir), and type-checker
 friction in `typed` classes (BT-4061, BT-4039..BT-4044), as Catalina found.
 
-## Open decisions for the user
+## Decisions (2026-10-21)
 
-1. **Exchange state model:** owner-process state behind a handle
-   (recommended) or Bandit's threaded Value. See the ADR.
-2. **HTTP/2's wait primitive:** a stdlib deferred reply on `Server`
-   (recommended: standard OTP, also useful elsewhere), a stdlib
-   mailbox-wait facade, or a native helper in buccaneer (breaks
-   pure-Beamtalk). And: wait for BT-4052, or ship HTTP/2 with monitors
-   (spike 6)?
-3. **HPACK as its own repository** (`jamesc/beamtalk-hpack`, recommended)
-   or a second package inside the buccaneer repository.
-4. **Which beamtalk-http API additions** (ADR P1-P6) are in scope for the
-   cowboy removal, and where WebSocket types live (buccaneer, re-exported by
-   http, or both).
-5. **Gate thresholds:** what ratio against cowboy (and Bandit) is
-   acceptable to remove cowboy, e.g. "no row worse than cowboy by more than
-   2×, p99 included"?
-6. **Compression** (gzip/deflate/zstd) in Phase 1, or deferred: it is 35 of
-   Phase 1's tests.
-7. **Conformance suites** (h2spec, Autobahn) need Docker or binaries: local
-   only, or a nightly CI job?
+1. **Exchange state:** an owner-bound handle, state in the owning
+   connection (or stream) process. Spike 2 must prove no state leaks across
+   keep-alive requests.
+2. **HTTP/2 waiting:** a stdlib deferred reply on `Server`, runtime-backed
+   with no new compiler primitive: **BT-4090** (under BT-3957), which blocks
+   Phase 6.
+3. **BT-4052:** HTTP/2 ships with monitors instead of links (spike 6).
+   BT-4052 is related to Phase 6, not a blocker.
+4. **HPACK:** its own repository, `jamesc/beamtalk-hpack` (Phase 5).
+5. **beamtalk-http API additions:** streaming request bodies, chunked
+   responses, sendfile and WebSocket upgrade are all in scope, each minimal
+   and tied to its phase (3 or 4), as explicit operations on owner-bound
+   handles. **Not built on the stdlib `Stream`**: it is lazy and
+   closure-based, evaluated in whichever process forces it, has no close or
+   error protocol, and is pull-only, which is wrong for socket-owned bodies
+   when handlers can be actors in another process. A `Stream` adapter is out
+   of scope (a possible later convenience). Request metadata (proposed in the first
+   draft) is not in scope.
+6. **Release gate:** match beamtalk-http-on-cowboy on throughput and p99
+   across the gate rows, zero correctness regressions, beamtalk-http's full
+   suite green on Buccaneer. Bandit is context, not a gate.
+7. **Compression:** deferred out of Phase 1 into Phase 9 (35 tests).
+8. **h2spec and Autobahn:** CI jobs, non-blocking at first, promoted to
+   blocking once green.
+
+## Remaining open questions
+
+- **Phase 3:** how a handler obtains the responder handle and what it
+  answers after streaming; the form an actor handler uses to delegate
+  streaming back to the connection process. (Proposals in § Phase 3.)
+- **Phase 4:** what `upgradeWebSocket: handlerClass` instantiates (an Actor
+  per connection, or a Value run in the connection process) and how a
+  handler sends frames. (Proposal in § Phase 4.)
+- **BT-4090:** its spec (name, error replies, interaction with
+  `continueWith:` and `stopWith:`) is a Beamtalk decision; Phase 6 waits on
+  it.
 
 ## Size and effort
 
 Bandit is ~7,000 lines of library and ~14,000 lines of tests; hpax adds
 ~900 and its tests. Rough split: Phase 0 three days; Phase 1 one to two
 weeks; Phase 2 three days; Phase 3 three days; Phase 4 one to two weeks;
-Phase 5 three days (parallel); Phase 6 two to three weeks once unblocked;
-Phase 7 one week; Phase 8 three days. Plus the Beamtalk work the spikes
-file, which gates Phase 6.
+Phase 5 three days (parallel); Phase 6 two to three weeks once BT-4090
+lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 
 ## Beamtalk work this port depends on
 
-| Need | Issue | Status (2026-10-21) | Gates |
+| Need | Issue | Status (2026-10-21) | Relation |
 |---|---|---|---|
-| A trapping Server handling linked `EXIT`s itself | BT-4052 | Backlog, needs-spec | Phase 6 |
+| Deferred reply for a pure-Beamtalk Server | BT-4090 | Backlog, needs-spec | **blocks Phase 6** |
+| A trapping Server handling linked `EXIT`s itself | BT-4052 | Backlog, needs-spec | related to Phase 6 (monitors meanwhile) |
 | Re-raise unchanged (`exit(normal)` in a handler) | BT-4057 | Backlog, needs-spec | deviation until fixed |
 | `late` slot holding nil | BT-4061 | Backlog | typing workaround |
-| Class references and `Result ok:` serialised through class processes | BT-4065 | In progress | performance |
-| Sends to a sealed-Value-typed parameter still dynamic | BT-4069 | Backlog | performance |
-| `hasField:` cost (~20 µs) | BT-4071 | In progress | performance |
-| Deferred reply or mailbox wait for a pure-Beamtalk Server | to file after spike 5 | — | Phase 6 |
+| Class references and `Result ok:` serialised through class processes | BT-4065 | In progress | performance (gate) |
+| Sends to a sealed-Value-typed parameter still dynamic | BT-4069 | Backlog | performance (gate) |
+| `hasField:` cost (~20 µs) | BT-4071 | In progress | performance (gate) |
 
 ## References
 

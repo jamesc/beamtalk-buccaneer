@@ -262,15 +262,16 @@ filed in Linear with a minimal repro.
 
 #### Phase 0 findings (2026-10-21)
 
-Done in BT-4079; the tests, fixtures and full numbers are in
+Done in BT-4079; the tests, spike classes and full numbers are in
 [`spikes/README.md`](spikes/README.md), spike 1's bench in
 [`bench/README.md`](bench/README.md). Toolchain beamtalk main dc216bf52
+(rerun 2026-10-25 on main 9b6ce88eb; spike classes in nested packages)
 (rerun on 41c7f6ff6, BT-4065 merged, where noted), catalina 5ecc9ab, OTP
 28.5, on a shared machine (load 8-165).
 
 | # | Result | Decision and impact |
 |---|---|---|
-| 1 Parse cost | **Below cowboy, not because of the parser.** `decode_packet` through the FFI costs 0.12-0.2 µs a call and the head parses in 2.3 µs in Erlang, but 10-13 µs in Beamtalk: 87% of it waiting on class processes. End to end (keep-alive GET, 5 rounds): 0.62× cowboy's req/s at 1 connection, 0.61× at 10, 0.44× at 100, 0.29× at 1,000, p99 1.4-8×. Each request made 5 calls into node-wide class processes (`on: Exception do:` ×2, `Result ok:`, one per Value keyword constructor); BT-4065 removes 3, BT-4099 (filed) the constructors. **Rerun on beamtalk 41c7f6ff6 (BT-4065 merged), load 48-209:** class-process calls per request drop from 5 to 2 (the two Value constructors, BT-4099), the parse from 4.5× to 2.8× Erlang (7.4 µs), and the median req/s ratio to cowboy rises to 0.78 at 10 and 100 connections and 0.66 at 1,000 (0.16 at 1; rounds varied up to 10× with the load, so treat these as indicative); 66% of request stacks still wait on the constructors' class processes. | Keep `decode_packet` and the module map. Risk 1 is now concrete: the gate depends on BT-4099 as well as BT-4065/4069/4071 (added to § Beamtalk work). Phase 1 keeps per-request Value construction and `on:do:` off the hot path where it can until they land, and re-runs `just spike-bench`. |
+| 1 Parse cost | **Below cowboy, not because of the parser.** `decode_packet` through the FFI costs 0.12-0.2 µs a call and the head parses in 2.3 µs in Erlang, but 10-13 µs in Beamtalk: 87% of it waiting on class processes. End to end (keep-alive GET, 5 rounds): 0.62× cowboy's req/s at 1 connection, 0.61× at 10, 0.44× at 100, 0.29× at 1,000, p99 1.4-8×. Each request made 5 calls into node-wide class processes (`on: Exception do:` ×2, `Result ok:`, one per Value keyword constructor); BT-4065 removes 3, BT-4099 (filed) the constructors. **Rerun on beamtalk 41c7f6ff6 (BT-4065 merged), load 48-209:** class-process calls per request drop from 5 to 2 (the two Value constructors, BT-4099), the parse from 4.5× to 2.8× Erlang (7.4 µs), and the median req/s ratio to cowboy rises to 0.78 at 10 and 100 connections and 0.66 at 1,000 (0.16 at 1; rounds varied up to 10× with the load, so treat these as indicative); 66% of request stacks still wait on the constructors' class processes. | Keep `decode_packet` and the module map. Risk 1 is now concrete: the gate depends on BT-4099 as well as BT-4065/4069/4071 (added to § Beamtalk work). Phase 1 keeps per-request Value construction and `on:do:` off the hot path where it can until they land, and re-runs `just spike-bench`. **Rerun 2026-10-25 (beamtalk 9b6ce88eb, all four merged):** 1.09-1.24× cowboy's req/s at 1-1,000 connections, at parity with Bandit, parse 1.44× Erlang, zero class-process calls per request — the assumption now holds (spikes/README.md, bench/README.md). |
 | 2 Exchange state | **Holds.** 10,000 keep-alive requests (plain, body read, body unread, chunked ended early, handler polluting the process dictionary): no leak, process dictionary 5 keys after every request, no exchange state left, heap after GC never grows. Owner check raises from another process; a handle read is 0.6-0.7 µs. | The leak test is Phase 1's regression test. Three amendments (ADR updated): `clear_process_dict` keeps the keys present at `handleConnection:` (the runtime keeps `$beamtalk_actor` and `$bt_actor_state` there; Bandit's three-key list would delete them) plus Catalina's and Buccaneer's own; the Exchange's sends answer the exchange, not Nil (a Value method answering Nil is a warning); `#not_owner` and the other misuse reasons are `Error` subclasses (`NotOwner`), since `Exception signalKind:` is closed. Raising requests close the connection, as Bandit, so they are tested on their own connections. |
 | 3 Blocking work in `handleData:` | **Holds.** Passive socket inside the callback, blocking body `recv`, a sync call to an actor, three pipelined requests from one `handleData:`. | None. |
 | 4 Byte codecs | **Holds with workarounds.** Decoding is 2-8× Elixir per operation (under 0.7 µs each); frame headers built as byte lists 40× (0.24 µs). Gaps: a size from an earlier segment (BT-4096), no bitstrings, literal segments or size expressions (BT-4097), two `_` in one pattern (BT-4098). | Phases 4 and 6 match header and payload in two steps until BT-4096. Phase 5's Huffman decoder is table-driven by byte or nibble, not hpax's bit walk, until BT-4097 (no scope change). |
@@ -597,7 +598,11 @@ Recorded properly when each phase is done; the expected ones:
    measure in spike 1 against cowboy, gate in Phase 7. **Spike 1 confirmed
    it:** 0.29-0.62× cowboy's req/s, the parse itself cheap, the time in
    class-process calls per request (`on: Exception do:`, `Result ok:`,
-   Value constructors; BT-4065, BT-4099). See § Phase 0 findings.
+   Value constructors; BT-4065, BT-4099). **Rerun 2026-10-25:** with
+   BT-4065/4069/4071/4099 merged, the spike does 1.09-1.24× cowboy's
+   req/s with zero class-process calls per request; the risk is retired
+   to monitoring (p99.9 at 100+ connections, FFI coercion BT-4153).
+   See § Phase 0 findings.
 2. **HTTP/2 depends on new stdlib work** (BT-4090, deferred reply).
    Mitigation: spike 5 prototypes the shape first; HTTP/2 is the last engine
    phase, and HTTP/1 + WebSocket ship without it.
@@ -671,21 +676,23 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 
 ## Beamtalk work this port depends on
 
-| Need | Issue | Status (2026-10-21) | Relation |
+| Need | Issue | Status (2026-10-25) | Relation |
 |---|---|---|---|
 | Deferred reply for a pure-Beamtalk Server | BT-4090 | Backlog, needs-spec | **blocks Phase 6** |
 | A trapping Server handling linked `EXIT`s itself | BT-4052 | Backlog, needs-spec | related to Phase 6 (monitors meanwhile) |
 | Re-raise unchanged (`exit(normal)` in a handler) | BT-4057 | Backlog, needs-spec | deviation until fixed |
-| `late` slot holding nil | BT-4061 | Backlog | typing workaround |
+| `late` slot holding nil | BT-4061 | Done (merged 2026-10-25) | typing workaround, no longer needed |
 | Class references and `Result ok:` serialised through class processes | BT-4065 | Done (merged 2026-10-21) | performance (gate) |
-| Sends to a sealed-Value-typed parameter still dynamic | BT-4069 | Backlog | performance (gate) |
-| `hasField:` cost (~20 µs) | BT-4071 | In progress | performance (gate) |
-| Value construction is a call into the class process (Phase 0 spike 1) | BT-4099 | Backlog | performance (gate) |
-| Binary patterns: size from an earlier segment; bitstrings, literal segments, size expressions; two `_` | BT-4096, BT-4097, BT-4098 | Backlog | workarounds in Phases 4-6 (spike 4) |
+| Sends to a sealed-Value-typed parameter still dynamic | BT-4069 | Done (merged 2026-10-25) | performance (gate) |
+| `hasField:` cost (~20 µs) | BT-4071 | Done (merged 2026-10-25) | performance (gate) |
+| Value construction is a call into the class process (Phase 0 spike 1) | BT-4099 | Done (merged 2026-10-25) | performance (gate) |
+| FFI call path: proxy apply + result coercion per call (spike 1 rerun profile) | BT-4153 | Backlog | performance (gate margins) |
+| Sealed self-sends in test fixtures target a nonexistent module | BT-4152 | Backlog | worked around (`engine_spikes` package) |
+| Binary patterns: size from an earlier segment; bitstrings, literal segments, size expressions; two `_` | BT-4096, BT-4097, BT-4098 | Done (merged 2026-10-25) | spike 4 worked around; Phases 4-6 use the real syntax |
 | Atomic spawn-and-monitor for an actor | BT-4104 | Backlog, needs-spec | Phase 6 rule meanwhile (spike 6) |
-| Test classes calling a dependency's class methods | BT-4094 | Backlog | tests use fixtures meanwhile |
+| Test classes calling a dependency's class methods | BT-4094 | Backlog | tests use wrapper classes meanwhile |
 | Block parameter types from a Dictionary literal or `:: T` | BT-4102 | Backlog, needs-spec | `start:handler:` meanwhile |
-| Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | Backlog | none blocking |
+| Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | BT-4101, BT-4105, BT-4106, BT-4107 Done (merged 2026-10-25); BT-4100 Backlog | none blocking |
 
 ## References
 

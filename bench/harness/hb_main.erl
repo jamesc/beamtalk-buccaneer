@@ -211,7 +211,7 @@ parse_lines(Parses) ->
         "| Erlang, `decode_packet` + lowercase names (Bandit's path) | ~s | ~s |~n"
         "| Beamtalk `SpikeParser readHead:socket:` | ~s | ~s |~n"
         "| One bare `decode_packet(http_bin, ...)` call (request line only) | ~s | ~s |~n"
-        "| One `Result ok:` (a call into the Result class process, BT-4065) | ~s | ~s |~n"
+        "| One `Result ok:` via class_send (the pre-BT-4065 path, for reference) | ~s | ~s |~n"
         "| Ratio Beamtalk / Erlang | ~s | |~n",
         [fmt(E), all([maps:get(erlang_ns, P) || P <- Parses]),
          fmt(B), all([maps:get(beamtalk_ns, P) || P <- Parses]),

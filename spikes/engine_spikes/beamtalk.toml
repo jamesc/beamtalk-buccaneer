@@ -1,0 +1,18 @@
+# Copyright 2026 James Casey
+# SPDX-License-Identifier: Apache-2.0
+
+# Phase 0 spikes 1-4 (HTTP/1 parse cost, exchange state, blocking work,
+# byte codecs). A separate package so the throwaway spike classes compile
+# in package mode, as the shipped library does — never as test fixtures.
+[package]
+name = "engine_spikes"
+version = "0.0.0"
+description = "Buccaneer Phase 0 spikes 1-4 (not published)"
+
+[dependencies]
+catalina = { git = "https://github.com/jamesc/beamtalk-catalina", branch = "main" }
+
+[diagnostics]
+type = "error"
+type-annotation = "error"
+dnu = "error"

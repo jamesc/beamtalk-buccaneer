@@ -110,8 +110,8 @@ parse_bench(N) ->
     %% Same answer shape check: both see 7 headers and an empty rest.
     {7, <<>>} = Erl(),
     _ = Bt(),
-    %% One `Result ok:` as the generated code makes it: a synchronous call
-    %% into the Result class process (BT-4065).
+    %% One `Result ok:` via class_send: the pre-BT-4065 path generated code
+    %% no longer takes (reference only, not on the parse path anymore).
     ResultOk = fun() ->
         beamtalk_object_class:class_send(beamtalk_class_registry:whereis_class('Result'), 'ok:', [1])
     end,

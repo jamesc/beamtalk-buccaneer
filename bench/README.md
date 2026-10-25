@@ -27,7 +27,7 @@ load generator in a third. All answer every request with `200`,
 
 | Server | Package | Handler |
 |---|---|---|
-| Buccaneer spike | `bench/buccaneer_node` | Catalina (100 acceptors) running the spike's `SpikeHandler`: `SpikeParser` (`decode_packet` FFI), an owner-bound `SpikeExchange`, Bandit's keep-alive loop and process-dictionary clearing, GC every 5 requests. The spike classes are copied from `spikes/fixtures/` by `run.sh` (`beamtalk build` skips symlinked sources). |
+| Buccaneer spike | `bench/buccaneer_node` | Catalina (100 acceptors) running the spike's `SpikeHandler`: `SpikeParser` (`decode_packet` FFI), an owner-bound `SpikeExchange`, Bandit's keep-alive loop and process-dictionary clearing, GC every 5 requests. The spike classes are copied from `spikes/engine_spikes/src/` by `run.sh` (`beamtalk build` skips symlinked sources). |
 | cowboy (the gate) | `bench/cowboy_node` | beamtalk-http 0.1.10 (`v0.1.10`, 3905b53) `HTTPServer start: 0 handler: [:req \| HTTPResponse new: ...]`; cowboy 2.18.0 with ranch defaults, as beamtalk-http starts it (10 acceptors, `max_keepalive` 1000). |
 | Bandit (context) | `bench/bandit` | Bandit 1.12.5 with a bare Plug (`send_resp(conn, 200, "hello world")`), 100 acceptors. |
 
@@ -153,4 +153,38 @@ Parse: Erlang 2,614 ns, Beamtalk 7,390 ns (2.8×, was 4.5×), one
 `SpikeRequest` and 1 into `ExchangeState` (the keyword constructors,
 BT-4099), down from 5. Under a 10-connection load, 66% of in-request stacks
 are still in `gen:do_call` on those two, and 92% of the parse loop's.
+
+## Rerun with BT-4069 and BT-4099 merged
+
+Run 2026-10-25 16:11-16:19 UTC with beamtalk main 9b6ce88eb and catalina
+37b1892 (docs-only since c06db66), same options. Load drifted up through
+the run (`uptime` 1.63 / 5.95 / 10.35 before, 12.68 / 15.71 / 13.93
+after; 1-minute load per measurement 1.63 to 30.86), but the per-round
+values stayed tight — the c = 1000 spike rounds ran 147,618 to 150,839
+req/s.
+
+| Row | Buccaneer spike req/s | cowboy | Bandit | B/cowboy | B p99 / cowboy p99 |
+|---|---:|---:|---:|---:|---:|
+| c = 1 | 28,845 | 25,038 | 29,518 | 1.15 | 0.90 |
+| c = 10 | 111,255 | 100,302 | 111,164 | 1.11 | 0.91 |
+| c = 100 | 142,323 | 130,677 | 142,952 | 1.09 | 1.00 |
+| c = 1000 | 147,867 | 118,929 | 149,117 | 1.24 | 1.01 |
+
+The spike is at parity with Bandit on throughput (0.98-1.00×) and just
+above cowboy (1.09-1.24×) at every row; p99 matches cowboy, and p50 beats
+it. The high-concurrency collapse is gone with the class-process calls
+(zero per request now, down from 5, then 2). Two things to watch: p99.9
+still trails cowboy at c = 100+ (1.12-1.18×), and the spike keeps its
+small structural favours from the caveats above (no `date` header yet).
+
+Parse: Erlang 2,272 ns, Beamtalk 3,280 ns (1.44×, was 2.8×), one bare
+`decode_packet` 125 ns. (The `Result ok:` microbenchmark row still drives
+the pre-BT-4065 `class_send` path on purpose, as a reference; generated
+code no longer takes it.) Request time is now in the socket calls
+(`setopts` rearm 45% of sampled stacks, `send` 12%) and FFI coercion
+(`apply_with_coercion` 57%, BT-4153); no `gen:do_call`, and the longest
+sampled message queues held 1 message. The parse loop's time is the
+header lowercase (~24%) and the remaining dynamic sends (~16%
+`beamtalk_message_dispatch:send/3`, the open-typed ones BT-4069 leaves
+for BT-4118).
 

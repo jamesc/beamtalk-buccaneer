@@ -157,7 +157,7 @@ are still in `gen:do_call` on those two, and 92% of the parse loop's.
 ## Rerun with BT-4069 and BT-4099 merged
 
 Run 2026-10-25 16:11-16:19 UTC with beamtalk main 9b6ce88eb and catalina
-37b1892 (docs-only since c06db66), same options. Load drifted up through
+37b1892 (docs-only since c06db66; now tagged v0.1.0), same options. Load drifted up through
 the run (`uptime` 1.63 / 5.95 / 10.35 before, 12.68 / 15.71 / 13.93
 after; 1-minute load per measurement 1.63 to 30.86), but the per-round
 values stayed tight — the c = 1000 spike rounds ran 147,618 to 150,839

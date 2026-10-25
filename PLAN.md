@@ -266,8 +266,11 @@ Done in BT-4079; the tests, spike classes and full numbers are in
 [`spikes/README.md`](spikes/README.md), spike 1's bench in
 [`bench/README.md`](bench/README.md). Toolchain beamtalk main dc216bf52
 (rerun 2026-10-25 on main 9b6ce88eb; spike classes in nested packages)
-(rerun on 41c7f6ff6, BT-4065 merged, where noted), catalina 5ecc9ab, OTP
-28.5, on a shared machine (load 8-165).
+(rerun on 41c7f6ff6, BT-4065 merged, where noted), catalina 5ecc9ab at
+first run, 0.1.0 (registry) now, OTP 28.5, on a shared machine (load
+8-165). Spikes re-verified 2026-10-25 on beamtalk main a3d0bd889: all
+pass, numbers within the recorded bands (bench figures below stand from
+the 9b6ce88eb run).
 
 | # | Result | Decision and impact |
 |---|---|---|

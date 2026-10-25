@@ -10,7 +10,7 @@ version = "0.0.0"
 description = "Buccaneer Phase 0 spikes 1-4 (not published)"
 
 [dependencies]
-catalina = { git = "https://github.com/jamesc/beamtalk-catalina", branch = "main" }
+catalina = "0.1.0"
 
 [diagnostics]
 type = "error"

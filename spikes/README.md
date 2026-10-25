@@ -28,7 +28,10 @@ and BT-4071 not merged), catalina 5ecc9ab (spike 1 rerun and the final
 spike run: main 41c7f6ff6 with BT-4065, catalina c06db66), OTP 28.5, Elixir 1.20.1, macOS
 on an Apple M5 Max. Rerun 2026-10-25: beamtalk main 9b6ce88eb (BT-4065,
 BT-4069, BT-4071, BT-4096/4097/4098, BT-4099, BT-4101 and BT-4105/4106/4107
-all merged), catalina 37b1892 (docs-only since c06db66), same machine. The
+all merged), catalina 37b1892 (docs-only since c06db66), same machine.
+Re-verified later the same day on beamtalk main a3d0bd889 with catalina
+0.1.0 from the registry (same commit, now tagged): all 31 spike tests
+pass, every number within its recorded band. The
 machine is shared: load averages during the runs were 2 to 209 (recorded
 with each number below), so treat the absolute numbers as indicative and
 the ratios as the result.
@@ -41,7 +44,7 @@ the ratios as the result.
 | 2 | Owner-process exchange state keyed by a `Reference`, with no leak across keep-alive requests | **Holds.** 10,000 sequential requests on one connection (plain, body read, body left unread, chunked response ended early, handler writing its own process-dictionary key): no request saw its predecessor's state, the process dictionary was 5 keys after every request, no exchange state survived, and the heap after a full collection never grew. A non-owner call raises `NotOwner`; a raise before or during the response closes the connection, as Bandit, and still erases the state. A handle read costs 0.6-0.7 µs against 0.12 µs for a plain Value field. Two amendments: Bandit's `clear_process_dict` keep-list would delete the runtime's own keys, and a Value's sends cannot answer Nil. | `exchange_state_spike_test.bt` |
 | 3 | The whole request runs inside `handleData:`: a blocking body `recv`, a handler calling an actor, pipelined requests served from the buffer | **Holds.** The socket is `{active, false}` inside the callback, so `Socket recv:timeout:` reads the rest of a body sent in pauses; a handler's sync call to an actor works; three requests in one packet are answered from one `handleData:` call. | `blocking_work_spike_test.bt` |
 | 4 | Binary patterns in `match:` decode HTTP/2, WebSocket and HPACK; iodata builds frames | **Holds, with four language gaps worked around** (BT-4096, BT-4097). Decoding is 2-8× Elixir per operation (most of it the call and loop overhead), building a frame header as a list of bytes 40×, but each is under 0.7 µs. | `byte_codecs_spike_test.bt` |
-| 5 | HTTP/2 stream processes can wait on the connection through a deferred reply (BT-4090's shape) | **Holds.** With only "park the caller" in a throwaway native gen_server, everything else in Beamtalk (tokens in a Dictionary, `gen_server:reply` through the FFI from `handleInfo:`): out-of-order answers, a flow-controlled send released by window updates, expiry, late and dead callers, stop. A parked-then-answered call costs about 2× a plain sync call. | `http2_streams/test/deferred_reply_spike_test.bt` |
+| 5 | HTTP/2 stream processes can wait on the connection through a deferred reply (BT-4090's shape) | **Holds.** With only "park the caller" in a throwaway native gen_server, everything else in Beamtalk (tokens in a Dictionary, `gen_server:reply` through the FFI from `handleInfo:`): out-of-order answers, a flow-controlled send released by window updates, expiry, late and dead callers, stop. A parked-then-answered call costs about the same as a plain sync call (3.4 vs 3.3 µs). | `http2_streams/test/deferred_reply_spike_test.bt` |
 | 6 | Stream processes monitored instead of linked | **Holds, with one design rule.** `DOWN` in `handleInfo:` resets abnormal streams and forgets normal ones; `terminate:` kills the rest; a stream learns of a dead connection from its next call (`#actor_dead`). Monitor and link cost the same. Lost against links: a `kill` of the connection leaves its streams running until their next call. Rule: spawn the stream idle, monitor it, then start it (there is no atomic spawn-monitor, BT-4104). | `http2_streams/test/stream_monitor_spike_test.bt` |
 
 ## Spike 1: parse cost and the three-way bench

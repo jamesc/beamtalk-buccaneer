@@ -7,6 +7,9 @@ type ReadState = #unread | #headersRead | #read
 /// Response progress (Bandit's write_state).
 type WriteState = #unsent | #writing | #chunking | #chunkStreaming | #sent
 
+/// Catalina recv timeouts: milliseconds or #infinity.
+type RecvTimeout = Integer | #infinity
+
 /// Bandit.HTTP1.Socket: the low-level HTTP/1 connection mechanics
 /// (RFC 9112). A Value threaded functionally; the Exchange state stores
 /// the latest one. The request line and headers come from
@@ -58,6 +61,253 @@ typed Value subclass: HTTP1Socket
           ]
         ^{method, target, headers, (socket3 withReadState: #headersRead) withUnreadContentLength: contentLength}
       ]
+
+  /// {#ok | #more, data, socket}: the next body part (Bandit's
+  /// read_data). Options (#length default 8_000_000, #readLength default
+  /// 1_000_000, #readTimeout default 15_000) cap one call; #more means
+  /// call again. Data is bytes; it may be a String or a Binary.
+  readData: options :: Dictionary -> Tuple =>
+    self readState =:= #headersRead ifFalse: [^{#ok, "", self}]
+    unread := self unreadContentLength
+    unread isNil ifFalse: [^self readContentLengthData: unread options: options]
+    encoding := self bodyEncoding
+    encoding =:= "chunked" ifTrue: [^self readChunkedData: options]
+    encoding isNil ifFalse: [HTTPError signal: "Unsupported transfer-encoding"]
+    {#ok, "", self}
+
+  readContentLengthData: unread :: Integer options: options :: Dictionary -> Tuple =>
+    maxLength := self
+      dataOpt: #length
+      default: 8000000
+      options: options
+    bytesToReturn := unread < maxLength ifTrue: [unread] ifFalse: [maxLength]
+    read := self
+      readExactly: bytesToReturn
+      from: self buffer
+      readSize: (self
+        dataOpt: #readLength
+        default: 1000000
+        options: options)
+      timeout: (self
+        dataOpt: #readTimeout
+        default: 15000
+        options: options)
+    body := read at: 1
+    rest := read at: 2
+    remaining := unread - body byteSize
+    socket := (self withBuffer: rest) withUnreadContentLength: remaining
+    remaining =:= 0 ifTrue: [^{#ok, body, socket withReadState: #read}]
+    {#more, body, socket}
+
+  /// {bytes, rest}: exactly toRead bytes, reading more when the buffer
+  /// runs short (Bandit's read_exactly!).
+  readExactly: toRead :: Integer from: buffer :: Binary readSize: readSize :: Integer timeout: timeout :: Integer -> Tuple =>
+    still := toRead - buffer byteSize
+    still =:= 0 ifTrue: [^{buffer, ""}]
+    still < 0
+      ifTrue: [
+        ^{(buffer part: 0 size: toRead), (buffer part: toRead size: (buffer byteSize - toRead))}
+      ]
+    sock := self socket
+    sock isNil ifTrue: [Error signal: "Incomplete body with no socket"]
+    actual := still < readSize ifTrue: [still] ifFalse: [readSize]
+    result := sock recv: actual timeout: timeout
+    result isError
+      ifTrue: [
+        reason := result error
+        reason =:= #timeout ifTrue: [self disconnectedOrTimeout: sock]
+        TransportError signal: ("Unrecoverable error: " ++ reason printString)
+      ]
+    data := result value
+    self
+      readExactly: toRead
+      from: (buffer concat: data)
+      readSize: readSize
+      timeout: timeout
+
+  readChunkedData: options :: Dictionary -> Tuple =>
+    maxLength := self
+      dataOpt: #length
+      default: 8000000
+      options: options
+    self
+      readChunkedData: self buffer
+      body: ""
+      bodyLength: 0
+      maxLength: maxLength
+      options: options
+
+  /// {tag, body, socket}, looping over chunks until the body ends or
+  /// maxLength is reached (Bandit's do_read_chunked_data!).
+  readChunkedData: buffer :: Binary body: body :: Binary bodyLength: length :: Integer maxLength: maxLength :: Integer options: options :: Dictionary -> Tuple =>
+    maxToRead := maxLength - length
+    chunk := self
+      readChunk: buffer
+      maxToRead: maxToRead
+      options: options
+    data := chunk at: 1
+    rest := chunk at: 2
+    data isEmpty ifTrue: [
+      ^{#ok, body, (self withBuffer: rest) withReadState: #read}
+    ]
+    grown := body concat: data
+    data byteSize < maxToRead
+      ifTrue: [
+        ^self
+          readChunkedData: rest
+          body: grown
+          bodyLength: (length + data byteSize)
+          maxLength: maxLength
+          options: options
+      ]
+    {#more, grown, self withBuffer: rest}
+
+  /// {data, rest}: one chunk; oversized chunks answer a fake chunk header
+  /// in front of the rest so the next call resumes mid-chunk (Bandit's
+  /// do_read_chunk!).
+  readChunk: buffer :: Binary maxToRead: maxToRead :: Integer options: options :: Dictionary -> Tuple =>
+    sized := self readChunkSize: buffer options: options
+    size := sized at: 1
+    rest := sized at: 2
+    size =:= 0 ifTrue: [^self readTrailers: rest]
+    toRead := size < maxToRead ifTrue: [size] ifFalse: [maxToRead]
+    read := self
+      readExactly: toRead
+      from: rest
+      readSize: (self
+        dataOpt: #readLength
+        default: 1000000
+        options: options)
+      timeout: (self
+        dataOpt: #readTimeout
+        default: 15000
+        options: options)
+    data := read at: 1
+    rest2 := read at: 2
+    remaining := size - toRead
+    remaining =:= 0
+      ifTrue: [
+        tailed := self
+          readExactly: 2
+          from: rest2
+          readSize: (self
+            dataOpt: #readLength
+            default: 1000000
+            options: options)
+          timeout: (self
+            dataOpt: #readTimeout
+            default: 15000
+            options: options)
+        newline := tailed at: 1
+        rest3 := tailed at: 2
+        (self isCrlf: newline) ifFalse: [
+          HTTPError signal: "Malformed chunked encoding request body"
+        ]
+        ^{data, rest3}
+      ]
+    {data, (((self hexOf: remaining) ++ Headers crlf) concat: rest2)}
+
+  /// {size, rest}: the chunk size, reading on until the CRLF appears.
+  /// Past 16 buffered bytes the header is rejected (RFC9112§7.1).
+  readChunkSize: buffer :: Binary options: options :: Dictionary -> Tuple =>
+    buffer byteSize < 16 ifTrue: [^self chunkSizeIn: buffer options: options]
+    found := (Erlang binary) match: (buffer part: 0 size: 16) with: Headers crlf
+    found match: [
+      {pos, 2} -> self parseChunkSize: buffer lineLength: pos;
+      _ -> HTTPError signal: "Was not able to parse a chunk size less than 16 octets in length"
+    ]
+
+  chunkSizeIn: buffer :: Binary options: options :: Dictionary -> Tuple =>
+    found := (Erlang binary) match: buffer with: Headers crlf
+    found match: [
+      {pos, 2} -> self parseChunkSize: buffer lineLength: pos;
+      _ -> self
+        readChunkSize: (buffer
+          concat: (self
+            readAvailableTimeout: (self
+              dataOpt: #readTimeout
+              default: 15000
+              options: options)))
+        options: options
+    ]
+
+  parseChunkSize: buffer :: Binary lineLength: length :: Integer -> Tuple =>
+    line := buffer part: 0 size: length
+    rest := buffer part: (length + 2) size: (buffer byteSize - length - 2)
+    {(self parseChunkSizeLine: line), rest}
+
+  /// The size of one chunk-size line; extensions (from ';') are ignored
+  /// (RFC9112§7.1.1). Anything but 1*HEXDIG is a 400: Bandit documents
+  /// why a bare Integer parse would wrongly accept '+10' and '-0'.
+  parseChunkSizeLine: line :: Binary -> Integer =>
+    size := 0
+    digits := 0
+    i := 0
+    [i < line byteSize]
+      whileTrue: [
+        byte := line byteAt: i
+        byte =:= 59 ifTrue: [^self chunkSizeChecked: size digits: digits]
+        digit := self hexValue: byte
+        digit isNil ifTrue: [HTTPError signal: "Unable to parse chunk size"]
+        size := size * 16 + digit
+        digits := digits + 1
+        i := i + 1
+      ]
+    self chunkSizeChecked: size digits: digits
+
+  chunkSizeChecked: size :: Integer digits: digits :: Integer -> Integer =>
+    digits =:= 0 ifTrue: [HTTPError signal: "Unable to parse chunk size"]
+    size
+
+  hexValue: byte :: Integer -> Integer | Nil =>
+    (byte between: 48 and: 57) ifTrue: [^byte - 48]
+    (byte between: 97 and: 102) ifTrue: [^byte - 87]
+    (byte between: 65 and: 70) ifTrue: [^byte - 55]
+    nil
+
+  /// Lowercase hex for resumed-chunk headers (Bandit emits upper; only
+  /// our own parser reads it back, and it accepts both). Digits go
+  /// through fromBytes:, not Character value:: the latter answers the
+  /// raw Integer for computed (non-literal) arguments.
+  hexOf: n :: Integer -> String =>
+    n =:= 0 ifTrue: [^"0"]
+    out := ""
+    rest := n
+    [rest > 0]
+      whileTrue: [
+        d := rest % 16
+        code := d < 10 ifTrue: [48 + d] ifFalse: [87 + d]
+        out := ((Binary fromBytes: #(code)) asString concat: out)
+        rest := rest div: 16
+      ]
+    out
+
+  /// Whether bytes are a CRLF, checked byte-wise so Binary and String
+  /// buffers compare identically.
+  isCrlf: bytes :: Binary -> Boolean =>
+    bytes byteSize =:= 2 ifFalse: [^false]
+    (bytes byteAt: 0) =:= 13 ifFalse: [^false]
+    (bytes byteAt: 1) =:= 10
+
+  /// The zero-size chunk's trailers: read and ignored, warning when
+  /// present (Bandit reuses its header reader on a default-options socket).
+  readTrailers: rest :: Binary -> Tuple =>
+    fake := (HTTP1Socket new withSocket: self socket) withBuffer: rest
+    read := fake doReadHeaders: #() count: 0
+    trailers := read at: 1
+    trailerSocket := read at: 2
+    trailers isEmpty ifFalse: [
+      Logger warn: "Encountered trailers in chunked request; ignoring"
+    ]
+    {"", trailerSocket buffer}
+
+  /// A readData: option with Bandit's default. Non-integers raise.
+  dataOpt: key :: Symbol default: default :: Integer options: options :: Dictionary -> Integer =>
+    raw := options at: key ifAbsent: [^default]
+    (raw isKindOf: Integer) ifFalse: [
+      Error signal: ("Invalid value for read option " ++ key asString)
+    ]
+    raw
 
   /// Only WebSocket upgrades (validated by the pipeline).
   supportsUpgrade: protocol :: Symbol -> Boolean => protocol =:= #websocket
@@ -222,7 +472,16 @@ typed Value subclass: HTTP1Socket
   readAvailable -> Binary =>
     sock := self socket
     sock isNil ifTrue: [Error signal: "Incomplete head with no socket"]
-    result := sock recv: 0 timeout: sock readTimeout
+    self availableFrom: sock timeout: sock readTimeout
+
+  /// The next available bytes with an explicit timeout (body reads).
+  readAvailableTimeout: timeout :: Integer -> Binary =>
+    sock := self socket
+    sock isNil ifTrue: [Error signal: "Incomplete body with no socket"]
+    self availableFrom: sock timeout: timeout
+
+  availableFrom: sock :: Socket timeout: timeout :: RecvTimeout -> Binary =>
+    result := sock recv: 0 timeout: timeout
     result isOk
       ifTrue: [
         chunk := result value

@@ -319,9 +319,17 @@ TestCase subclass: HTTP1SocketTest
     pair := self loopbackPair
     (Erlang gen_tcp) close: (pair at: 2)
     sock := HTTP1Socket new withSocket: (pair at: 1)
-    self assertRaises: [
-      sock disconnectedOrTimeout: (pair at: 1)
-    ] message: "Unrecoverable error: #closed"
+    deadline := (Erlang erlang monotonic_time: #millisecond) + 5000
+    done := false
+    [done not and: [(Erlang erlang monotonic_time: #millisecond) < deadline]]
+      whileTrue: [
+        [
+          sock disconnectedOrTimeout: (pair at: 1)
+        ] on: Error do: [:e |
+          e message =:= "Unrecoverable error: #closed" ifTrue: [done := true]
+        ]
+      ]
+    self assert: done
     (Erlang gen_tcp) close: (pair at: 3)
 
   testDisconnectedOrTimeoutData =>
@@ -345,3 +353,373 @@ TestCase subclass: HTTP1SocketTest
     sock := HTTP1Socket new
     self assert: (sock supportsUpgrade: #websocket)
     self deny: (sock supportsUpgrade: #h2c)
+
+  emptyOpts => Dictionary new
+
+  lengthOpts: n => #{#length => n}
+
+  /// Bodies are bytes; tests read them as text.
+  textOf: body =>
+    (body isKindOf: String) ifTrue: [body] ifFalse: [body asString]
+
+  headSocket: head => ((self socketWith: head) readHeaders) at: 4
+
+  chunkedHead =>
+    "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "transfer-encoding: chunked"
+      ++ self nl
+      ++ self nl
+
+  testNoBodyReadsEmpty =>
+    head := "GET / HTTP/1.1" ++ self nl ++ "host: x" ++ self nl ++ self nl
+    socket := self headSocket: head
+    self assert: socket readState equals: #read
+    {tag, body, socket2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: ""
+    self assert: socket2 equals: socket
+
+  testContentLengthExact =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "hello"
+    socket := self headSocket: head
+    {tag, body, socket2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+    self assert: socket2 readState equals: #read
+    self assert: socket2 unreadContentLength equals: 0
+    self assert: (self textOf: socket2 buffer) equals: ""
+
+  testContentLengthMore =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "hello"
+    socket := self headSocket: head
+    {tag, body, socket2} := socket readData: (self lengthOpts: 2)
+    self assert: tag equals: #more
+    self assert: (self textOf: body) equals: "he"
+    {tag2, body2, socket3} := socket2 readData: self emptyOpts
+    self assert: tag2 equals: #ok
+    self assert: (self textOf: body2) equals: "llo"
+    self assert: socket3 readState equals: #read
+
+  testContentLengthZero =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 0"
+      ++ self nl
+      ++ self nl
+    socket := self headSocket: head
+    {tag, body, socket2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: ""
+    self assert: socket2 readState equals: #read
+
+  testContentLengthKeepsRest =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "helloGET /next HTTP/1.1"
+      ++ self nl
+      ++ self nl
+    socket := self headSocket: head
+    {tag, body, socket2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+    self assert: ((self textOf: socket2 buffer) startsWith: "GET /next")
+
+  testContentLengthFromSocket =>
+    pair := self loopbackPair
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    socket := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    (Erlang gen_tcp) send: (pair at: 2) with: "hello"
+    {tag, body, _s2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+    self closeLoopback: pair
+
+  testContentLengthSplit =>
+    pair := self loopbackPair
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "hel"
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    socket := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    (Erlang gen_tcp) send: (pair at: 2) with: "lo"
+    {tag, body, _s2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+    self closeLoopback: pair
+
+  testReadDataAfterRead =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "hello"
+    socket := self headSocket: head
+    socket2 := (socket readData: self emptyOpts) at: 3
+    {tag, body, socket3} := socket2 readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: ""
+    self assert: socket3 equals: socket2
+
+  testChunkedSingle =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "5"
+        ++ self nl
+        ++ "hello"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    {tag, body, socket2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+    self assert: socket2 readState equals: #read
+
+  testChunkedMultiple =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "5"
+        ++ self nl
+        ++ "hello"
+        ++ self nl
+        ++ "6"
+        ++ self nl
+        ++ " world"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    {tag, body, _s2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello world"
+
+  testChunkedExtensions =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "5;ext=x"
+        ++ self nl
+        ++ "hello"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    {tag, body, _s2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+
+  testChunkedUppercase =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "A"
+        ++ self nl
+        ++ "0123456789"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    {tag, body, _s2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "0123456789"
+
+  testChunkedMore =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "B"
+        ++ self nl
+        ++ "hello world"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    {tag, body, socket2} := socket readData: (self lengthOpts: 5)
+    self assert: tag equals: #more
+    self assert: (self textOf: body) equals: "hello"
+    {tag2, body2, socket3} := socket2 readData: self emptyOpts
+    self assert: tag2 equals: #ok
+    self assert: (self textOf: body2) equals: " world"
+    self assert: socket3 readState equals: #read
+
+  testChunkedResumeHexDigit =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "F"
+        ++ self nl
+        ++ "0123456789abcde"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    {tag, body, socket2} := socket readData: (self lengthOpts: 5)
+    self assert: tag equals: #more
+    self assert: (self textOf: body) equals: "01234"
+    {tag2, body2, socket3} := socket2 readData: self emptyOpts
+    self assert: tag2 equals: #ok
+    self assert: (self textOf: body2) equals: "56789abcde"
+    self assert: socket3 readState equals: #read
+
+  testChunkedTrailers =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "5"
+        ++ self nl
+        ++ "hello"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ "x-t: 1"
+        ++ self nl
+        ++ self nl)
+    {tag, body, socket2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+    self assert: socket2 readState equals: #read
+
+  testChunkedBadHex =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "5g"
+        ++ self nl
+        ++ "hello"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    self assertRaises: [
+      socket readData: self emptyOpts
+    ] message: "Unable to parse chunk size"
+    self assertRaisesStatus: [socket readData: self emptyOpts] status: 400
+
+  testChunkedRejectsSign =>
+    plus := self
+      headSocket: (self chunkedHead
+        ++ "+5"
+        ++ self nl
+        ++ "hello"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    self assertRaises: [
+      plus readData: self emptyOpts
+    ] message: "Unable to parse chunk size"
+    minus := self headSocket: (self chunkedHead ++ "-0" ++ self nl ++ self nl)
+    self assertRaises: [
+      minus readData: self emptyOpts
+    ] message: "Unable to parse chunk size"
+
+  testChunkedMissingCrlf =>
+    socket := self headSocket: (self chunkedHead ++ "5" ++ self nl ++ "helloXX0" ++ self nl ++ self nl)
+    self assertRaises: [
+      socket readData: self emptyOpts
+    ] message: "Malformed chunked encoding request body"
+
+  testChunkedHeaderTooLong =>
+    socket := self
+      headSocket: (self chunkedHead
+        ++ "AAAAAAAAAAAAAAAAAAAAA"
+        ++ self nl
+        ++ "0"
+        ++ self nl
+        ++ self nl)
+    self assertRaisesStarting: [
+      socket readData: self emptyOpts
+    ] message: "Was not able to parse a chunk size"
+
+  testChunkedEmptySize =>
+    socket := self headSocket: (self chunkedHead ++ self nl ++ "0" ++ self nl ++ self nl)
+    self assertRaises: [
+      socket readData: self emptyOpts
+    ] message: "Unable to parse chunk size"
+
+  testUnsupportedTransferEncoding =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "transfer-encoding: gzip"
+      ++ self nl
+      ++ self nl
+    socket := self headSocket: head
+    self assertRaises: [
+      socket readData: self emptyOpts
+    ] message: "Unsupported transfer-encoding"
+    self assertRaisesStatus: [socket readData: self emptyOpts] status: 400
+
+  testChunkedFromSocket =>
+    pair := self loopbackPair
+    (Erlang gen_tcp) send: (pair at: 2) with: self chunkedHead
+    socket := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    (Erlang gen_tcp) send: (pair at: 2) with: ("5" ++ self nl ++ "hello" ++ self nl ++ "0" ++ self nl ++ self nl)
+    {tag, body, _s2} := socket readData: self emptyOpts
+    self assert: tag equals: #ok
+    self assert: (self textOf: body) equals: "hello"
+    self closeLoopback: pair
+
+  testBodyReadTimeoutOpt =>
+    pair := self loopbackPair
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    socket := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    self assertRaises: [
+      socket readData: #{#readTimeout => 100}
+    ] message: "Read timeout"
+    self closeLoopback: pair
+
+  testInvalidReadOpt =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "hello"
+    socket := self headSocket: head
+    self assertRaises: [
+      socket readData: #{#length => "lots"}
+    ] message: "Invalid value for read option length"

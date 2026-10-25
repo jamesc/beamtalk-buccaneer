@@ -7,7 +7,7 @@
 # lists the arguments).
 #
 #   bench/buccaneer_node  the spike's handler on Catalina (sources copied
-#                         from spikes/fixtures: `beamtalk build` skips
+#                         from spikes/engine_spikes/src: `beamtalk build` skips
 #                         symlinked sources)
 #   bench/cowboy_node     beamtalk-http 0.1.10 on cowboy (the gate baseline)
 #   bench/bandit          Bandit 1.12.5 (a mix project; context)
@@ -16,7 +16,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
 for f in spike_parser spike_request spike_exchange exchange_state not_owner spike_probe spike_handler; do
-  cp "$root/spikes/fixtures/$f.bt" "$root/bench/buccaneer_node/src/$f.bt"
+  cp "$root/spikes/engine_spikes/src/$f.bt" "$root/bench/buccaneer_node/src/$f.bt"
 done
 (cd "$root/bench/buccaneer_node" && beamtalk build >/dev/null)
 (cd "$root/bench/cowboy_node" && beamtalk build >/dev/null)

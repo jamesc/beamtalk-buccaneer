@@ -3,7 +3,7 @@
 
 /// BuccaneerNode — what the Erlang bench harness (`bench/harness/hb_node.erl`)
 /// calls in the Buccaneer spike's peer node: a Catalina server running the
-/// spike's `SpikeHandler` (src/ links to `spikes/fixtures/`) with a request
+/// spike's `SpikeHandler` (sources copied from `spikes/engine_spikes/src/`) with a request
 /// handler that answers a fixed `hello world`. Sealed class methods compile
 /// to plain exported functions, so the harness calls them directly.
 sealed typed Object subclass: BuccaneerNode

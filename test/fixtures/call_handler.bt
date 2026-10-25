@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Value request handler (the ExchangeHandler shape, before Exchange
+/// lands): answers call:.
+typed Value subclass: CallHandler
+
+  call: _ex :: Object -> Object => nil

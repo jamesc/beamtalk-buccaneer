@@ -1,0 +1,244 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Request-body progress (Bandit's read_state).
+type ReadState = #unread | #headersRead | #read
+
+/// Response progress (Bandit's write_state).
+type WriteState = #unsent | #writing | #chunking | #chunkStreaming | #sent
+
+/// Bandit.HTTP1.Socket: the low-level HTTP/1 connection mechanics
+/// (RFC 9112). A Value threaded functionally; the Exchange state stores
+/// the latest one. The request line and headers come from
+/// erlang:decode_packet through the FFI; a nil socket parses from the
+/// buffer only (tests).
+typed Value subclass: HTTP1Socket
+  field: socket :: Socket | Nil = nil
+  field: buffer :: Binary = ""
+  field: readState :: ReadState = #unread
+  field: writeState :: WriteState = #unsent
+  field: unreadContentLength :: Integer | Nil = nil
+  field: bodyEncoding :: Binary | Nil = nil
+  field: version :: HttpVersion = #http10
+  field: sendBuffer :: List = #()
+  field: requestConnectionHeader :: Binary | Nil = nil
+  field: closeAfterResponse :: Boolean = false
+  field: keepalive :: Boolean | Nil = nil
+  field: opts :: ConfigOptions = Dictionary new
+
+  /// {method, target, headers, socket}: the request head. Bandit tags
+  /// {:ok, ...}; the tag never varies (failures raise), so it is dropped.
+  readHeaders -> Tuple =>
+    head := self doReadRequestLine
+    method := head at: 1
+    target := head at: 2
+    socket := head at: 3
+    headed := socket doReadHeaders: #() count: 0
+    headers := headed at: 1
+    headedSocket := headed at: 2
+    contentLength := self contentLengthOf: headers
+    bodyEncoding := self transferEncodingOf: headers
+    conn := self loweredOrOpaque: (Headers getHeader: headers name: "connection")
+    socket3 := headedSocket withRequestConnectionHeader: conn
+    contentLength isNil
+      ifTrue: [
+        bodyEncoding isNil ifTrue: [
+          ^{method, target, headers, socket3 withReadState: #read}
+        ]
+        socket3 version =:= #http10
+          ifTrue: [
+            HTTPError signal: "Transfer-encoding is not valid for HTTP/1.0 requests (RFC9112§6.1)"
+          ]
+        ^{method, target, headers, (socket3 withReadState: #headersRead) withBodyEncoding: bodyEncoding}
+      ]
+      ifFalse: [
+        bodyEncoding isNil
+          ifFalse: [
+            HTTPError signal: "Request cannot contain both 'content-length' and 'transfer-encoding' (RFC9112§6.3.3)"
+          ]
+        ^{method, target, headers, (socket3 withReadState: #headersRead) withUnreadContentLength: contentLength}
+      ]
+
+  /// Only WebSocket upgrades (validated by the pipeline).
+  supportsUpgrade: protocol :: Symbol -> Boolean => protocol =:= #websocket
+
+  doReadRequestLine -> Tuple =>
+    packetSize := self http1Opt: #maxRequestLineLength default: 10000
+    decoded := Erlang erlang
+      decode_packet: #http_bin
+      with: self buffer
+      with: #({#packet_size, packetSize})
+    decoded isError
+      ifTrue: [
+        reason := decoded error reason
+        reason =:= #invalid ifTrue: [
+          HTTPError414 signal: "Request URI is too long"
+        ]
+        HTTPError signal: ("Request line unknown error: " ++ reason printString)
+      ]
+    decoded match: [
+      {#more, _} -> (self withBuffer: (self buffer concat: self readAvailable)) doReadRequestLine;
+      {#ok, {#http_request, m, t, ver}, rest} -> self
+        requestHead: m
+        target: t
+        version: ver
+        rest: rest;
+      {#ok, {#http_error, reason}, rest} -> reason =:= Headers crlf ifTrue: [
+        (self withBuffer: rest) doReadRequestLine
+      ] ifFalse: [
+        HTTPError signal: ("Request line HTTP error: " ++ reason printString)
+      ];
+      _ -> HTTPError signal: "Request line unknown error"
+    ]
+
+  /// Assemble {method, target, socket} from a decoded request line.
+  requestHead: m :: Object target: t :: Object version: ver :: Object rest: rest :: Binary -> Tuple =>
+    method := m match: [
+      s :: Symbol -> s asString;
+      b :: String -> b;
+      _ -> HTTPError signal: "Request line HTTP error: bad method"
+    ]
+    target := self resolveRequestTarget: t method: method
+    socket := (self withBuffer: rest) withVersion: (self versionOf: ver)
+    {method, target, socket}
+
+  versionOf: ver :: Object -> HttpVersion =>
+    ver match: [
+      {1, 1} -> #http11;
+      {1, 0} -> #http10;
+      _ -> HTTPError signal: ("Invalid HTTP version: " ++ ver printString)
+    ]
+
+  /// {scheme, host, port, path}, with nils by form (Bandit's 4-tuple).
+  /// A bare-string target (decode_packet on a garbage line) answers 400
+  /// here; Bandit's clauses miss it and 500. Deliberate: garbage input
+  /// should not look like a server bug in monitoring.
+  resolveRequestTarget: target :: Object method: method :: String -> Tuple =>
+    target match: [
+      {#abs_path, path} -> {nil, nil, nil, path};
+      {#absoluteURI, scheme, host, #undefined, path} -> {self stringOf: scheme, host, nil, path};
+      {#absoluteURI, scheme, host, port, path} -> {self stringOf: scheme, host, port, path};
+      star :: Symbol -> (star asString =:= "*" and: [
+        method =:= "OPTIONS"
+      ]) ifTrue: [
+        {nil, nil, nil, star}
+      ] ifFalse: [
+        HTTPError signal: "Unsupported request target (RFC9112§3.2)"
+      ];
+      {#scheme, scheme, port} -> method =:= "CONNECT" ifTrue: [
+        {nil, scheme, port, nil}
+      ] ifFalse: [
+        HTTPError signal: "Unsupported request target (RFC9112§3.2)"
+      ];
+      _ -> HTTPError signal: "Unsupported request target (RFC9112§3.2)"
+    ]
+
+  /// decode_packet answers atoms for well-known tokens, binaries otherwise.
+  stringOf: value :: Object -> String =>
+    value match: [
+      s :: Symbol -> s asString;
+      b :: String -> b;
+      _ -> HTTPError signal: "Request line HTTP error: bad token"
+    ]
+
+  doReadHeaders: headers :: List(Tuple) count: count :: Integer -> Tuple =>
+    packetSize := self http1Opt: #maxHeaderLength default: 10000
+    maxCount := self http1Opt: #maxHeaderCount default: 50
+    decoded := Erlang erlang
+      decode_packet: #httph_bin
+      with: self buffer
+      with: #({#packet_size, packetSize})
+    decoded isError
+      ifTrue: [
+        reason := decoded error reason
+        reason =:= #invalid ifTrue: [HTTPError431 signal: "Header too long"]
+        HTTPError signal: ("Header read unknown error: " ++ reason printString)
+      ]
+    decoded match: [
+      {#more, _} -> (self withBuffer: (self buffer concat: self readAvailable)) doReadHeaders: headers count: count;
+      {#ok, {#http_header, _n, field, _r, value}, rest} -> self
+        headerRead: field
+        value: value
+        rest: rest
+        headers: headers
+        count: count
+        maxCount: maxCount;
+      {#ok, #http_eoh, rest} -> {headers reversed, (self withBuffer: rest) withReadState: #headersRead};
+      {#ok, {#http_error, reason}, _rest} -> HTTPError signal: ("Header read HTTP error: " ++ reason printString);
+      _ -> HTTPError signal: "Header read unknown error"
+    ]
+
+  headerRead: field :: Object value: value :: Object rest: rest :: Binary headers: headers :: List(Tuple) count: count :: Integer maxCount: maxCount :: Integer -> Tuple =>
+    (Headers fieldValueValid: value) ifFalse: [
+      HTTPError signal: "Field value contains invalid characters (RFC9110§5.5)"
+    ]
+    name := field match: [
+      s :: Symbol -> s asString;
+      b :: String -> b;
+      _ -> HTTPError signal: "Header read HTTP error: bad name"
+    ]
+    next := count + 1
+    next > maxCount ifTrue: [HTTPError431 signal: "Too many headers"]
+    (self withBuffer: rest) doReadHeaders: (headers addFirst: {(Headers asciiLowercase: name), value}) count: next
+
+  contentLengthOf: headers :: List(Tuple) -> Integer | Nil =>
+    result := Headers getContentLength: headers
+    result isError
+      ifTrue: [
+        HTTPError signal: ("Content length unknown error: " ++ result error printString)
+      ]
+    length := result value
+    length
+
+  transferEncodingOf: headers :: List(Tuple) -> Binary | Nil =>
+    result := Headers getTransferEncoding: headers
+    result isError
+      ifTrue: [
+        HTTPError signal: ("Transfer encoding unknown error: " ++ result error printString)
+      ]
+    self loweredOrOpaque: result value
+
+  /// Lowercase a header value for comparison, passing nil and non-UTF8
+  /// values through: a Binary can never equal an ASCII token, so leaving
+  /// it unlowercased is observationally identical for exact matching.
+  loweredOrOpaque: value :: Object -> Binary | Nil =>
+    value isNil ifTrue: [^nil]
+    (value isKindOf: String) ifTrue: [^Headers asciiLowercase: value]
+    (value isKindOf: Binary) ifTrue: [^value]
+    nil
+
+  /// An #http1 option with Bandit's default. Non-integers raise: these
+  /// feed decode_packet limits, where a bad type would fail obscurely.
+  http1Opt: key :: Symbol default: default :: Integer -> Integer =>
+    section := self opts at: #http1 ifAbsent: [^default]
+    (section isKindOf: Dictionary) ifFalse: [^default]
+    raw := section at: key ifAbsent: [^default]
+    (raw isKindOf: Integer) ifFalse: [
+      Error signal: ("Invalid value for http1 option " ++ key asString)
+    ]
+    raw
+
+  /// The next available bytes (Bandit's read_available!).
+  readAvailable -> Binary =>
+    sock := self socket
+    sock isNil ifTrue: [Error signal: "Incomplete head with no socket"]
+    result := sock recv: 0 timeout: sock readTimeout
+    result isOk
+      ifTrue: [
+        chunk := result value
+        chunk isEmpty ifTrue: [^self disconnectedOrTimeout: sock]
+        ^chunk
+      ]
+    reason := result error
+    reason =:= #timeout ifTrue: [^self disconnectedOrTimeout: sock]
+    TransportError signal: ("Unrecoverable error: " ++ reason printString)
+
+  /// After a timeout or empty read, check whether the peer is still
+  /// connected: TransportError for a disconnect, HTTPError408 for a
+  /// genuine timeout.
+  disconnectedOrTimeout: sock :: Socket -> Binary =>
+    probe := sock recv: 0 timeout: 0
+    probe isOk ifTrue: [HTTPError408 signal: "Body read timeout"]
+    reason := probe error
+    reason =:= #timeout ifTrue: [HTTPError408 signal: "Read timeout"]
+    TransportError signal: ("Unrecoverable error: " ++ reason printString)

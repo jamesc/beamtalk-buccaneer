@@ -1,0 +1,36 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// How the response body is to be delivered (Bandit's body_disposition).
+type BodyDisposition = #raw | #chunkEncoded | #noBody | #inform
+
+/// HTTP versions on the wire (Bandit's http_protocol).
+type HttpVersion = #http10 | #http11 | #http2
+
+/// Bandit.HTTPTransport: the connection mechanics one HTTP version
+/// implements. HTTP1Socket and (Phase 6) HTTP2Stream conform
+/// structurally; no implements: declaration is needed.
+Protocol define: HTTPTransport
+  /// {method, target, headers, transport}: the request head.
+  readHeaders -> Tuple
+
+  /// {#ok | #more, data, transport}: the next body part.
+  readData: options :: Dictionary -> Tuple
+
+  /// The response head; answers the next transport.
+  sendHeaders: status :: Integer headers: headers :: List(Tuple) disposition: disposition :: BodyDisposition -> Object
+
+  /// Response data; answers the next transport.
+  sendData: data :: Object end: endRequest :: Boolean -> Object
+
+  /// A file response; answers the next transport.
+  sendfile: path :: String offset: offset :: Integer length: length :: Object -> Object
+
+  /// Drain an unread body within limits; answers the next transport.
+  ensureCompleted -> Object
+
+  /// Whether this transport can upgrade to protocol.
+  supportsUpgrade: protocol :: Symbol -> Boolean
+
+  /// Answer an error status unless the handler already sent.
+  sendOnError: error :: Exception -> Object

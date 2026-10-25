@@ -1,0 +1,270 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Ported from Bandit's headers_test.exs (20 tests), plus unit tests for
+/// the helpers Bandit covers only through the HTTP/1 suite (getHeader,
+/// fieldValueValid, getHostHeader, getTransferEncoding, addContentLength).
+TestCase subclass: HeadersTest
+
+  // ===== parseHostlikeHeader (Bandit: parse_hostlike_header/1) =====
+  testParsesHostAndPortForAllValidPorts =>
+    port := 0
+    [port <= 65535]
+      whileTrue: [
+        parsed := Headers parseHostlikeHeader: ("banana:" ++ port asString)
+        self assert: (parsed at: 1) equals: "banana"
+        self assert: (parsed at: 2) equals: port
+        port := port + 1
+      ]
+
+  testParsesHostAndPortForIpv6AllValidPorts =>
+    port := 0
+    [port <= 65535]
+      whileTrue: [
+        parsed := Headers parseHostlikeHeader: ("[::1]:" ++ port asString)
+        self assert: (parsed at: 1) equals: "[::1]"
+        self assert: (parsed at: 2) equals: port
+        port := port + 1
+      ]
+
+  testReturnsErrorForInvalidPorts =>
+    #(-999999999, -1, 65536, 999999999, "abc123", "123abc")
+      do: [:port |
+        caught := false
+        [Headers parseHostlikeHeader: ("banana:" ++ port asString)]
+          on: HTTPError
+          do: [:e |
+            caught := true
+            self assert: e message equals: "Header contains invalid port"
+          ]
+        self assert: caught
+      ]
+
+  testReturnsErrorForIpv6InvalidPorts =>
+    #(-999999999, -1, 65536, 999999999, "abc123", "123abc")
+      do: [:port |
+        caught := false
+        [Headers parseHostlikeHeader: ("[::1]:" ++ port asString)]
+          on: HTTPError
+          do: [:e |
+            caught := true
+            self assert: e message equals: "Header contains invalid port"
+          ]
+        self assert: caught
+      ]
+
+  testParsesBareHostWithoutPort =>
+    parsed := Headers parseHostlikeHeader: "banana"
+    self assert: (parsed at: 1) equals: "banana"
+    self assert: (parsed at: 2) equals: nil
+    v6 := Headers parseHostlikeHeader: "[::1]"
+    self assert: (v6 at: 1) equals: "[::1]"
+    self assert: (v6 at: 2) equals: nil
+
+  // ===== getContentLength (Bandit: get_content_length/1) =====
+  testParsesNonNegativeIntegers =>
+    (#("0", "1", "100", "101", "420", "999999999", "0010") zip: #(0, 1, 100, 101, 420, 999999999, 10))
+      do: [:pair |
+        header := #({"content-length", pair at: 1})
+        self assert: (Headers getContentLength: header) unwrap equals: (pair at: 2)
+      ]
+
+  testParsesRepeatIntegers =>
+    (#("123, 123", "234,234") zip: #(123, 234))
+      do: [:pair |
+        header := #({"content-length", pair at: 1})
+        self assert: (Headers getContentLength: header) unwrap equals: (pair at: 2)
+      ]
+
+  testParsesRepeatIntegersWithWhitespace =>
+    header := #({"content-length", "345  , ,  345 ,345,345"})
+    self assert: (Headers getContentLength: header) unwrap equals: 345
+
+  testErrorsOnNonMatchingRepeatIntegers =>
+    #("123, 124", "234 , 235, 235", "345 345")
+      do: [:integer |
+        header := #({"content-length", integer})
+        self assert: (Headers getContentLength: header) isError
+      ]
+
+  testErrorsOnPartialIntegers =>
+    #("123abc", "0-0", "0x01", "3.14")
+      do: [:integer |
+        header := #({"content-length", integer})
+        self assert: (Headers getContentLength: header) isError
+      ]
+
+  testErrorsOnNegativeIntegers =>
+    #("-1", "-420", "-999_999_999", "-0010")
+      do: [:integer |
+        header := #({"content-length", integer})
+        self assert: (Headers getContentLength: header) isError
+      ]
+
+  testErrorsOnInvalidIntegers =>
+    #("abc123", "", " ", " 0", "-123abc")
+      do: [:integer |
+        header := #({"content-length", integer})
+        self assert: (Headers getContentLength: header) isError
+      ]
+
+  testAbsentContentLengthIsNil =>
+    self assert: (Headers getContentLength: #()) unwrap equals: nil
+
+  testRepeatedContentLengthHeaderIsError =>
+    headers := #({"content-length", "5"}, {"content-length", "5"})
+    self assert: (Headers getContentLength: headers) isError
+
+  // ===== tokenListMember (Bandit: token_list_member?/2) =====
+  testTokenListNilValue =>
+    self deny: (Headers tokenListMember: nil token: "close")
+
+  testTokenListBareValue =>
+    self assert: (Headers tokenListMember: "close" token: "close")
+    self deny: (Headers tokenListMember: "keep-alive" token: "close")
+
+  testTokenListPositions =>
+    self assert: (Headers tokenListMember: "keep-alive, close" token: "close")
+    self assert: (Headers tokenListMember: "close, keep-alive" token: "close")
+    self assert: (Headers tokenListMember: "keep-alive,close" token: "close")
+
+  testTokenListCaseInsensitive =>
+    self assert: (Headers tokenListMember: "Close" token: "close")
+    self assert: (Headers tokenListMember: "keep-alive, CLOSE" token: "close")
+
+  testTokenListSubstringDoesNotMatch =>
+    self deny: (Headers tokenListMember: "closely" token: "close")
+
+  // ===== headerContainsToken (Bandit: header_contains_token?/3) =====
+  testHeaderTokenAbsent =>
+    self
+      deny: (Headers
+        headerContainsToken: #()
+        name: "vary"
+        token: "accept-encoding")
+
+  testHeaderTokenValue =>
+    self
+      assert: (Headers
+        headerContainsToken: #({"vary", "accept-encoding"})
+        name: "vary"
+        token: "accept-encoding")
+    self
+      deny: (Headers
+        headerContainsToken: #({"vary", "accept-language"})
+        name: "vary"
+        token: "accept-encoding")
+
+  testHeaderTokenNameCaseInsensitive =>
+    self
+      assert: (Headers
+        headerContainsToken: #({"Vary", "Accept-Encoding"})
+        name: "vary"
+        token: "accept-encoding")
+
+  testHeaderTokenScansRepeats =>
+    headers := #({"vary", "accept-language"}, {"vary", "accept-encoding"})
+    self
+      assert: (Headers
+        headerContainsToken: headers
+        name: "vary"
+        token: "accept-encoding")
+
+  // ===== Helpers Bandit covers only through the HTTP/1 suite =====
+  testGetHeaderFirstWins =>
+    headers := #({"x-a", "1"}, {"x-b", "2"}, {"x-a", "3"})
+    self assert: (Headers getHeader: headers name: "x-a") equals: "1"
+    self assert: (Headers getHeader: headers name: "missing") equals: nil
+
+  testFieldValueValid =>
+    self assert: (Headers fieldValueValid: "text/plain; charset=utf-8")
+    self deny: (Headers fieldValueValid: ("a" ++ Headers cr ++ "b"))
+    self deny: (Headers fieldValueValid: ("a" ++ Headers lf ++ "b"))
+    self deny: (Headers fieldValueValid: ("a" ++ Headers nul ++ "b"))
+
+  testStripSpaces =>
+    crlf := Headers crlf
+    tab := Headers tab
+    self assert: (Headers stripSpaces: ("  " ++ tab ++ "close" ++ tab ++ " ")) equals: "close"
+    self assert: (Headers stripSpaces: (crlf ++ "close")) equals: "close"
+    self assert: (Headers stripSpaces: ("close" ++ crlf)) equals: ("close" ++ crlf)
+    self assert: (Headers stripSpaces: ("a" ++ Headers cr ++ "b")) equals: ("a" ++ Headers cr ++ "b")
+
+  testFieldValueValidBinary =>
+    self assert: (Headers fieldValueValid: (Binary fromBytes: #(99, 97, 102, 233)))
+    self deny: (Headers fieldValueValid: (Binary fromBytes: #(97, 13, 98)))
+    self deny: (Headers fieldValueValid: (Binary fromBytes: #(97, 10, 98)))
+    self deny: (Headers fieldValueValid: (Binary fromBytes: #(97, 0, 98)))
+
+  testBinaryHostRejected =>
+    caught := false
+    [Headers parseHostlikeHeader: (Binary fromBytes: #(233))]
+      on: HTTPError
+      do: [:e |
+        caught := true
+        self assert: e message equals: "Invalid host header"
+      ]
+    self assert: caught
+
+  testGetHostHeader =>
+    self assert: (Headers getHostHeader: #()) unwrap equals: nil
+    self assert: (Headers getHostHeader: #({"host", "example.com"})) unwrap equals: "example.com"
+    dup := #({"host", "a"}, {"host", "a"})
+    self assert: (Headers getHostHeader: dup) isError
+
+  testGetTransferEncoding =>
+    self assert: (Headers getTransferEncoding: #()) unwrap equals: nil
+    single := #({"transfer-encoding", "chunked"})
+    self assert: (Headers getTransferEncoding: single) unwrap equals: "chunked"
+    dup := #({"transfer-encoding", "chunked"}, {"transfer-encoding", "chunked"})
+    self assert: (Headers getTransferEncoding: dup) isError
+
+  testAddContentLengthStripsOn1xxAnd204 =>
+    headers := #({"content-length", "5"}, {"x-a", "1"})
+    self
+      assert: (Headers
+        addContentLength: headers
+        length: 9
+        status: 103
+        method: "GET")
+      equals: #({"x-a", "1"})
+    self
+      assert: (Headers
+        addContentLength: headers
+        length: 9
+        status: 204
+        method: "GET")
+      equals: #({"x-a", "1"})
+
+  testAddContentLengthKeepsOn304AndHead =>
+    headers := #({"content-length", "5"})
+    self
+      assert: (Headers
+        addContentLength: headers
+        length: 0
+        status: 304
+        method: "GET")
+      equals: headers
+    self
+      assert: (Headers
+        addContentLength: headers
+        length: 0
+        status: 200
+        method: "HEAD")
+      equals: headers
+
+  testAddContentLengthSetsOtherwise =>
+    self
+      assert: (Headers
+        addContentLength: #()
+        length: 9
+        status: 200
+        method: "GET")
+      equals: #({"content-length", "9"})
+    headers := #({"content-length", "5"}, {"x-a", "1"})
+    got := Headers
+      addContentLength: headers
+      length: 9
+      status: 200
+      method: "GET"
+    self assert: got equals: #({"content-length", "9"}, {"x-a", "1"})

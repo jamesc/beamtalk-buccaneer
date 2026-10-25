@@ -1,0 +1,203 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Option dictionaries: Symbol keys, values checked at each use site.
+type ConfigOptions = Dictionary(Symbol, Object)
+
+/// URL schemes served.
+type Scheme = #http | #https
+
+/// Bandit's start_link/1 options: validation, defaults and normalization.
+///
+/// Top-level conveniences (#port, #ip, #inet/#inet6, the TLS file options)
+/// fold into the #catalina section as Bandit folds them into Thousand
+/// Island's options; the #http/#http1/#http2/#websocket sections keep
+/// Bandit's keys in camelCase. Unknown keys raise, as a typo the user
+/// should hear about.
+typed Value subclass: BuccaneerConfig
+  field: handler :: Object = nil
+  field: scheme :: Scheme = #http
+  field: port :: Integer = 4000
+  field: displayHandler :: Object = nil
+  field: startupLog :: LogLevel | False = #info
+  field: http :: ConfigOptions = Dictionary new
+  field: http1 :: ConfigOptions = Dictionary new
+  field: http2 :: ConfigOptions = Dictionary new
+  field: websocket :: ConfigOptions = Dictionary new
+  field: catalina :: ConfigOptions = Dictionary new
+
+  class from: options :: ConfigOptions -> BuccaneerConfig =>
+    self
+      validateKeys: options
+      known: self topLevelKeys
+      name: "top level"
+    handler := self checkHandler: options
+    scheme := self checkScheme: options
+    port := self parsePort: (options at: #port ifAbsent: [nil]) scheme: scheme
+    http := self
+      section: options
+      name: #http
+      keys: self httpKeys
+    http1 := self
+      section: options
+      name: #http1
+      keys: self http1Keys
+    http2 := self
+      section: options
+      name: #http2
+      keys: self http2Keys
+    websocket := self
+      section: options
+      name: #websocket
+      keys: self websocketKeys
+    catalina := self
+      catalinaSection: options
+      port: port
+      scheme: scheme
+    display := options at: #displayHandler ifAbsent: [handler]
+    startup := options at: #startupLog ifAbsent: [#info]
+    BuccaneerConfig
+      handler: handler
+      scheme: scheme
+      port: port
+      displayHandler: display
+      startupLog: startup
+      http: http
+      http1: http1
+      http2: http2
+      websocket: websocket
+      catalina: catalina
+
+  class topLevelKeys -> List(Symbol) =>
+    #(#handler, #scheme, #port, #ip, #inet, #inet6, #keyfile, #certfile, #otpApp, #cipherSuite, #displayHandler, #startupLog, #catalina, #http, #http1, #http2, #websocket)
+
+  class httpKeys -> List(Symbol) =>
+    #(#compress, #responseEncodings, #deflateOptions, #zstdOptions, #logExceptionsWithStatusCodes, #logProtocolErrors, #logClientClosures)
+
+  class http1Keys -> List(Symbol) =>
+    #(#enabled, #maxRequestLineLength, #maxHeaderLength, #maxHeaderCount, #maxRequests, #clearProcessDict, #gcEveryNKeepaliveRequests, #logUnknownMessages)
+
+  class http2Keys -> List(Symbol) =>
+    #(#enabled, #maxHeaderBlockSize, #maxRequests, #maxResetStreamRate, #sendfileChunkSize, #defaultLocalSettings)
+
+  class websocketKeys -> List(Symbol) =>
+    #(#enabled, #maxFrameSize, #maxFragmentedMessageSize, #validateTextFrames, #compress, #deflateOptions, #maxInflateRatio, #primitiveOpsModule, #logProtocolErrors)
+
+  class validateKeys: options :: ConfigOptions known: known :: List(Symbol) name: section :: String -> Nil =>
+    illegal := options keys reject: [:key | known includes: key]
+    illegal isEmpty
+      ifFalse: [
+        Error signal: ("Unsupported key(s) in " ++ section ++ " config: " ++ illegal printString)
+      ]
+    nil
+
+  class checkHandler: opts :: ConfigOptions -> Object =>
+    handler := opts at: #handler ifAbsent: [nil]
+    handler isNil ifTrue: [Error signal: "A value is required for #handler"]
+    ((handler isKindOf: Block) or: [
+      handler respondsTo: #call:
+    ]) ifFalse: [Error signal: "Invalid value for #handler"]
+    handler
+
+  class checkScheme: opts :: ConfigOptions -> Scheme =>
+    raw := opts at: #scheme ifAbsent: [#http]
+    raw match: [
+      #http -> #http;
+      #https -> #https;
+      _ -> Error signal: "Invalid value for #scheme"
+    ]
+
+  class parsePort: value :: Object scheme: scheme :: Scheme -> Integer =>
+    value isNil ifTrue: [scheme =:= #https ifTrue: [^4040] ifFalse: [^4000]]
+    (value isKindOf: Integer) ifTrue: [^value]
+    (value isKindOf: String) ifFalse: [Error signal: "Invalid value for #port"]
+    parsed := Headers parseInteger: value
+    parsed isError ifTrue: [Error signal: "Invalid value for #port"]
+    parts := parsed unwrap
+    rest := parts at: 2
+    rest isEmpty ifFalse: [Error signal: "Invalid value for #port"]
+    n := parts at: 1
+    n
+
+  class section: opts :: ConfigOptions name: key :: Symbol keys: known :: List(Symbol) -> ConfigOptions =>
+    raw := opts at: key ifAbsent: [^Dictionary new]
+    (raw isKindOf: Dictionary) ifFalse: [
+      Error signal: ("Invalid config for section: " ++ key asString)
+    ]
+    dict := raw
+    self
+      validateKeys: dict
+      known: known
+      name: key asString
+    dict
+
+  class catalinaSection: opts :: ConfigOptions port: port :: Integer scheme: scheme :: Scheme -> ConfigOptions =>
+    base := self
+      section: opts
+      name: #catalina
+      keys: ServerConfig optionNames
+    withPort := base
+    (base includesKey: #port) ifFalse: [withPort := base at: #port put: port]
+    extra := self convenienceTransportOptions: opts scheme: scheme
+    extra isEmpty ifTrue: [^withPort]
+    trans := withPort at: #transportOptions ifAbsent: [nil]
+    trans isNil
+      ifTrue: [
+        dict := Dictionary new
+        extra do: [:opt | dict := self addRawOption: opt to: dict]
+        ^withPort at: #transportOptions put: dict
+      ]
+    (trans isKindOf: Dictionary)
+      ifTrue: [
+        dict := trans
+        extra do: [:opt | dict := self addRawOption: opt to: dict]
+        ^withPort at: #transportOptions put: dict
+      ]
+    (trans isKindOf: List) ifFalse: [
+      Error signal: "Invalid #transportOptions in #catalina config"
+    ]
+    list := trans
+    extra do: [:opt | list := list add: opt]
+    withPort at: #transportOptions put: list
+
+  /// Raw options from the top-level conveniences: {#key, value} pairs and
+  /// bare atoms, as Catalina's transportOptions takes them.
+  class convenienceTransportOptions: opts :: ConfigOptions scheme: scheme :: Scheme -> List(Object) =>
+    out := #()
+    (opts at: #ip ifAbsent: [
+      nil
+    ]) ifNotNil: [:addr | out := out add: {#ip, addr}]
+    out := self
+      addFlag: #inet
+      from: opts
+      to: out
+    out := self
+      addFlag: #inet6
+      from: opts
+      to: out
+    scheme =:= #https
+      ifTrue: [
+        #(#keyfile, #certfile, #otpApp, #cipherSuite)
+          do: [:key |
+            (opts at: key ifAbsent: [
+              nil
+            ]) ifNotNil: [:v | out := out add: {key, v}]
+          ]
+      ]
+    out
+
+  class addFlag: name :: Symbol from: opts :: ConfigOptions to: out :: List(Object) -> List(Object) =>
+    raw := opts at: name ifAbsent: [false]
+    raw =:= true ifTrue: [^out add: name]
+    raw =:= false ifTrue: [^out]
+    Error signal: ("Invalid value for #" ++ name asString)
+
+  class addRawOption: opt :: Object to: dict :: ConfigOptions -> ConfigOptions =>
+    (opt isKindOf: Symbol) ifTrue: [^dict at: opt put: true]
+    (opt isKindOf: Tuple)
+      ifTrue: [
+        k := opt at: 1
+        v := opt at: 2
+        ^dict at: k put: v
+      ]
+    Error signal: "Invalid transport option"

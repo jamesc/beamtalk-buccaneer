@@ -1,0 +1,207 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: BuccaneerConfigTest
+
+  assertRaises: block message: expected =>
+    caught := false
+    [block value]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: e message equals: expected
+      ]
+    self assert: caught
+
+  assertRaisesMatching: block message: expected =>
+    caught := false
+    [block value]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: (e message includesSubstring: expected)
+      ]
+    self assert: caught
+
+  handlerBlock => [:ex | nil]
+
+  testRequiresHandler =>
+    self assertRaises: [
+      BuccaneerConfig from: Dictionary new
+    ] message: "A value is required for #handler"
+
+  testRejectsBadHandler =>
+    self assertRaises: [
+      BuccaneerConfig from: #{#handler => 42}
+    ] message: "Invalid value for #handler"
+
+  testAcceptsBlockAndValueHandlers =>
+    config := BuccaneerConfig from: #{#handler => self handlerBlock}
+    self assert: (config handler isKindOf: Block)
+    valueConfig := BuccaneerConfig from: #{#handler => CallHandler new}
+    self assert: (valueConfig handler isKindOf: CallHandler)
+
+  testDefaults =>
+    config := BuccaneerConfig from: #{#handler => self handlerBlock}
+    self assert: config scheme equals: #http
+    self assert: config port equals: 4000
+    self assert: config startupLog equals: #info
+    self assert: (config displayHandler isKindOf: Block)
+    self assert: config http isEmpty
+    self assert: config http1 isEmpty
+    self assert: config http2 isEmpty
+    self assert: config websocket isEmpty
+    self assert: (config catalina at: #port) equals: 4000
+
+  testDisplayHandlerExplicit =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #displayHandler => #mine
+    }
+    self assert: config displayHandler equals: #mine
+
+  testHttpsDefaultPort =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #scheme => #https
+    }
+    self assert: config port equals: 4040
+
+  testPortString =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #port => "4001"
+    }
+    self assert: config port equals: 4001
+
+  testBadPort =>
+    #("abc", "12x", "")
+      do: [:port |
+        self assertRaises: [
+          BuccaneerConfig from: #{#handler => self handlerBlock, #port => port}
+        ] message: "Invalid value for #port"
+      ]
+
+  testBadScheme =>
+    self assertRaises: [
+      BuccaneerConfig from: #{#handler => self handlerBlock, #scheme => #ftp}
+    ] message: "Invalid value for #scheme"
+
+  testUnknownTopKey =>
+    self assertRaisesMatching: [
+      BuccaneerConfig from: #{#handler => self handlerBlock, #bogus => 1}
+    ] message: "top level"
+    self assertRaisesMatching: [
+      BuccaneerConfig from: #{#handler => self handlerBlock, #bogus => 1}
+    ] message: "bogus"
+
+  testUnknownSectionKey =>
+    self
+      assertRaisesMatching: [
+        BuccaneerConfig from: #{
+          #handler => self handlerBlock,
+          #http1 => #{#bogus => 1}
+        }
+      ]
+      message: "http1"
+    self
+      assertRaisesMatching: [
+        BuccaneerConfig from: #{
+          #handler => self handlerBlock,
+          #http1 => #{#bogus => 1}
+        }
+      ]
+      message: "bogus"
+
+  testUnknownCatalinaKey =>
+    self
+      assertRaisesMatching: [
+        BuccaneerConfig from: #{
+          #handler => self handlerBlock,
+          #catalina => #{#bogus => 1}
+        }
+      ]
+      message: "catalina"
+    self
+      assertRaisesMatching: [
+        BuccaneerConfig from: #{
+          #handler => self handlerBlock,
+          #catalina => #{#bogus => 1}
+        }
+      ]
+      message: "bogus"
+
+  testNonDictSection =>
+    self assertRaises: [
+      BuccaneerConfig from: #{#handler => self handlerBlock, #http => #()}
+    ] message: "Invalid config for section: http"
+
+  testInetFolding =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #inet => true
+    }
+    trans :: Dictionary := config catalina at: #transportOptions
+    self assert: (trans at: #inet) equals: true
+
+  testBadInet =>
+    self assertRaises: [
+      BuccaneerConfig from: #{#handler => self handlerBlock, #inet => "yes"}
+    ] message: "Invalid value for #inet"
+
+  testIpFolding =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #ip => #loopback
+    }
+    trans :: Dictionary := config catalina at: #transportOptions
+    self assert: (trans at: #ip) equals: #loopback
+
+  testHttpsConveniences =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #scheme => #https,
+        #keyfile => "k",
+        #certfile => "c"
+      }
+    trans :: Dictionary := config catalina at: #transportOptions
+    self assert: (trans at: #keyfile) equals: "k"
+    self assert: (trans at: #certfile) equals: "c"
+    plain := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #keyfile => "k"
+    }
+    self deny: (plain catalina includesKey: #transportOptions)
+
+  testPortPutNew =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #port => 4000,
+      #catalina => #{#port => 5000}
+    }
+    self assert: (config catalina at: #port) equals: 5000
+    self assert: config port equals: 4000
+
+  testListTransportOptions =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #ip => #loopback,
+        #catalina => #{#transportOptions => #(#inet6)}
+      }
+    trans :: List := config catalina at: #transportOptions
+    self assert: (trans includes: #inet6)
+    self assert: (trans includes: {#ip, #loopback})
+
+  testBadTransportOptions =>
+    self
+      assertRaises: [
+        BuccaneerConfig
+          from: #{
+            #handler => self handlerBlock,
+            #ip => #loopback,
+            #catalina => #{#transportOptions => 42}
+          }
+      ]
+      message: "Invalid #transportOptions in #catalina config"

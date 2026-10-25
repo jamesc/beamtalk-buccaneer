@@ -463,6 +463,21 @@ the handler to hand the exchange back as well, and because a stale value
 used by mistake (sending on an old exchange) silently corrupts the response
 framing. It is still how the engine's internals work.
 
+**Porting `Plug.Conn` as a `beamtalk-plug` package.** Rejected (revisited
+2026-10-25, and beamtalk-http is freely changeable so a threaded design
+would be feasible): it puts the complexity on the wrong people — every app
+handler would thread a conn explicitly forever, without Elixir's `|>` to
+make it palatable, while the Exchange keeps app handlers simple (answer a
+response) and pays the machinery once in the engine. The test-porting
+advantage is also smaller than it looks: most Bandit tests assert on
+responses over real connections; only the shared test plugs and
+`adapter_test.exs` need adaptation. And `Plug.Conn` is large (sessions,
+cookies, uploads, multipart) for a single consumer, while a subset would
+be Plug-shaped without Plug's ecosystem (Elixir plugs could not run on
+it). The small helpers the engine actually uses (`Conn.Utils.list/1`,
+status reason phrases, exception statuses) are reimplemented minimally in
+the port instead.
+
 **Bodies as stdlib `Stream`s** (the first draft's P1/P2). Rejected: see
 § beamtalk-http API additions.
 

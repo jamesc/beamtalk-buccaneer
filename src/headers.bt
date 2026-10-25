@@ -1,0 +1,235 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.Headers: request/response header helpers.
+///
+/// Headers are {name, value} tuples (what decode_packet produces), names
+/// lowercase, order and duplicates kept.
+typed Object subclass: Headers
+
+  /// Control characters as real strings (string literals have no \r \n
+  /// \t escapes, BT-4100).
+  class cr -> String => (Character value: 13) asString
+
+  class lf -> String => (Character value: 10) asString
+
+  class crlf -> String => self cr ++ self lf
+
+  class tab -> String => (Character value: 9) asString
+
+  class nul -> String => (Character value: 0) asString
+
+  /// Field values with CR, LF or NUL are invalid (RFC9110§5.5). Values
+  /// arrive as Binaries when the bytes are not valid UTF-8; those scan
+  /// byte-wise, since Binary has no substring search.
+  class fieldValueValid: value :: Object -> Boolean =>
+    (value isKindOf: String) ifTrue: [^self stringValueValid: value]
+    (value isKindOf: Binary) ifTrue: [^self binaryValueValid: value]
+    false
+
+  class stringValueValid: value :: String -> Boolean =>
+    (value includesSubstring: self cr) ifTrue: [^false]
+    (value includesSubstring: self lf) ifTrue: [^false]
+    (value includesSubstring: self nul) ifTrue: [^false]
+    true
+
+  class binaryValueValid: value :: Binary -> Boolean =>
+    (((Erlang binary) match: value with: (Binary fromBytes: #(13))) =:= #nomatch) ifFalse: [
+      ^false
+    ]
+    (((Erlang binary) match: value with: (Binary fromBytes: #(10))) =:= #nomatch) ifFalse: [
+      ^false
+    ]
+    (((Erlang binary) match: value with: (Binary fromBytes: #(0))) =:= #nomatch) ifFalse: [
+      ^false
+    ]
+    true
+
+  /// The first value for name, or nil. Values are Binaries when the
+  /// bytes are not valid UTF-8 (String is a Binary, so one type covers both).
+  class getHeader: headers :: List(Tuple) name: header :: String -> Binary | Nil =>
+    headers do: [:h | (h at: 1) =:= header ifTrue: [^h at: 2]]
+    nil
+
+  /// Whether token (already lowercase) appears as a comma-separated member
+  /// of value, compared case-insensitively. A nil value never matches, and
+  /// neither does a non-UTF8 value: it cannot equal an ASCII token, and a
+  /// mixed token-plus-junk value failing closed is the safe direction.
+  class tokenListMember: value :: Object token: token :: String -> Boolean =>
+    (value isKindOf: String) ifFalse: [^false]
+    items := self splitList: value
+    items do: [:each | (self asciiLowercase: each) =:= token ifTrue: [^true]]
+    false
+
+  /// Whether any header named header (matched case-insensitively, scanning
+  /// every instance) contains token (already lowercase) as a
+  /// comma-separated member of its value.
+  class headerContainsToken: headers :: List(Tuple) name: header :: String token: token :: String -> Boolean =>
+    headers
+      do: [:h |
+        (self asciiLowercase: (h at: 1)) =:= header ifTrue: [
+          (self tokenListMember: (h at: 2) token: token) ifTrue: [^true]
+        ]
+      ]
+    false
+
+  /// The host header, rejecting repeats (RFC9112§3.2, RFC9110§7.2).
+  class getHostHeader: headers :: List(Tuple) -> Result =>
+    found := headers select: [:h | (h at: 1) =:= "host"]
+    found size =:= 0 ifTrue: [^Result ok: nil]
+    found size =:= 1 ifTrue: [^Result ok: (found first at: 2)]
+    Result error: "multiple host headers (RFC9112§3.2, RFC9110§7.2)"
+
+  /// The transfer-encoding header, rejecting repeats (RFC9112§6.1, §6.3).
+  class getTransferEncoding: headers :: List(Tuple) -> Result =>
+    found := headers select: [:h | (h at: 1) =:= "transfer-encoding"]
+    found size =:= 0 ifTrue: [^Result ok: nil]
+    found size =:= 1 ifTrue: [^Result ok: (found first at: 2)]
+    Result error: "multiple transfer-encoding headers (RFC9112§6.1, RFC9112§6.3)"
+
+  /// Split a host header into {host, port}; the port is nil when absent.
+  /// Raises HTTPError on an invalid port. Covers [::1]:4000 (RFC3986).
+  /// Non-string (non-UTF8) hosts are rejected; Bandit passes them opaquely.
+  class parseHostlikeHeader: hostHeader :: Object -> Tuple =>
+    (hostHeader isKindOf: String) ifFalse: [
+      HTTPError signal: "Invalid host header"
+    ]
+    (hostHeader startsWith: "[")
+      ifTrue: [
+        idx := hostHeader indexOf: "]:"
+        idx isNil
+          ifTrue: [^{hostHeader, nil}]
+          ifFalse: [
+            host := (hostHeader take: idx - 1) ++ "]"
+            portStr := hostHeader drop: idx + 1
+            ^{host, self parsePort: portStr}
+          ]
+      ]
+      ifFalse: [
+        idx := hostHeader indexOf: ":"
+        idx isNil
+          ifTrue: [^{hostHeader, nil}]
+          ifFalse: [
+            host := hostHeader take: idx - 1
+            portStr := hostHeader drop: idx
+            ^{host, self parsePort: portStr}
+          ]
+      ]
+
+  /// The content-length, tolerating a repeated value only when every
+  /// instance agrees (RFC9112§6.3).
+  class getContentLength: headers :: List(Tuple) -> Result =>
+    found := headers select: [:h | (h at: 1) =:= "content-length"]
+    found size =:= 0 ifTrue: [^Result ok: nil]
+    found size =:= 1 ifTrue: [^self parseContentLength: (found first at: 2)]
+    Result error: "invalid content-length header (RFC9112§6.3)"
+
+  class parseContentLength: value :: Object -> Result =>
+    (value isKindOf: String) ifFalse: [
+      ^Result error: "invalid content-length header (RFC9112§6.3.5)"
+    ]
+    parsed := self parseInteger: value
+    parsed isError ifTrue: [
+      ^Result error: "invalid content-length header (RFC9112§6.3.5)"
+    ]
+    parts := parsed unwrap
+    length := parts at: 1
+    rest := parts at: 2
+    rest isEmpty ifTrue: [^Result ok: length]
+    ((self splitList: value) allSatisfy: [:each |
+      each =:= length asString
+    ]) ifTrue: [
+      Result ok: length
+    ] ifFalse: [Result error: "invalid content-length header (RFC9112§6.3.5)"]
+
+  /// Set the response content-length (RFC9110§8.6): never on 1xx or 204,
+  /// kept as the handler set it on 304/HEAD with an empty body, otherwise
+  /// the body's length, overwriting any previous value.
+  class addContentLength: headers :: List(Tuple) length: length :: Integer status: status :: Integer method: method :: String -> List(Tuple) =>
+    ((status between: 100 and: 199) or: [
+      status =:= 204
+    ]) ifTrue: [^self dropContentLength: headers]
+    (length =:= 0 and: [
+      (status =:= 304) or: [method =:= "HEAD"]
+    ]) ifTrue: [^headers]
+    (self dropContentLength: headers) addFirst: {"content-length", length asString}
+
+  class dropContentLength: headers :: List(Tuple) -> List(Tuple) =>
+    headers reject: [:h | (h at: 1) =:= "content-length"]
+
+  class parsePort: portStr :: String -> Integer =>
+    parsed := self parseInteger: portStr
+    parsed isError ifTrue: [HTTPError signal: "Header contains invalid port"]
+    parts := parsed unwrap
+    n := parts at: 1
+    rest := parts at: 2
+    rest isEmpty ifFalse: [HTTPError signal: "Header contains invalid port"]
+    (n between: 0 and: 65535) ifFalse: [
+      HTTPError signal: "Header contains invalid port"
+    ]
+    n
+
+  /// The leading digits as ok {value, rest}, or error when the first
+  /// character is not a digit.
+  class parseInteger: s :: String -> Result =>
+    digits := "0123456789"
+    (s isEmpty or: [
+      (digits indexOf: s first) isNil
+    ]) ifTrue: [^Result error: #error]
+    value := 0
+    rest := s
+    [rest isNotEmpty]
+      whileTrue: [
+        d := digits indexOf: rest first
+        d isNil ifTrue: [^Result ok: {value, rest}]
+        value := (value * 10) + d - 1
+        rest := rest drop: 1
+      ]
+    Result ok: {value, rest}
+
+  /// Plug.Conn.Utils.list/1: split on commas, strip optional whitespace,
+  /// drop empties.
+  class splitList: value :: String -> List(String) =>
+    parts := value split: ","
+    result := #()
+    parts
+      do: [:each |
+        stripped := self stripSpaces: each
+        stripped isEmpty ifFalse: [result := result add: stripped]
+      ]
+    result
+
+  /// Plug's strip_spaces: leading CRLF pairs, spaces and tabs, then
+  /// trailing spaces and tabs. Lone CR/LF survive, as there.
+  class stripSpaces: s :: String -> String =>
+    self stripTrailingSpaces: (self stripLeadingSpaces: s)
+
+  class stripLeadingSpaces: s :: String -> String =>
+    rest := s
+    [
+      rest isNotEmpty and: [self isLeadingSpace: rest]
+    ] whileTrue: [rest := rest drop: 1]
+    rest
+
+  /// A leading CRLF pair is one grapheme cluster, so drop: 1 removes it whole.
+  class isLeadingSpace: s :: String -> Boolean =>
+    (s startsWith: self crlf) ifTrue: [^true]
+    first := s first
+    (first =:= " ") or: [first =:= self tab]
+
+  class stripTrailingSpaces: s :: String -> String =>
+    rest := s
+    [
+      rest isNotEmpty and: [(rest last =:= " ") or: [rest last =:= self tab]]
+    ] whileTrue: [rest := rest take: rest size - 1]
+    rest
+
+  /// ASCII-only lowercase (String.downcase/2 :ascii): only A-Z fold.
+  class asciiLowercase: s :: String -> String =>
+    upper := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lower := "abcdefghijklmnopqrstuvwxyz"
+    s
+      collect: [:ch |
+        idx := upper indexOf: ch
+        idx isNil ifTrue: [ch] ifFalse: [lower at: idx]
+      ]

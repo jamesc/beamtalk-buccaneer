@@ -604,7 +604,8 @@ Recorded properly when each phase is done; the expected ones:
    Value constructors; BT-4065, BT-4099). **Rerun 2026-10-25:** with
    BT-4065/4069/4071/4099 merged, the spike does 1.09-1.24× cowboy's
    req/s with zero class-process calls per request; the risk is retired
-   to monitoring (p99.9 at 100+ connections, FFI coercion BT-4153).
+   to monitoring (p99.9 at 100+ connections; BT-4153's FFI call-path work
+   merged the same day).
    See § Phase 0 findings.
 2. **HTTP/2 depends on new stdlib work** (BT-4090, deferred reply).
    Mitigation: spike 5 prototypes the shape first; HTTP/2 is the last engine
@@ -689,11 +690,11 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 | Sends to a sealed-Value-typed parameter still dynamic | BT-4069 | Done (merged 2026-10-25) | performance (gate) |
 | `hasField:` cost (~20 µs) | BT-4071 | Done (merged 2026-10-25) | performance (gate) |
 | Value construction is a call into the class process (Phase 0 spike 1) | BT-4099 | Done (merged 2026-10-25) | performance (gate) |
-| FFI call path: proxy apply + result coercion per call (spike 1 rerun profile) | BT-4153 | Backlog | performance (gate margins) |
+| FFI call path: proxy apply + result coercion per call (spike 1 rerun profile) | BT-4153 | Done (merged 2026-10-25) | performance (gate margins) |
 | Sealed self-sends in test fixtures target a nonexistent module | BT-4152 | Backlog | worked around (`engine_spikes` package) |
 | Binary patterns: size from an earlier segment; bitstrings, literal segments, size expressions; two `_` | BT-4096, BT-4097, BT-4098 | Done (merged 2026-10-25) | spike 4 worked around; Phases 4-6 use the real syntax |
 | Atomic spawn-and-monitor for an actor | BT-4104 | Backlog, needs-spec | Phase 6 rule meanwhile (spike 6) |
-| Test classes calling a dependency's class methods | BT-4094 | Backlog | tests use wrapper classes meanwhile |
+| Test classes calling a dependency's class methods | BT-4094 | Done (merged 2026-10-25) | loopback fixture keeps the shape as shared setup |
 | Block parameter types from a Dictionary literal or `:: T` | BT-4102 | Backlog, needs-spec | `start:handler:` meanwhile |
 | Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | BT-4101, BT-4105, BT-4106, BT-4107 Done (merged 2026-10-25); BT-4100 Backlog | none blocking |
 

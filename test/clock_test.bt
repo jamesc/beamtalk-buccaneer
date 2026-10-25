@@ -1,0 +1,40 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: ClockTest
+
+  // Bandit's clock_test asserts the logged warning on a cache miss; there
+  // is no log capture in BUnit, so these tests assert the miss behaviour
+  // (a fresh valid date) rather than the warning itself.
+  tearDown =>
+    (Ets exists: Clock tableName) ifTrue: [(Ets named: Clock tableName) delete]
+    self
+
+  testComputeDateHeaderFormat =>
+    date := Clock computeDateHeader
+    // No {n} quantifiers: braces interpolate in string literals.
+    self assert: (date matchesRegex: "^[A-Z][a-z][a-z], [0-9][0-9] [A-Z][a-z][a-z] [0-9][0-9][0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] GMT$" options: #())
+
+  testWeekdayOfKnownDate =>
+    // 2026-10-25 is a Sunday.
+    sunday := DateTime
+      year: 2026
+      month: 10
+      day: 25
+    self assert: (Clock weekdayOf: sunday) equals: 7
+
+  testDateHeaderMissComputesFresh =>
+    header := Clock dateHeader
+    self assert: (header at: 1) equals: "date"
+    self assert: ((header at: 2) matchesRegex: "GMT$" options: #())
+
+  testDateHeaderHitReturnsCached =>
+    (Ets newOrExisting: Clock tableName type: #set) at: Clock cacheKey put: "Wed, 21 Oct 2015 07:28:00 GMT"
+    header := Clock dateHeader
+    self assert: (header at: 1) equals: "date"
+    self assert: (header at: 2) equals: "Wed, 21 Oct 2015 07:28:00 GMT"
+
+  testUpdateCacheStoresFreshDate =>
+    date := Clock updateCache
+    self assert: (date matchesRegex: "GMT$" options: #())
+    self assert: Clock cachedDate equals: date

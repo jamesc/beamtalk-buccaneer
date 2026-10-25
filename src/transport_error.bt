@@ -1,0 +1,11 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.TransportError: an unrecoverable socket failure. The pipeline
+/// catches it, emits the span stop and closes the connection; it has no
+/// status (sendOnError: answers :ok for it).
+///
+/// The reason is in the message ("Unrecoverable error: ..."): exceptions
+/// hold no instance state. Callers needing the reason as data (chunk:)
+/// use the Result-returning socket operations instead of catching this.
+typed Error subclass: TransportError

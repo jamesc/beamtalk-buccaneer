@@ -1,0 +1,347 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: HTTP1SocketTest
+
+  nl => Headers crlf
+
+  socketWith: bytes => HTTP1Socket new withBuffer: bytes
+
+  socketWith: bytes opts: opts =>
+    (HTTP1Socket new withBuffer: bytes) withOpts: opts
+
+  assertRaises: block message: expected =>
+    caught := false
+    [block value]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: e message equals: expected
+      ]
+    self assert: caught
+
+  assertRaisesStarting: block message: prefix =>
+    caught := false
+    [block value]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: (e message startsWith: prefix)
+      ]
+    self assert: caught
+
+  assertRaisesStatus: block status: expected =>
+    caught := false
+    [block value]
+      on: HTTPError
+      do: [:e |
+        caught := true
+        self assert: (HTTPError statusForClassName: e errorClass asString) equals: expected
+      ]
+    self assert: caught
+
+  /// {serverSocket, clientRaw, listener}: a loopback pair. The client side
+  /// stays raw gen_tcp; the server side is wrapped for the socket under
+  /// test. Close with closeLoopback:.
+  loopbackPair -> Tuple => self loopbackPairWithReadTimeout: 60000
+
+  loopbackPairWithReadTimeout: ms :: Integer -> Tuple =>
+    listener := ((Erlang gen_tcp) listen: 0 with: #(#binary, {#packet, #raw}, {#active, false}, {#reuseaddr, true})) unwrap
+    port := ((Erlang inet) port: listener) unwrap
+    client := ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+    raw := ((Erlang gen_tcp) accept: listener with: 5000) unwrap
+    config := (HandlerConfig new) withReadTimeout: ms
+    server := Socket
+      wrap: raw
+      peername: {{127, 0, 0, 1}, port}
+      handlerConfig: config
+      span: nil
+    {server, client, listener}
+
+  closeLoopback: pair =>
+    (Erlang gen_tcp) close: (pair at: 2)
+    (Erlang gen_tcp) close: (pair at: 3)
+    nil
+
+  testReadsRequestLineAndHeaders =>
+    req := "GET /hello?x=1 HTTP/1.1"
+      ++ self nl
+      ++ "host: example.com"
+      ++ self nl
+      ++ "x-a: 1"
+      ++ self nl
+      ++ self nl
+    {method, target, headers, socket} := (self socketWith: req) readHeaders
+    self assert: method equals: "GET"
+    self assert: (target at: 1) equals: nil
+    self assert: (target at: 2) equals: nil
+    self assert: (target at: 3) equals: nil
+    self assert: (target at: 4) equals: "/hello?x=1"
+    self assert: headers equals: #({"host", "example.com"}, {"x-a", "1"})
+    self assert: socket version equals: #http11
+    self assert: socket readState equals: #read
+    self assert: socket buffer equals: ""
+
+  testAbsoluteForm =>
+    req := "GET http://example.com:8080/path HTTP/1.1" ++ self nl ++ self nl
+    {method, target, _headers, _socket} := (self socketWith: req) readHeaders
+    self assert: method equals: "GET"
+    self assert: (target at: 1) equals: "http"
+    self assert: (target at: 2) equals: "example.com"
+    self assert: (target at: 3) equals: 8080
+    self assert: (target at: 4) equals: "/path"
+
+  testAbsoluteFormNoPort =>
+    req := "GET https://example.com/path HTTP/1.1" ++ self nl ++ self nl
+    {_method, target, _headers, _socket} := (self socketWith: req) readHeaders
+    self assert: (target at: 1) equals: "https"
+    self assert: (target at: 2) equals: "example.com"
+    self assert: (target at: 3) equals: nil
+    self assert: (target at: 4) equals: "/path"
+
+  testAsteriskOptions =>
+    req := "OPTIONS * HTTP/1.1" ++ self nl ++ self nl
+    {method, target, _headers, _socket} := (self socketWith: req) readHeaders
+    self assert: method equals: "OPTIONS"
+    self assert: (target at: 4) equals: #'*'
+
+  testConnectAuthority =>
+    req := "CONNECT example.com:443 HTTP/1.1" ++ self nl ++ self nl
+    {method, target, _headers, _socket} := (self socketWith: req) readHeaders
+    self assert: method equals: "CONNECT"
+    self assert: (target at: 1) equals: nil
+    self assert: (target at: 2) equals: "example.com"
+    self assert: (target at: 3) equals: "443"
+    self assert: (target at: 4) equals: nil
+
+  testUnsupportedTarget =>
+    req := "GET * HTTP/1.1" ++ self nl ++ self nl
+    self assertRaises: [
+      (self socketWith: req) readHeaders
+    ] message: "Unsupported request target (RFC9112§3.2)"
+
+  testIgnoresLeadingCRLF =>
+    req := self nl ++ self nl ++ "GET / HTTP/1.1" ++ self nl ++ self nl
+    {method, _target, _headers, _socket} := (self socketWith: req) readHeaders
+    self assert: method equals: "GET"
+
+  testBadRequestLine =>
+    req := "NOT HTTP" ++ self nl ++ self nl
+    self assertRaises: [
+      (self socketWith: req) readHeaders
+    ] message: "Unsupported request target (RFC9112§3.2)"
+
+  testUriTooLong =>
+    req := "GET /a-very-long-path HTTP/1.1" ++ self nl ++ self nl
+    sock := self socketWith: req opts: #{
+      #http1 => #{#maxRequestLineLength => 10}
+    }
+    self assertRaises: [sock readHeaders] message: "Request URI is too long"
+    self
+      assertRaisesStatus: [
+        (self socketWith: req opts: #{
+          #http1 => #{#maxRequestLineLength => 10}
+        }) readHeaders
+      ]
+      status: 414
+
+  testBadVersion =>
+    v2 := "GET / HTTP/2.0" ++ self nl ++ self nl
+    self assertRaisesStarting: [
+      (self socketWith: v2) readHeaders
+    ] message: "Invalid HTTP version"
+    v12 := "GET / HTTP/1.2" ++ self nl ++ self nl
+    self assertRaisesStarting: [
+      (self socketWith: v12) readHeaders
+    ] message: "Invalid HTTP version"
+
+  testTooManyHeaders =>
+    req := "GET / HTTP/1.1"
+      ++ self nl
+      ++ "x-a: 1"
+      ++ self nl
+      ++ "x-b: 2"
+      ++ self nl
+      ++ "x-c: 3"
+      ++ self nl
+      ++ self nl
+    opts := #{#http1 => #{#maxHeaderCount => 2}}
+    self assertRaises: [
+      (self socketWith: req opts: opts) readHeaders
+    ] message: "Too many headers"
+    self assertRaisesStatus: [
+      (self socketWith: req opts: opts) readHeaders
+    ] status: 431
+
+  testHeaderTooLong =>
+    req := "GET / HTTP/1.1" ++ self nl ++ "x-long-header: abcdefgh" ++ self nl ++ self nl
+    self
+      assertRaises: [
+        (self socketWith: req opts: #{
+          #http1 => #{#maxHeaderLength => 10}
+        }) readHeaders
+      ]
+      message: "Header too long"
+
+  testBadFieldValue =>
+    req := "GET / HTTP/1.1"
+      ++ self nl
+      ++ "x-a: a"
+      ++ Headers cr
+      ++ "b"
+      ++ self nl
+      ++ self nl
+    self assertRaises: [
+      (self socketWith: req) readHeaders
+    ] message: "Field value contains invalid characters (RFC9110§5.5)"
+
+  testContentLength =>
+    req := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "content-length: 3"
+      ++ self nl
+      ++ self nl
+      ++ "abc"
+    {_method, _target, _headers, socket} := (self socketWith: req) readHeaders
+    self assert: socket readState equals: #headersRead
+    self assert: socket unreadContentLength equals: 3
+    self assert: socket buffer equals: "abc"
+
+  testTransferEncodingChunked =>
+    req := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "transfer-encoding: Chunked"
+      ++ self nl
+      ++ self nl
+    {_method, _target, _headers, socket} := (self socketWith: req) readHeaders
+    self assert: socket readState equals: #headersRead
+    self assert: socket bodyEncoding equals: "chunked"
+
+  testContentLengthAndEncoding =>
+    req := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "content-length: 3"
+      ++ self nl
+      ++ "transfer-encoding: chunked"
+      ++ self nl
+      ++ self nl
+    self assertRaises: [
+      (self socketWith: req) readHeaders
+    ] message: "Request cannot contain both 'content-length' and 'transfer-encoding' (RFC9112§6.3.3)"
+
+  testEncodingOnHttp10 =>
+    req := "POST /x HTTP/1.0"
+      ++ self nl
+      ++ "transfer-encoding: chunked"
+      ++ self nl
+      ++ self nl
+    self assertRaises: [
+      (self socketWith: req) readHeaders
+    ] message: "Transfer-encoding is not valid for HTTP/1.0 requests (RFC9112§6.1)"
+
+  testBadContentLength =>
+    req := "POST /x HTTP/1.1" ++ self nl ++ "content-length: abc" ++ self nl ++ self nl
+    self assertRaisesStarting: [
+      (self socketWith: req) readHeaders
+    ] message: "Content length unknown error"
+
+  testConnectionHeaderCaptured =>
+    req := "GET / HTTP/1.1" ++ self nl ++ "connection: Keep-Alive" ++ self nl ++ self nl
+    {_method, _target, _headers, socket} := (self socketWith: req) readHeaders
+    self assert: socket requestConnectionHeader equals: "keep-alive"
+
+  testVersion10 =>
+    req := "GET / HTTP/1.0" ++ self nl ++ self nl
+    {_method, _target, _headers, socket} := (self socketWith: req) readHeaders
+    self assert: socket version equals: #http10
+    self assert: socket readState equals: #read
+
+  testIncompleteNilSocket =>
+    req := "GET / HTTP/1.1" ++ self nl ++ "host: x" ++ self nl
+    self assertRaises: [
+      (self socketWith: req) readHeaders
+    ] message: "Incomplete head with no socket"
+
+  testPipelinedRest =>
+    one := "GET /one HTTP/1.1" ++ self nl ++ self nl
+    two := "GET /two HTTP/1.1" ++ self nl ++ self nl
+    {_method, target, _headers, socket} := (self socketWith: one ++ two) readHeaders
+    self assert: (target at: 4) equals: "/one"
+    self assert: socket buffer equals: two
+
+  testNonAsciiHeaderValue =>
+    head := "GET / HTTP/1.1" ++ self nl ++ "x-a: caf"
+    req := (head concat: (Binary fromBytes: #(233))) concat: (self nl ++ self nl)
+    {_method, _target, headers, _socket} := (self socketWith: req) readHeaders
+    self assert: (Headers getHeader: headers name: "x-a") equals: (Binary fromBytes: #(99, 97, 102, 233))
+    multi := (Character value: 233) asString
+    req2 := "GET / HTTP/1.1" ++ self nl ++ "x-a: caf" ++ multi ++ self nl ++ self nl
+    {_m2, _t2, h2, _s2} := (self socketWith: req2) readHeaders
+    self assert: (Headers getHeader: h2 name: "x-a") equals: ("caf" ++ multi)
+
+  testLatinValueFlows =>
+    self deny: (Headers tokenListMember: (Binary fromBytes: #(99, 97, 102, 233)) token: "close")
+    self assert: (Headers getContentLength: #({"content-length", (Binary fromBytes: #(49, 50, 233))})) isError
+
+  testReadsAvailableFromSocket =>
+    pair := self loopbackPair
+    req := "GET /hello HTTP/1.1" ++ self nl ++ "host: example.com" ++ self nl ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: req
+    sock := HTTP1Socket new withSocket: (pair at: 1)
+    {method, target, headers, _socket} := sock readHeaders
+    self assert: method equals: "GET"
+    self assert: (target at: 4) equals: "/hello"
+    self assert: headers equals: #({"host", "example.com"})
+    self closeLoopback: pair
+
+  testClosedSocketRaisesTransportError =>
+    pair := self loopbackPair
+    (Erlang gen_tcp) close: (pair at: 2)
+    sock := HTTP1Socket new withSocket: (pair at: 1)
+    self assertRaises: [
+      sock readHeaders
+    ] message: "Unrecoverable error: #closed"
+    (Erlang gen_tcp) close: (pair at: 3)
+
+  testReadTimeoutRaises408 =>
+    pair := self loopbackPairWithReadTimeout: 100
+    sock := HTTP1Socket new withSocket: (pair at: 1)
+    self assertRaises: [sock readHeaders] message: "Read timeout"
+    self assertRaisesStatus: [
+      (HTTP1Socket new withSocket: (pair at: 1)) readHeaders
+    ] status: 408
+    self closeLoopback: pair
+
+  testDisconnectedOrTimeoutClosed =>
+    pair := self loopbackPair
+    (Erlang gen_tcp) close: (pair at: 2)
+    sock := HTTP1Socket new withSocket: (pair at: 1)
+    self assertRaises: [
+      sock disconnectedOrTimeout: (pair at: 1)
+    ] message: "Unrecoverable error: #closed"
+    (Erlang gen_tcp) close: (pair at: 3)
+
+  testDisconnectedOrTimeoutData =>
+    pair := self loopbackPair
+    (Erlang gen_tcp) send: (pair at: 2) with: "X"
+    sock := HTTP1Socket new withSocket: (pair at: 1)
+    deadline := (Erlang erlang monotonic_time: #millisecond) + 5000
+    done := false
+    [done not and: [(Erlang erlang monotonic_time: #millisecond) < deadline]]
+      whileTrue: [
+        [
+          sock disconnectedOrTimeout: (pair at: 1)
+        ] on: HTTPError408 do: [:e |
+          e message =:= "Body read timeout" ifTrue: [done := true]
+        ]
+      ]
+    self assert: done
+    self closeLoopback: pair
+
+  testSupportsUpgrade =>
+    sock := HTTP1Socket new
+    self assert: (sock supportsUpgrade: #websocket)
+    self deny: (sock supportsUpgrade: #h2c)

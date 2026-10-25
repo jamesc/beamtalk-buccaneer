@@ -1,0 +1,39 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: HTTPErrorTest
+
+  testStatusForClassName =>
+    self assert: (HTTPError statusForClassName: "HTTPError") equals: 400
+    self assert: (HTTPError statusForClassName: "HTTPError408") equals: 408
+    self assert: (HTTPError statusForClassName: "HTTPError414") equals: 414
+    self assert: (HTTPError statusForClassName: "HTTPError431") equals: 431
+    self assert: (HTTPError statusForClassName: "NoSuchError") equals: 400
+
+  testSubclassCaughtByBase =>
+    caught := false
+    [HTTPError414 signal: "Request URI is too long"]
+      on: HTTPError
+      do: [:e |
+        caught := true
+        self assert: e errorClass asString equals: "HTTPError414"
+        self assert: (HTTPError statusForClassName: e errorClass asString) equals: 414
+      ]
+    self assert: caught
+
+  testSignalCarriesMessageAndClass =>
+    caught := false
+    [HTTPError signal: "Header contains invalid port"]
+      on: HTTPError
+      do: [:e |
+        caught := true
+        self assert: e message equals: "Header contains invalid port"
+        // errorClass is declared String but answers a Symbol; asString is the
+        // identity on both, so this holds either way the stdlib settles.
+        self assert: e errorClass asString equals: "HTTPError"
+        self assert: (HTTPError statusForClassName: e errorClass asString) equals: 400
+      ]
+    self assert: caught
+
+  testShouldRaiseSignal =>
+    self should: [HTTPError signal: "boom"] raise: #signal

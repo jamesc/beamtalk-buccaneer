@@ -4,7 +4,7 @@
 /// Spike 2: the owner-bound `Exchange` handle of `docs/engine-interface.md`,
 /// cut down to what the spikes exercise. The handle is a sealed Value
 /// holding only an identity and the owner process; the request's mutable
-/// state is an `ExchangeState` in the owner's process dictionary under
+/// state is an `SpikeExchangeState` in the owner's process dictionary under
 /// `{buccaneer_exchange, ref}`. Every method checks the caller is the
 /// owner first (Bandit's `validate_calling_process!`). Spike-only.
 sealed typed Value subclass: SpikeExchange
@@ -16,7 +16,7 @@ sealed typed Value subclass: SpikeExchange
   /// Engine side: start a request's state in the calling process.
   class sealed open: request :: SpikeRequest socket: sock :: Socket | Nil buffer: buffer :: Binary -> SpikeExchange =>
     ex := self ref: Erlang erlang make_ref owner: Erlang erlang self
-    initial := ExchangeState
+    initial := SpikeExchangeState
       request: request
       socket: sock
       buffer: buffer
@@ -30,20 +30,20 @@ sealed typed Value subclass: SpikeExchange
   /// The process-dictionary key of this exchange's state.
   key -> Tuple => {#buccaneer_exchange, self.ref}
 
-  /// The state, after the owner check. Raises `NotOwner` from another
+  /// The state, after the owner check. Raises `SpikeNotOwner` from another
   /// process, and an error once the exchange is finished.
-  load -> ExchangeState =>
+  load -> SpikeExchangeState =>
     me := Erlang erlang self
     me =:= self.owner
       ifFalse: [
-        NotOwner signal: "not_owner: an Exchange can only be used from the process that received the request (owner {self.owner printString}, caller {me printString})"
+        SpikeNotOwner signal: "not_owner: an Exchange can only be used from the process that received the request (owner {self.owner printString}, caller {me printString})"
       ]
     (Erlang erlang get: self key) match: [
-      st :: ExchangeState -> st;
+      st :: SpikeExchangeState -> st;
       _ -> Error signal: "exchange_finished: this request is complete"
     ]
 
-  store: st :: ExchangeState -> ExchangeState =>
+  store: st :: SpikeExchangeState -> SpikeExchangeState =>
     Erlang erlang put: self key with: st
     st
 
@@ -73,19 +73,19 @@ sealed typed Value subclass: SpikeExchange
     buf := st buffer
     body := ""
     rest := ""
-    buf byteSize >= n
+    buf size >= n
       ifTrue: [
         body := buf part: 0 size: n
-        rest := buf part: n size: buf byteSize - n
+        rest := buf part: n size: buf size - n
       ]
       ifFalse: [
         sock := st socket
         sock isNil ifTrue: [^Result error: #closed]
-        more := sock recv: n - buf byteSize timeout: 15000
+        more := sock recv: n - buf size timeout: 15000
         more isError ifTrue: [^more]
         body := buf concat: more value
       ]
-    self store: (((st withBuffer: rest) withBodyUnread: 0) withBytesRead: st bytesRead + body byteSize)
+    self store: (((st withBuffer: rest) withBodyUnread: 0) withBytesRead: st bytesRead + (Erlang erlang byte_size: body))
     Result ok: body
 
   // === The response ===
@@ -98,7 +98,7 @@ sealed typed Value subclass: SpikeExchange
     head := self
       head: status
       headers: hs
-      extra: "content-length: {body byteSize}{nl}"
+      extra: "content-length: {(Erlang erlang byte_size: body)}{nl}"
     self send: (head concat: body) on: st
     self store: ((st withRespState: #sent) withStatus: status)
     self
@@ -123,7 +123,7 @@ sealed typed Value subclass: SpikeExchange
     st := self load
     st respState =:= #chunked ifFalse: [^Result error: #not_chunked]
     nl := SpikeParser crlf
-    data byteSize =:= 0
+    (Erlang erlang byte_size: data) =:= 0
       ifTrue: [
         self send: "0{nl}{nl}" on: st
         self store: (st withRespState: #chunkedDone)
@@ -132,7 +132,7 @@ sealed typed Value subclass: SpikeExchange
     // `integer_to_binary/2` is rejected by the FFI arity check (BT-4101).
     // asStringUnchecked: hex digits are ASCII, and interpolation renders a
     // Binary quoted after the BT-4170 flip (BT-4172).
-    hex := Erlang erlang list_to_binary: (Erlang erlang integer_to_list: data byteSize with: 16)
+    hex := Erlang erlang list_to_binary: (Erlang erlang integer_to_list: (Erlang erlang byte_size: data) with: 16)
     self send: (("{hex asStringUnchecked}{nl}" concat: data) concat: nl) on: st
     Result ok: nil
 
@@ -147,7 +147,7 @@ sealed typed Value subclass: SpikeExchange
     "HTTP/1.1 {status} {reason}{nl}{lines}{extra}{nl}"
 
   /// Raises on a socket error, as Bandit raises `TransportError`.
-  send: data :: Binary on: st :: ExchangeState -> SpikeExchange =>
+  send: data :: Binary on: st :: SpikeExchangeState -> SpikeExchange =>
     sock := st socket
     sock isNil ifFalse: [(sock send: data) unwrap]
     self
@@ -172,21 +172,21 @@ sealed typed Value subclass: SpikeExchange
   /// (from the buffer, then the socket) and answer the final state, whose
   /// `buffer` holds the bytes after this request (a pipelined one). The
   /// process-dictionary entry is erased.
-  finish -> ExchangeState =>
+  finish -> SpikeExchangeState =>
     st := self load
     n := st bodyUnread
     buf := st buffer
     final := st
     n > 0
       ifTrue: [
-        buf byteSize >= n
+        buf size >= n
           ifTrue: [
-            final := (st withBuffer: (buf part: n size: buf byteSize - n)) withBodyUnread: 0
+            final := (st withBuffer: (buf part: n size: buf size - n)) withBodyUnread: 0
           ]
           ifFalse: [
             sock := st socket
             sock isNil ifFalse: [
-              (sock recv: n - buf byteSize timeout: 15000) unwrap
+              (sock recv: n - buf size timeout: 15000) unwrap
             ]
             final := (st withBuffer: "") withBodyUnread: 0
           ]

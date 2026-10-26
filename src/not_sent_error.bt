@@ -1,0 +1,7 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Plug.Conn.NotSentError: the handler returned without sending a
+/// response. Raised by Exchange commit; the pipeline answers it as any
+/// other handler error, a 500 with connection: close.
+typed Error subclass: NotSentError

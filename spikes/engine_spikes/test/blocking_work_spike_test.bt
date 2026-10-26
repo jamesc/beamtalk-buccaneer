@@ -26,13 +26,13 @@ typed TestCase subclass: BlockingWorkSpikeTest
       body: body
     // The head and the first 100 bytes first, then the rest in four parts
     // with pauses, so the handler must recv while it runs.
-    headLength := whole byteSize - body byteSize + 100
+    headLength := (Erlang erlang byte_size: whole) - (Erlang erlang byte_size: body) + 100
     SpikeClient send: sock data: (whole part: 0 size: headLength)
     offset := headLength
-    [offset < whole byteSize]
+    [offset < (Erlang erlang byte_size: whole)]
       whileTrue: [
         Timer sleep: 20
-        left := whole byteSize - offset
+        left := (Erlang erlang byte_size: whole) - offset
         n := left > 2500 ifTrue: [2500] ifFalse: [left]
         SpikeClient send: sock data: (whole part: offset size: n)
         offset := offset + n
@@ -43,7 +43,7 @@ typed TestCase subclass: BlockingWorkSpikeTest
     SpikeServer stop: srv
     self assert: status equals: 200
     // The handler saw the whole body and a passive socket.
-    self assert: reply equals: "{body byteSize} passive"
+    self assert: reply asStringUnchecked equals: "{(Erlang erlang byte_size: body)} passive"
     // One handleData: call for the whole request.
     self assert: (rows collect: [:r | r at: 6]) equals: #(1)
 
@@ -59,7 +59,7 @@ typed TestCase subclass: BlockingWorkSpikeTest
     ex
       sendResp: 200
       headers: #()
-      body: "{received byteSize} {active}"
+      body: "{(Erlang erlang byte_size: received)} {active}"
 
   testHandlerCallsAnActor -> Nil =>
     counter := SpikeCounter spawn
@@ -85,7 +85,7 @@ typed TestCase subclass: BlockingWorkSpikeTest
       ]
     SpikeClient close: sock
     SpikeServer stop: srv
-    self assert: last equals: "100"
+    self assert: last asStringUnchecked equals: "100"
     self assert: counter increment equals: 101
     counter stop
     nil
@@ -109,6 +109,6 @@ typed TestCase subclass: BlockingWorkSpikeTest
     SpikeClient close: sock
     rows := probe rows
     SpikeServer stop: srv
-    self assert: {a, b, c} equals: {"/a", "/b", "/c"}
+    self assert: {a asStringUnchecked, b asStringUnchecked, c asStringUnchecked} equals: {"/a", "/b", "/c"}
     // All three in the first handleData: call.
     self assert: (rows collect: [:r | r at: 6]) equals: #(1, 1, 1)

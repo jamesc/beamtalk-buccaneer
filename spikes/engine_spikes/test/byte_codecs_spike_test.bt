@@ -13,12 +13,15 @@ typed TestCase subclass: ByteCodecsSpikeTest
 
   iodata: io :: List -> Binary => Erlang erlang iolist_to_binary: io
 
+  /// A String literal as bytes: since BT-4173 a String never equals a Binary.
+  bytes: s :: String -> Binary => Erlang erlang iolist_to_binary: s
+
   testH2Header -> Nil =>
     // HEADERS (1), END_HEADERS (4), stream 3, 5-byte payload; the reserved
     // bit set must be ignored.
     frame := self bin: #(0, 0, 5, 1, 4, 128, 0, 0, 3, 104, 101, 108, 108, 111, 9)
-    self assert: (FrameCodec h2Header: frame) equals: {5, 1, 4, 3, "hello" concat: (self bin: #(9))}
-    self assert: (FrameCodec h2Frame: frame) equals: {1, 4, 3, "hello", self bin: #(9)}
+    self assert: (FrameCodec h2Header: frame) equals: {5, 1, 4, 3, (self bytes: "hello") concat: (self bin: #(9))}
+    self assert: (FrameCodec h2Frame: frame) equals: {1, 4, 3, self bytes: "hello", self bin: #(9)}
     self assert: (FrameCodec h2Header: (self bin: #(0, 0, 5))) equals: nil
     // Incomplete payload.
     self assert: (FrameCodec h2Frame: (self bin: #(0, 0, 5, 1, 4, 0, 0, 0, 3, 104))) equals: nil
@@ -31,19 +34,19 @@ typed TestCase subclass: ByteCodecsSpikeTest
         flags: 1
         stream: 2147483647
         payload: payload)
-    self assert: (FrameCodec h2Frame: wire) equals: {0, 1, 2147483647, payload, ""}
+    self assert: (FrameCodec h2Frame: wire) equals: {0, 1, 2147483647, payload, self bytes: ""}
 
   testWebSocketFrames -> Nil =>
     // Masked "Hello" from RFC 6455 5.7.
     masked := self bin: #(129, 133, 55, 250, 33, 61, 127, 159, 77, 81, 88)
     {fin, rsv, op, key, payload, rest} := FrameCodec wsFrame: masked
-    self assert: {fin, rsv, op, payload, rest} equals: {1, 0, 1, "Hello", ""}
+    self assert: {fin, rsv, op, payload, rest} equals: {1, 0, 1, self bytes: "Hello", self bytes: ""}
     self assert: key equals: (self bin: #(55, 250, 33, 61))
     // 16-bit and 64-bit extended lengths round-trip.
     mid := Erlang binary copy: "y" with: 300
     big := Erlang binary copy: "z" with: 70000
-    self assert: (FrameCodec wsFrame: (self iodata: (FrameCodec wsSerialize: 2 payload: mid))) equals: {1, 0, 2, nil, mid, ""}
-    self assert: (FrameCodec wsFrame: (self iodata: (FrameCodec wsSerialize: 2 payload: big))) equals: {1, 0, 2, nil, big, ""}
+    self assert: (FrameCodec wsFrame: (self iodata: (FrameCodec wsSerialize: 2 payload: mid))) equals: {1, 0, 2, nil, mid, self bytes: ""}
+    self assert: (FrameCodec wsFrame: (self iodata: (FrameCodec wsSerialize: 2 payload: big))) equals: {1, 0, 2, nil, big, self bytes: ""}
     self assert: (FrameCodec wsFrame: (self bin: #(129, 133, 55))) equals: nil
 
   testHpackIntegers -> Nil =>
@@ -66,11 +69,11 @@ typed TestCase subclass: ByteCodecsSpikeTest
         prefix: 8
         flags: 0)
       equals: #(42)
-    self assert: (FrameCodec hpackInteger: (self bin: #(234)) prefix: 5) equals: {10, ""}
+    self assert: (FrameCodec hpackInteger: (self bin: #(234)) prefix: 5) equals: {10, self bytes: ""}
     self assert: (FrameCodec hpackInteger: (self bin: #(255, 154, 10, 7)) prefix: 5) equals: {1337, self bin: #(7)}
-    self assert: (FrameCodec hpackInteger: (self bin: #(42)) prefix: 8) equals: {42, ""}
+    self assert: (FrameCodec hpackInteger: (self bin: #(42)) prefix: 8) equals: {42, self bytes: ""}
     // Flag bits above the prefix are ignored (an indexed field, 0x80 | 2).
-    self assert: (FrameCodec hpackInteger: (self bin: #(130)) prefix: 7) equals: {2, ""}
+    self assert: (FrameCodec hpackInteger: (self bin: #(130)) prefix: 7) equals: {2, self bytes: ""}
     self assert: (FrameCodec hpackInteger: (self bin: #(255, 154)) prefix: 5) equals: nil
 
   micros -> Integer => Erlang erlang monotonic_time: #microsecond

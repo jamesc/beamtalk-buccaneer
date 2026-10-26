@@ -566,7 +566,12 @@ Recorded properly when each phase is done; the expected ones:
 - **No Plug.** An `Exchange` handle with owner-process state replaces
   `Plug.Conn` and its threaded adapter (see the Decision above and the ADR).
   The `{:plug_conn, :sent}` message Bandit sends itself and later checks
-  with `receive ... after 0` becomes a field of the exchange state.
+  with `receive ... after 0` becomes state. **As built (slice 4):**
+  `HTTP1Socket send:` marks a failed send in the process dictionary
+  (`HTTP1Socket sentKey`) before raising, since the raise discards the
+  threaded Value; it is cleared with the rest of the dictionary between
+  keepalive requests. `sendOnError:` also treats any write state past
+  `#unsent` as sent, which is what the adapter's message tells Bandit.
 - **No `receive`.** Every selective receive in Bandit (`http1/socket.ex`
   `send_on_error`, `http2/stream.ex` reads and window waits,
   `ensure_completed`) is replaced: by state flags in HTTP/1, and in HTTP/2
@@ -588,6 +593,10 @@ Recorded properly when each phase is done; the expected ones:
 - **Errors**: `HTTPError` carries Bandit's `plug_status`; there is no
   `Plug.Exception.status/1` protocol, so any other raised error is a 500.
   Transport errors are bare reasons, as in Catalina.
+- **Status phrases**: `Status reasonPhrase:` ports Plug's table; Plug's
+  custom `:statuses` config is not ported, so an unknown code raises.
+- **Write misuse**: `sendHeaders:` twice or `sendData:` before the head
+  raise an `Error` naming the state, where Bandit's clauses fail to match.
 - **Test clients**: Req/Finch become OTP `httpc` via FFI and Beamtalk ports
   of Bandit's raw-socket clients.
 
@@ -699,6 +708,7 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 | Block parameter types from a Dictionary literal or `:: T` | BT-4102 | Backlog, needs-spec | `start:handler:` meanwhile |
 | Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | All Done (BT-4100 merged 2026-10-26, ADR 0138; rest merged 2026-10-25) | `Headers` helpers inlined to `"\r\n"` literals; none blocking |
 | `Character value:` with a computed argument answers the raw Integer | BT-4161 | Done (merged 2026-10-26) | found in slice 3 (`hexOf:`); `hexOf:` now uses `integer_to_binary/2` |
+| String/Binary dispatch flip: String is a tagged tuple, `byteSize` removed | BT-4173 | Done (merged 2026-10-26, beamtalk #4587) | migrated: buffers (#5), wire lengths via `byte_size:`, spike tests compare via `asStringUnchecked`; nested Strings in sends handled by Catalina 0.2.0 (catalina #30) |
 | `isKindOf:` on a built-in class costs ~500 ns (BT-4172's boundary guards made the spike parse 10× Erlang, was 1.44×) | BT-4221 | Backlog (under BT-4112) | **performance (gate margins)**; throughput still 1.02-2.18× cowboy, bench/README.md § Rerun after BT-4172 |
 | `:: String` type pattern matches invalid-UTF-8 binaries that `isKindOf: String` rejects | BT-4222 | Backlog (under BT-4170) | keeps the boundary guards on `isKindOf:` until fixed |
 | Stdlib gaps worked around in Phase 1: ASCII lowercase, `DateTime` weekday, integer clocks, `Binary` substring search | BT-4193, BT-4192, BT-4076, BT-4190 | Done (merged 2026-10-26) | adopted: `String>>asciiLowercase` replaces `Headers asciiLowercase:`, `DateTime>>weekday` replaces `Clock weekdayOf:`, `Time monotonic:` in tests, `Binary>>includesSubstring:` replaces `binary:match` in `fieldValueValid:` |

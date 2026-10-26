@@ -1,0 +1,6 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Raised by a second response on one Exchange (Plug's AlreadySentError).
+/// The message starts with "already_sent:" (docs/engine-interface.md § 4).
+typed Error subclass: AlreadySent

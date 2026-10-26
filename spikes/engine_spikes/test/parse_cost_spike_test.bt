@@ -31,7 +31,7 @@ typed TestCase subclass: ParseCostSpikeTest
     self assert: (req header: "host") equals: "localhost:4000"
     self assert: (req header: "x-request-id") equals: "6f1e1f5c-2a8b-4f0e-9d7e-1c2b3a4d5e6f"
     self assert: req keepalive
-    self assert: rest equals: ""
+    self assert: rest isEmpty
 
   testUnknownMethodAndHeaderAreBinaries -> Nil =>
     nl := SpikeParser crlf
@@ -47,7 +47,7 @@ typed TestCase subclass: ParseCostSpikeTest
     {_first, rest} := self parse: two
     {second, tail} := self parse: rest
     self assert: second target equals: "/second"
-    self assert: tail equals: ""
+    self assert: tail isEmpty
 
   testIncompleteHeadWithoutSocketIsAnError -> Nil =>
     nl := SpikeParser crlf
@@ -80,7 +80,7 @@ typed TestCase subclass: ParseCostSpikeTest
           with: #()
       ]
     ffi := self micros - started2
-    report := "http1_parse rounds={self rounds} parse_ns_per_request={parse * 1000 div: self rounds} decode_packet_ffi_ns_per_call={ffi * 1000 div: self rounds} headers=7 bytes={bytes byteSize}"
+    report := "http1_parse rounds={self rounds} parse_ns_per_request={parse * 1000 div: self rounds} decode_packet_ffi_ns_per_call={ffi * 1000 div: self rounds} headers=7 bytes={(Erlang erlang byte_size: bytes)}"
     File mkdirAll: "_build/spikes"
     File writeAll: "_build/spikes/http1_parse.txt" contents: report
     // Loose sanity bound only: a millisecond per parse.

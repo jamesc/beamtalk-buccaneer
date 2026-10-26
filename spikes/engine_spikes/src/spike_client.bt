@@ -30,7 +30,7 @@ sealed typed Object subclass: SpikeClient
   /// A POST with a content-length body.
   class sealed post: target :: String headers: extra :: String body: body :: Binary -> Binary =>
     nl := SpikeParser crlf
-    "POST {target} HTTP/1.1{nl}host: localhost{nl}content-length: {body byteSize}{nl}{extra}{nl}" concat: body
+    "POST {target} HTTP/1.1{nl}host: localhost{nl}content-length: {(Erlang erlang byte_size: body)}{nl}{extra}{nl}" concat: body
 
   /// Read one response. Answers `{status, headers, body, rest}`, or
   /// `{0, #(), reason, ""}` if the connection closed or timed out first.
@@ -98,8 +98,8 @@ sealed typed Object subclass: SpikeClient
       fill: sock
       buffer: buffer
       to: length
-    buf byteSize < length ifTrue: [^{0, headers, "closed in body", ""}]
-    {status, headers, buf part: 0 size: length, buf part: length size: buf byteSize - length}
+    buf size < length ifTrue: [^{0, headers, "closed in body", ""}]
+    {status, headers, buf part: 0 size: length, buf part: length size: buf size - length}
 
   class sealed readChunks: sock :: Object buffer: buffer :: Binary status: status :: Integer headers: headers :: List(Tuple) body: body :: Binary -> Tuple =>
     nl := SpikeParser crlf
@@ -132,8 +132,8 @@ sealed typed Object subclass: SpikeClient
       fill: sock
       buffer: buffer
       to: need
-    buf byteSize < need ifTrue: [^{0, headers, "closed in chunk", ""}]
-    rest := buf part: need size: buf byteSize - need
+    buf size < need ifTrue: [^{0, headers, "closed in chunk", ""}]
+    rest := buf part: need size: buf size - need
     len =:= 0 ifTrue: [^{status, headers, body, rest}]
     self
       readChunks: sock
@@ -146,7 +146,7 @@ sealed typed Object subclass: SpikeClient
   class sealed fill: sock :: Object buffer: buffer :: Binary to: n :: Integer -> Binary =>
     buf := buffer
     failed := false
-    [failed not and: [buf byteSize < n]]
+    [failed not and: [buf size < n]]
       whileTrue: [
         r := (Erlang gen_tcp)
           recv: sock

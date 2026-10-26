@@ -1,0 +1,35 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Loopback TCP pairs for socket-level tests: {serverSocket, clientRaw,
+/// listener}. The client side stays raw gen_tcp; the server side is a
+/// Catalina Socket for the code under test. Close with close:.
+sealed Object subclass: Loopback
+
+  class sealed pairWithReadTimeout: ms :: Integer -> Tuple =>
+    listener := ((Erlang gen_tcp) listen: 0 with: #(#binary, {#packet, #raw}, {#active, false}, {#reuseaddr, true})) unwrap
+    port := ((Erlang inet) port: listener) unwrap
+    client := ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+    raw := ((Erlang gen_tcp) accept: listener with: 5000) unwrap
+    config := (HandlerConfig new) withReadTimeout: ms
+    server := Socket
+      wrap: raw
+      peername: {{127, 0, 0, 1}, port}
+      handlerConfig: config
+      span: nil
+    {server, client, listener}
+
+  class sealed close: pair :: Tuple -> Nil =>
+    (Erlang gen_tcp) close: (pair at: 2)
+    (Erlang gen_tcp) close: (pair at: 3)
+    nil
+
+  /// Exactly n bytes from the raw client side.
+  class sealed clientRead: pair :: Tuple bytes: n :: Integer -> Binary =>
+    ((Erlang gen_tcp)
+      recv: (pair at: 2)
+      with: n
+      with: 2000) unwrap

@@ -1,0 +1,12 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Runs a block in another process and answers what it raised (or nil),
+/// so a test can use an Exchange from a non-owner (as spike 2's runner).
+typed Actor subclass: OtherProcess
+
+  run: block :: Block(Object) -> Object =>
+    [
+      block value
+      nil
+    ] on: Exception do: [:e | e]

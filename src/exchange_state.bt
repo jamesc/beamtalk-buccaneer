@@ -1,0 +1,28 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// The response's progress, as Plug.Conn's state.
+type ExchangeRespState = #unset | #sent | #chunked | #upgraded
+
+/// Request schemes.
+type RequestScheme = #http | #https
+
+/// Bandit.Adapter's fields: one request's state, kept in the owner
+/// process by its Exchange and replaced on every call. The request fields
+/// are fixed by the pipeline when it opens the exchange; the transport is
+/// the latest HTTP1Socket (an HTTP2Stream in Phase 6).
+sealed typed Value subclass: ExchangeState
+  field: transport :: HTTP1Socket = HTTP1Socket new
+  field: method :: String = "GET"
+  field: scheme :: RequestScheme = #http
+  field: host :: String = ""
+  field: port :: Integer = 0
+  field: path :: String = "/"
+  field: query :: String | Nil = nil
+  field: headers :: List(Tuple) = #()
+  /// The last status sent, informational included (Bandit's status).
+  field: status :: Integer | Nil = nil
+  field: respState :: ExchangeRespState = #unset
+  /// Bandit's req_body_bytes and resp_body_bytes metrics.
+  field: reqBodyBytes :: Integer = 0
+  field: respBodyBytes :: Integer = 0

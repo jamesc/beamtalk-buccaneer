@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// One read of a request body (Plug's read_body/2 result).
+sealed typed Value subclass: BodyPart
+  field: data :: Binary = ""
+  /// true when this is the last part (Plug's {:ok, ...}); false for {:more, ...}
+  field: done :: Boolean = true

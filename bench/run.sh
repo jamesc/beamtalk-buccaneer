@@ -15,7 +15,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
-for f in spike_parser spike_request spike_exchange exchange_state not_owner spike_probe spike_handler; do
+for f in spike_parser spike_request spike_exchange spike_exchange_state spike_not_owner spike_probe spike_handler; do
   cp "$root/spikes/engine_spikes/src/$f.bt" "$root/bench/buccaneer_node/src/$f.bt"
 done
 (cd "$root/bench/buccaneer_node" && beamtalk build >/dev/null)

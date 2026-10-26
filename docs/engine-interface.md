@@ -94,7 +94,7 @@ sealed typed Value subclass: Exchange
   headers -> List(Tuple)                           // {name, value}, names lowercase, order and duplicates kept
   header: name :: String -> String | Nil           // first value
   httpProtocol -> #http10 | #http11 | #http2       // Bandit's :"HTTP/1.0" ...
-  peer -> Tuple                                    // {address, port}
+  peer -> Tuple | Nil                              // {address, port}, nil if unknown
   sockData -> Tuple                                // {address, port}
   sslData -> Result(Object, Object)                // peer certificate data, or error: #not_secure
 
@@ -137,9 +137,12 @@ sealed typed Value subclass: BodyPart
 
 `body` in `sendResp:` and `chunk:` is a `String`, a `Binary` or iodata
 (an Erlang list of them), passed to the socket as it is. Lengths are
-`byteSize`, never `size`: a binary that is valid UTF-8 is a `String`, whose
-`size` counts grapheme clusters (`"\r\n"` is one), so `size` undercounts
-every body and head with a CR LF in it (Phase 0 spike 2). Headers are
+bytes: since BT-4173 a `String` is a tagged `{beamtalk_string, Bin}` whose
+`size` counts grapheme clusters (`"\r\n"` is one), while `Binary size`
+counts bytes, so a length that may be either is `Erlang erlang
+byte_size:` (or `iolist_size:` for iodata), never `size` (Phase 0 spike
+2). Nested Strings in iodata are fine: Catalina 0.2.0's `Socket send:` unwraps
+them (the FFI unwraps only top-level ones). Headers are
 `{name, value}` tuples because that is what `decode_packet` produces and
 what the socket writes; the adapter converts to beamtalk-http's pairs.
 

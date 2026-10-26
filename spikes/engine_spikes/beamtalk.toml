@@ -10,7 +10,7 @@ version = "0.0.0"
 description = "Buccaneer Phase 0 spikes 1-4 (not published)"
 
 [dependencies]
-catalina = "0.1.0"
+catalina = "0.2.0"
 
 [diagnostics]
 type = "error"

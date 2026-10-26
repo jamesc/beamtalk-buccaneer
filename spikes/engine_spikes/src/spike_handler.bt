@@ -37,7 +37,7 @@ typed Handler subclass: SpikeHandler
     // is not a legal match pattern).
     buffer := (data isKindOf: Binary) ifTrue: [data] ifFalse: [""]
     keep := true
-    [keep and: [buffer byteSize > 0]]
+    [keep and: [buffer size > 0]]
       whileTrue: [
         outcome := self
           serve: buffer

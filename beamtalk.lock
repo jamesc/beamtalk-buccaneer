@@ -3,9 +3,9 @@
 
 [[package]]
 name = "catalina"
-version = "0.1.0"
+version = "0.2.0"
 registry = "https://github.com/jamesc/beamtalk-registry"
 url = "https://github.com/jamesc/beamtalk-catalina.git"
-reference = "tag:v0.1.0"
-sha = "37b1892662bfa26abdf677dc3227c81598297923"
+reference = "tag:v0.2.0"
+sha = "a91ad3b47015671d37b86cba8040d18dc3b5466b"
 

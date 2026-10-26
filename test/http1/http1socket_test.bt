@@ -3,7 +3,7 @@
 
 TestCase subclass: HTTP1SocketTest
 
-  nl => Headers crlf
+  nl => "\r\n"
 
   socketWith: bytes => HTTP1Socket new withBuffer: bytes
 
@@ -201,13 +201,7 @@ TestCase subclass: HTTP1SocketTest
       message: "Header too long"
 
   testBadFieldValue =>
-    req := "GET / HTTP/1.1"
-      ++ self nl
-      ++ "x-a: a"
-      ++ Headers cr
-      ++ "b"
-      ++ self nl
-      ++ self nl
+    req := "GET / HTTP/1.1" ++ self nl ++ "x-a: a\rb" ++ self nl ++ self nl
     self assertRaises: [
       (self socketWith: req) readHeaders
     ] message: "Field value contains invalid characters (RFC9110§5.5)"

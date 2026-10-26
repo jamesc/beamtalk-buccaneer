@@ -205,20 +205,20 @@ typed Value subclass: HTTP1Socket
         ]
         ^{data, rest3}
       ]
-    {data, (((self hexOf: remaining) ++ Headers crlf) concat: rest2)}
+    {data, ((self hexOf: remaining) concat: ("\r\n" concat: rest2))}
 
   /// {size, rest}: the chunk size, reading on until the CRLF appears.
   /// Past 16 buffered bytes the header is rejected (RFC9112§7.1).
   readChunkSize: buffer :: Binary options: options :: Dictionary -> Tuple =>
     buffer byteSize < 16 ifTrue: [^self chunkSizeIn: buffer options: options]
-    found := (Erlang binary) match: (buffer part: 0 size: 16) with: Headers crlf
+    found := (Erlang binary) match: (buffer part: 0 size: 16) with: "\r\n"
     found match: [
       {pos, 2} -> self parseChunkSize: buffer lineLength: pos;
       _ -> HTTPError signal: "Was not able to parse a chunk size less than 16 octets in length"
     ]
 
   chunkSizeIn: buffer :: Binary options: options :: Dictionary -> Tuple =>
-    found := (Erlang binary) match: buffer with: Headers crlf
+    found := (Erlang binary) match: buffer with: "\r\n"
     found match: [
       {pos, 2} -> self parseChunkSize: buffer lineLength: pos;
       _ -> self
@@ -265,24 +265,11 @@ typed Value subclass: HTTP1Socket
     (byte between: 65 and: 70) ifTrue: [^byte - 55]
     nil
 
-  /// Lowercase hex for resumed-chunk headers (Bandit emits upper; only
-  /// our own parser reads it back, and it accepts both). Digits go
-  /// through fromBytes:, not Character value:: the latter answers the
-  /// raw Integer for computed (non-literal) arguments. asStringUnchecked:
-  /// one ASCII digit needs no validation, and stays a String across the
-  /// BT-4170 flip (BT-4172).
-  hexOf: n :: Integer -> String =>
-    n =:= 0 ifTrue: [^"0"]
-    out := ""
-    rest := n
-    [rest > 0]
-      whileTrue: [
-        d := rest % 16
-        code := d < 10 ifTrue: [48 + d] ifFalse: [87 + d]
-        out := ((Binary fromBytes: #(code)) asStringUnchecked concat: out)
-        rest := rest div: 16
-      ]
-    out
+  /// Uppercase hex for resumed-chunk headers, as Bandit emits; only
+  /// our own parser reads it back, and it accepts both cases. Answers
+  /// Binary: wire bytes (hex digits, always ASCII), so the BT-4170 flip
+  /// is a no-op here — no String dispatch involved (BT-4172).
+  hexOf: n :: Integer -> Binary => Erlang erlang integer_to_binary: n with: 16
 
   /// Whether bytes are a CRLF, checked byte-wise so Binary and String
   /// buffers compare identically.
@@ -335,7 +322,7 @@ typed Value subclass: HTTP1Socket
         target: t
         version: ver
         rest: rest;
-      {#ok, {#http_error, reason}, rest} -> (Headers stringOrOpaque: reason) =:= Headers crlf ifTrue: [
+      {#ok, {#http_error, reason}, rest} -> (Headers stringOrOpaque: reason) =:= "\r\n" ifTrue: [
         (self withBuffer: rest) doReadRequestLine
       ] ifFalse: [
         HTTPError signal: ("Request line HTTP error: " ++ reason printString)

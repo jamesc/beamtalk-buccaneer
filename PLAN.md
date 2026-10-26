@@ -696,7 +696,8 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 | Atomic spawn-and-monitor for an actor | BT-4104 | Backlog, needs-spec | Phase 6 rule meanwhile (spike 6) |
 | Test classes calling a dependency's class methods | BT-4094 | Done (merged 2026-10-25) | loopback fixture keeps the shape as shared setup |
 | Block parameter types from a Dictionary literal or `:: T` | BT-4102 | Backlog, needs-spec | `start:handler:` meanwhile |
-| Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | BT-4101, BT-4105, BT-4106, BT-4107 Done (merged 2026-10-25); BT-4100 Backlog | none blocking |
+| Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | All Done (BT-4100 merged 2026-10-26, ADR 0138; rest merged 2026-10-25) | `Headers` helpers inlined to `"\r\n"` literals; none blocking |
+| `Character value:` with a computed argument answers the raw Integer | BT-4161 | Done (merged 2026-10-26) | found in slice 3 (`hexOf:`); `hexOf:` now uses `integer_to_binary/2` |
 
 ## References
 
@@ -705,4 +706,5 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 - beamtalk-http 0.1.10: `src/`, `native/`, `test/`.
 - Beamtalk ADRs 0043 (sync sends), 0056 (native actors, deferred reply),
   0065 (Server, `handleInfo:`), 0068 (protocols), 0076 (FFI), 0124
-  (`late`), 0134 (crash semantics), 0135 (supervisors).
+  (`late`), 0134 (crash semantics), 0135 (supervisors), 0138 (string
+  escapes).

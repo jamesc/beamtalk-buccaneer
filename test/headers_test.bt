@@ -178,17 +178,17 @@ TestCase subclass: HeadersTest
 
   testFieldValueValid =>
     self assert: (Headers fieldValueValid: "text/plain; charset=utf-8")
-    self deny: (Headers fieldValueValid: ("a" ++ Headers cr ++ "b"))
-    self deny: (Headers fieldValueValid: ("a" ++ Headers lf ++ "b"))
-    self deny: (Headers fieldValueValid: ("a" ++ Headers nul ++ "b"))
+    self deny: (Headers fieldValueValid: "a\rb")
+    self deny: (Headers fieldValueValid: "a\nb")
+    self deny: (Headers fieldValueValid: "a\0b")
 
   testStripSpaces =>
-    crlf := Headers crlf
-    tab := Headers tab
+    crlf := "\r\n"
+    tab := "\t"
     self assert: (Headers stripSpaces: ("  " ++ tab ++ "close" ++ tab ++ " ")) equals: "close"
     self assert: (Headers stripSpaces: (crlf ++ "close")) equals: "close"
     self assert: (Headers stripSpaces: ("close" ++ crlf)) equals: ("close" ++ crlf)
-    self assert: (Headers stripSpaces: ("a" ++ Headers cr ++ "b")) equals: ("a" ++ Headers cr ++ "b")
+    self assert: (Headers stripSpaces: "a\rb") equals: "a\rb"
 
   testFieldValueValidBinary =>
     self assert: (Headers fieldValueValid: (Binary fromBytes: #(99, 97, 102, 233)))

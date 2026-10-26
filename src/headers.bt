@@ -31,18 +31,6 @@ typed Object subclass: Headers
       _ -> bin
     ]
 
-  /// Control characters as real strings (string literals have no \r \n
-  /// \t escapes, BT-4100).
-  class cr -> String => (Character value: 13) asString
-
-  class lf -> String => (Character value: 10) asString
-
-  class crlf -> String => self cr ++ self lf
-
-  class tab -> String => (Character value: 9) asString
-
-  class nul -> String => (Character value: 0) asString
-
   /// Field values with CR, LF or NUL are invalid (RFC9110§5.5). Values
   /// arrive as Binaries when the bytes are not valid UTF-8; those scan
   /// byte-wise, since Binary has no substring search.
@@ -52,9 +40,9 @@ typed Object subclass: Headers
     false
 
   class stringValueValid: value :: String -> Boolean =>
-    (value includesSubstring: self cr) ifTrue: [^false]
-    (value includesSubstring: self lf) ifTrue: [^false]
-    (value includesSubstring: self nul) ifTrue: [^false]
+    (value includesSubstring: "\r") ifTrue: [^false]
+    (value includesSubstring: "\n") ifTrue: [^false]
+    (value includesSubstring: "\0") ifTrue: [^false]
     true
 
   class binaryValueValid: value :: Binary -> Boolean =>
@@ -237,14 +225,14 @@ typed Object subclass: Headers
 
   /// A leading CRLF pair is one grapheme cluster, so drop: 1 removes it whole.
   class isLeadingSpace: s :: String -> Boolean =>
-    (s startsWith: self crlf) ifTrue: [^true]
+    (s startsWith: "\r\n") ifTrue: [^true]
     first := s first
-    (first =:= " ") or: [first =:= self tab]
+    (first =:= " ") or: [first =:= "\t"]
 
   class stripTrailingSpaces: s :: String -> String =>
     rest := s
     [
-      rest isNotEmpty and: [(rest last =:= " ") or: [rest last =:= self tab]]
+      rest isNotEmpty and: [(rest last =:= " ") or: [rest last =:= "\t"]]
     ] whileTrue: [rest := rest take: rest size - 1]
     rest
 

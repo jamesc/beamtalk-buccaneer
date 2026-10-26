@@ -426,7 +426,7 @@ typed Value subclass: HTTP1Socket
     ]
     next := count + 1
     next > maxCount ifTrue: [HTTPError431 signal: "Too many headers"]
-    (self withBuffer: rest) doReadHeaders: (headers addFirst: {(Headers asciiLowercase: name), text}) count: next
+    (self withBuffer: rest) doReadHeaders: (headers addFirst: {name asciiLowercase, text}) count: next
 
   contentLengthOf: headers :: List(Tuple) -> Integer | Nil =>
     result := Headers getContentLength: headers
@@ -450,7 +450,7 @@ typed Value subclass: HTTP1Socket
   /// it unlowercased is observationally identical for exact matching.
   loweredOrOpaque: value :: Object -> Binary | Nil =>
     value isNil ifTrue: [^nil]
-    (value isKindOf: String) ifTrue: [^Headers asciiLowercase: value]
+    (value isKindOf: String) ifTrue: [^value asciiLowercase]
     (value isKindOf: Binary) ifTrue: [^value]
     nil
 

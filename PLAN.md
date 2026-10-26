@@ -680,7 +680,7 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 
 ## Beamtalk work this port depends on
 
-| Need | Issue | Status (2026-10-25) | Relation |
+| Need | Issue | Status (2026-10-26) | Relation |
 |---|---|---|---|
 | Deferred reply for a pure-Beamtalk Server | BT-4090 | Backlog, needs-spec | **blocks Phase 6** |
 | A trapping Server handling linked `EXIT`s itself | BT-4052 | Backlog, needs-spec | related to Phase 6 (monitors meanwhile) |
@@ -694,10 +694,12 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 | Sealed self-sends in test fixtures target a nonexistent module | BT-4152 | Done (merged 2026-10-25, #4537) | fixed; `engine_spikes` package kept (more realistic vehicle) |
 | Binary patterns: size from an earlier segment; bitstrings, literal segments, size expressions; two `_` | BT-4096, BT-4097, BT-4098 | Done (merged 2026-10-25) | spike 4 worked around; Phases 4-6 use the real syntax |
 | Atomic spawn-and-monitor for an actor | BT-4104 | Backlog, needs-spec | Phase 6 rule meanwhile (spike 6) |
+| Process primitives: `Pid current`, `Pid>>monitor`, `Block>>fork` | BT-4077 | Done (merged 2026-10-26) | Phase 6 builds its spawn-idle, monitor, start rule from these; not atomic, so BT-4104 stays open |
 | Test classes calling a dependency's class methods | BT-4094 | Done (merged 2026-10-25) | loopback fixture keeps the shape as shared setup |
 | Block parameter types from a Dictionary literal or `:: T` | BT-4102 | Backlog, needs-spec | `start:handler:` meanwhile |
 | Smaller gaps found in Phase 0 | BT-4100, BT-4101, BT-4105, BT-4106, BT-4107 | All Done (BT-4100 merged 2026-10-26, ADR 0138; rest merged 2026-10-25) | `Headers` helpers inlined to `"\r\n"` literals; none blocking |
 | `Character value:` with a computed argument answers the raw Integer | BT-4161 | Done (merged 2026-10-26) | found in slice 3 (`hexOf:`); `hexOf:` now uses `integer_to_binary/2` |
+| Stdlib gaps worked around in Phase 1: ASCII lowercase, `DateTime` weekday, integer clocks, `Binary` substring search | BT-4193, BT-4192, BT-4076, BT-4190 | Done (merged 2026-10-26) | adopted: `String>>asciiLowercase` replaces `Headers asciiLowercase:`, `DateTime>>weekday` replaces `Clock weekdayOf:`, `Time monotonic:` in tests, `Binary>>includesSubstring:` replaces `binary:match` in `fieldValueValid:` |
 
 ## References
 

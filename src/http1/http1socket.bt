@@ -94,7 +94,7 @@ typed Value subclass: HTTP1Socket
         options: options)
     body := read at: 1
     rest := read at: 2
-    remaining := unread - body byteSize
+    remaining := unread - body size
     socket := (self withBuffer: rest) withUnreadContentLength: remaining
     remaining =:= 0 ifTrue: [^{#ok, body, socket withReadState: #read}]
     {#more, body, socket}
@@ -102,11 +102,11 @@ typed Value subclass: HTTP1Socket
   /// {bytes, rest}: exactly toRead bytes, reading more when the buffer
   /// runs short (Bandit's read_exactly!).
   readExactly: toRead :: Integer from: buffer :: Binary readSize: readSize :: Integer timeout: timeout :: Integer -> Tuple =>
-    still := toRead - buffer byteSize
+    still := toRead - buffer size
     still =:= 0 ifTrue: [^{buffer, ""}]
     still < 0
       ifTrue: [
-        ^{(buffer part: 0 size: toRead), (buffer part: toRead size: (buffer byteSize - toRead))}
+        ^{(buffer part: 0 size: toRead), (buffer part: toRead size: (buffer size - toRead))}
       ]
     sock := self socket
     sock isNil ifTrue: [Error signal: "Incomplete body with no socket"]
@@ -151,12 +151,12 @@ typed Value subclass: HTTP1Socket
       ^{#ok, body, (self withBuffer: rest) withReadState: #read}
     ]
     grown := body concat: data
-    data byteSize < maxToRead
+    data size < maxToRead
       ifTrue: [
         ^self
           readChunkedData: rest
           body: grown
-          bodyLength: (length + data byteSize)
+          bodyLength: (length + data size)
           maxLength: maxLength
           options: options
       ]
@@ -210,7 +210,7 @@ typed Value subclass: HTTP1Socket
   /// {size, rest}: the chunk size, reading on until the CRLF appears.
   /// Past 16 buffered bytes the header is rejected (RFC9112§7.1).
   readChunkSize: buffer :: Binary options: options :: Dictionary -> Tuple =>
-    buffer byteSize < 16 ifTrue: [^self chunkSizeIn: buffer options: options]
+    buffer size < 16 ifTrue: [^self chunkSizeIn: buffer options: options]
     found := (Erlang binary) match: (buffer part: 0 size: 16) with: "\r\n"
     found match: [
       {pos, 2} -> self parseChunkSize: buffer lineLength: pos;
@@ -233,7 +233,7 @@ typed Value subclass: HTTP1Socket
 
   parseChunkSize: buffer :: Binary lineLength: length :: Integer -> Tuple =>
     line := buffer part: 0 size: length
-    rest := buffer part: (length + 2) size: (buffer byteSize - length - 2)
+    rest := buffer part: (length + 2) size: (buffer size - length - 2)
     {(self parseChunkSizeLine: line), rest}
 
   /// The size of one chunk-size line; extensions (from ';') are ignored
@@ -243,7 +243,7 @@ typed Value subclass: HTTP1Socket
     size := 0
     digits := 0
     i := 0
-    [i < line byteSize]
+    [i < line size]
       whileTrue: [
         byte := line byteAt: i
         byte =:= 59 ifTrue: [^self chunkSizeChecked: size digits: digits]
@@ -274,7 +274,7 @@ typed Value subclass: HTTP1Socket
   /// Whether bytes are a CRLF, checked byte-wise so Binary and String
   /// buffers compare identically.
   isCrlf: bytes :: Binary -> Boolean =>
-    bytes byteSize =:= 2 ifFalse: [^false]
+    bytes size =:= 2 ifFalse: [^false]
     (bytes byteAt: 0) =:= 13 ifFalse: [^false]
     (bytes byteAt: 1) =:= 10
 

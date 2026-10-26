@@ -1,0 +1,334 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Exchange (Bandit.Adapter) over loopback sockets. Bandit tests the
+/// adapter through the whole server (http1/plug_test.exs); these are the
+/// unit-level cases, and the plug_test ports arrive with the pipeline.
+TestCase subclass: ExchangeTest
+
+  // A fresh date in the cache, so sendResp: does not warn on every call.
+  setUp =>
+    Clock updateCache
+    self
+
+  tearDown =>
+    (Ets exists: Clock tableName) ifTrue: [(Ets named: Clock tableName) delete]
+    self
+
+  nl => "\r\n"
+
+  /// An exchange over the server side of pair, the request head already
+  /// sent by the client and read.
+  open: pair request: head =>
+    self
+      open: pair
+      request: head
+      method: "GET"
+
+  open: pair request: head method: method =>
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    transport := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    Exchange open: ((ExchangeState new withTransport: transport) withMethod: method)
+
+  getHead => "GET / HTTP/1.1" ++ self nl ++ "host: x" ++ self nl ++ self nl
+
+  postHead: body =>
+    "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: "
+      ++ (Erlang erlang byte_size: body) printString
+      ++ self nl
+      ++ self nl
+      ++ body
+
+  /// The response bytes up to the end of the head, then exactly bodyLength more.
+  responseOf: pair body: bodyLength =>
+    sock := pair at: 2
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: ((Erlang gen_tcp)
+            recv: sock
+            with: 1
+            with: 2000) unwrap
+      ]
+    bodyLength =:= 0 ifTrue: [^head asStringUnchecked]
+    (head concat: (Loopback clientRead: pair bytes: bodyLength)) asStringUnchecked
+
+  // ===== the request =====
+  testRequestAccessors =>
+    st := (((((ExchangeState new withScheme: #https) withHost: "example.com") withPort: 8443) withPath: "/a/b") withQuery: "x=1") withHeaders: #({"host", "example.com"}, {"x-a", "1"}, {"x-a", "2"})
+    ex := Exchange open: st
+    self assert: ex method equals: "GET"
+    self assert: ex scheme equals: #https
+    self assert: ex host equals: "example.com"
+    self assert: ex port equals: 8443
+    self assert: ex path equals: "/a/b"
+    self assert: ex query equals: "x=1"
+    self assert: (ex header: "x-a") equals: "1"
+    self assert: (ex header: "nope") equals: nil
+    self assert: ex headers size equals: 3
+    self assert: ex httpProtocol equals: #http10
+    self assert: ex state equals: #unset
+    ex finish
+
+  testPeerAndSockData =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    self assert: (ex peer at: 1) equals: {127, 0, 0, 1}
+    self assert: (ex sockData at: 1) equals: {127, 0, 0, 1}
+    self assert: ex sslData equals: (Result error: #not_secure)
+    ex finish
+    Loopback close: pair
+
+  // ===== ownership and lifetime =====
+  testOwnerCheck =>
+    ex := Exchange open: ExchangeState new
+    runner := OtherProcess spawn
+    raised := runner run: [ex method]
+    runner stop
+    ex finish
+    self assert: raised class equals: NotOwner
+    self
+      assert: ((raised match: [
+        e :: NotOwner -> e message;
+        _ -> ""
+      ]) startsWith: "not_owner: an Exchange can only be used from the process")
+
+  testFinishedExchangeRaises =>
+    ex := Exchange open: ExchangeState new
+    ex finish
+    caught := false
+    [ex method]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: (e message startsWith: "exchange_finished:")
+      ]
+    self assert: caught
+
+  testFinishLeavesNoState =>
+    ex := Exchange open: ExchangeState new
+    ex finish
+    self assert: (Erlang erlang get: ex key) equals: #undefined
+
+  // ===== the request body =====
+  testReadBodyWhole =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello")
+    part := ex readBody unwrap
+    self assert: part data asStringUnchecked equals: "hello"
+    self assert: part done
+    self assert: ex readBody unwrap data isEmpty
+    ex finish
+    Loopback close: pair
+
+  testReadBodyCountsBytesNotGraphemes =>
+    pair := Loopback pairWithReadTimeout: 5000
+    body := "a\r\nb\r\nc"
+    ex := self open: pair request: (self postHead: body)
+    part := ex readBody unwrap
+    self assert: part data asStringUnchecked equals: body
+    self assert: part done
+    ex finish
+    Loopback close: pair
+
+  testReadBodyInParts =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello world")
+    first := (ex readBody: #{#length => 5}) unwrap
+    self assert: first data asStringUnchecked equals: "hello"
+    self deny: first done
+    rest := ex readBody unwrap
+    self assert: rest data asStringUnchecked equals: " world"
+    self assert: rest done
+    ex finish
+    Loopback close: pair
+
+  testReadBodyTimeout =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "he"
+    ex := self open: pair request: head
+    self assert: (ex readBody: #{
+      #readTimeout => 100
+    }) equals: (Result error: #timeout)
+    Erlang erlang erase: ex key
+    Loopback close: pair
+
+  testReadBodyClosed =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "he"
+    ex := self open: pair request: head
+    (Erlang gen_tcp) close: (pair at: 2)
+    self assert: ex readBody equals: (Result error: #closed)
+    Erlang erlang erase: ex key
+    (Erlang gen_tcp) close: (pair at: 3)
+
+  testReadAll =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello")
+    self assert: (ex readAll: 100) unwrap asStringUnchecked equals: "hello"
+    ex finish
+    Loopback close: pair
+
+  testReadAllTooLarge =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello world")
+    self assert: (ex readAll: 5) equals: (Result error: #body_too_large)
+    Erlang erlang erase: ex key
+    Loopback close: pair
+
+  // ===== the response =====
+  testSendResp =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 200
+      headers: #({"content-type", "text/plain"})
+      body: "hello"
+    self assert: ex state equals: #sent
+    resp := self responseOf: pair body: 5
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp includesSubstring: "\r\ncontent-length: 5\r\n")
+    self assert: (resp includesSubstring: "\r\ncontent-type: text/plain\r\n")
+    self assert: (resp includesSubstring: "\r\ndate: ")
+    self assert: (resp endsWith: "\r\n\r\nhello")
+    self assert: ex transport keepalive equals: true
+    ex finish
+    Loopback close: pair
+
+  testSendRespIodata =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 200
+      headers: #()
+      body: #("hel", #("lo"))
+    resp := self responseOf: pair body: 5
+    self assert: (resp includesSubstring: "\r\ncontent-length: 5\r\n")
+    self assert: (resp endsWith: "hello")
+    ex finish
+    Loopback close: pair
+
+  testSendRespKeepsCallerDate =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 200
+      headers: #({"date", "yesterday"})
+      body: ""
+    resp := self responseOf: pair body: 0
+    self assert: (resp includesSubstring: "\r\ndate: yesterday\r\n")
+    ex finish
+    Loopback close: pair
+
+  testSendRespHeadHasNoBody =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "HEAD / HTTP/1.1" ++ self nl ++ "host: x" ++ self nl ++ self nl
+    ex := self
+      open: pair
+      request: head
+      method: "HEAD"
+    ex
+      sendResp: 200
+      headers: #()
+      body: "hello"
+    resp := self responseOf: pair body: 0
+    // Bandit keeps the content-length a GET would carry, and sends no body.
+    self assert: (resp includesSubstring: "\r\ncontent-length: 5\r\n")
+    self assert: (resp endsWith: "\r\n\r\n")
+    self assert: ex transport writeState equals: #sent
+    ex finish
+    // Nothing follows the head.
+    self
+      assert: ((Erlang gen_tcp)
+        recv: (pair at: 2)
+        with: 0
+        with: 100) isError
+    Loopback close: pair
+
+  testSendResp204DropsBodyAndLength =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 204
+      headers: #({"content-length", "5"})
+      body: "hello"
+    resp := self responseOf: pair body: 0
+    self assert: (resp startsWith: "HTTP/1.1 204 No Content\r\n")
+    self deny: (resp includesSubstring: "content-length")
+    ex finish
+    self
+      assert: ((Erlang gen_tcp)
+        recv: (pair at: 2)
+        with: 0
+        with: 100) isError
+    Loopback close: pair
+
+  testSecondSendRespRaises =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 200
+      headers: #()
+      body: ""
+    raised := [
+      ex
+        sendResp: 200
+        headers: #()
+        body: ""
+      nil
+    ] on: Error do: [:e | e]
+    self assert: raised class equals: AlreadySent
+    ex finish
+    Loopback close: pair
+
+  // ===== commit and finish =====
+  testCommitUnsentRaises =>
+    ex := Exchange open: ExchangeState new
+    raised := [
+      ex commit
+      nil
+    ] on: Error do: [:e | e]
+    ex finish
+    self assert: raised class equals: NotSentError
+
+  testCommitSentIsQuiet =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 200
+      headers: #()
+      body: ""
+    self assert: ex commit equals: ex
+    ex finish
+    Loopback close: pair
+
+  testFinishDrainsUnreadBody =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello") ++ "GET /next"
+    ex
+      sendResp: 200
+      headers: #()
+      body: ""
+    next := ex finish
+    self assert: next readState equals: #read
+    self assert: next buffer asStringUnchecked equals: "GET /next"
+    Loopback close: pair

@@ -399,7 +399,10 @@ typed Value subclass: HTTP1Socket
   send: payload :: Object -> HTTP1Socket =>
     sock := self socket
     sock isNil ifTrue: [Error signal: "Send with no socket"]
-    result := sock send: payload
+    // gen_tcp:send rejects an iolist holding tagged Strings (einval) since
+    // BT-4173, though iolist_size and iolist_to_iovec accept it; the iovec
+    // is bare binaries and copies nothing large.
+    result := sock send: (Erlang erlang iolist_to_iovec: payload)
     result isError
       ifTrue: [
         Erlang erlang put: HTTP1Socket sentKey with: true

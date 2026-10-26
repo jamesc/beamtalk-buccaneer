@@ -46,25 +46,9 @@ TestCase subclass: HTTP1SocketTest
   loopbackPair -> Tuple => self loopbackPairWithReadTimeout: 60000
 
   loopbackPairWithReadTimeout: ms :: Integer -> Tuple =>
-    listener := ((Erlang gen_tcp) listen: 0 with: #(#binary, {#packet, #raw}, {#active, false}, {#reuseaddr, true})) unwrap
-    port := ((Erlang inet) port: listener) unwrap
-    client := ((Erlang gen_tcp)
-      connect: {127, 0, 0, 1}
-      with: port
-      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
-    raw := ((Erlang gen_tcp) accept: listener with: 5000) unwrap
-    config := (HandlerConfig new) withReadTimeout: ms
-    server := Socket
-      wrap: raw
-      peername: {{127, 0, 0, 1}, port}
-      handlerConfig: config
-      span: nil
-    {server, client, listener}
+    Loopback pairWithReadTimeout: ms
 
-  closeLoopback: pair =>
-    (Erlang gen_tcp) close: (pair at: 2)
-    (Erlang gen_tcp) close: (pair at: 3)
-    nil
+  closeLoopback: pair => Loopback close: pair
 
   testReadsRequestLineAndHeaders =>
     req := "GET /hello?x=1 HTTP/1.1"
@@ -742,10 +726,7 @@ TestCase subclass: HTTP1SocketTest
 
   /// Exactly n bytes from the raw client side.
   clientRead: pair bytes: n =>
-    ((Erlang gen_tcp)
-      recv: (pair at: 2)
-      with: n
-      with: 2000) unwrap
+    (Loopback clientRead: pair bytes: n) asStringUnchecked
 
   testSendRawCoalescesHeadAndBody =>
     pair := self loopbackPair
@@ -759,7 +740,7 @@ TestCase subclass: HTTP1SocketTest
     self assert: sent writeState equals: #sent
     self assert: sent sendBuffer isEmpty
     expected := "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
   testSendNoBody =>
@@ -770,7 +751,7 @@ TestCase subclass: HTTP1SocketTest
       disposition: #noBody
     self assert: sock writeState equals: #sent
     expected := "HTTP/1.1 204 No Content\r\nx-a: 1\r\n\r\n"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
   testSendChunkedFramesEachWrite =>
@@ -785,7 +766,7 @@ TestCase subclass: HTTP1SocketTest
     sock3 := sock2 sendData: "" end: true
     self assert: sock3 writeState equals: #sent
     expected := "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n14\r\nhello world, chunked\r\n0\r\n\r\n"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
   testSendChunkEncodedWithContentLengthStreams =>
@@ -798,7 +779,7 @@ TestCase subclass: HTTP1SocketTest
     done := (sock sendData: "abc" end: false) sendData: #("d", #("ef")) end: true
     self assert: done writeState equals: #sent
     expected := "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nabcdef"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
   testSendInformStaysUnsent =>
@@ -814,7 +795,7 @@ TestCase subclass: HTTP1SocketTest
       headers: #()
       disposition: #noBody
     expected := "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 204 No Content\r\n\r\n"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self assert: final writeState equals: #sent
     self closeLoopback: pair
 
@@ -846,7 +827,7 @@ TestCase subclass: HTTP1SocketTest
       headers: #({"connection", "close"})
       disposition: #noBody
     expected := "HTTP/1.0 431 Request Header Fields Too Large\r\nconnection: close\r\n\r\n"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
   // ----- keepalive (RFC9112§9.3) -----
@@ -907,7 +888,7 @@ TestCase subclass: HTTP1SocketTest
       ++ "helloGET"
     done := (self headSocket: head) ensureCompleted
     self assert: done readState equals: #read
-    self assert: done buffer equals: "GET"
+    self assert: done buffer asStringUnchecked equals: "GET"
 
   testEnsureCompletedDrainsChunked =>
     head := "POST /x HTTP/1.1"
@@ -925,7 +906,7 @@ TestCase subclass: HTTP1SocketTest
       ++ "next"
     done := (self headSocket: head) ensureCompleted
     self assert: done readState equals: #read
-    self assert: done buffer equals: "next"
+    self assert: done buffer asStringUnchecked equals: "next"
 
   testEnsureCompletedClientGoneIsTransportError =>
     pair := self loopbackPair
@@ -951,7 +932,7 @@ TestCase subclass: HTTP1SocketTest
     self assert: sock writeState equals: #sent
     self assert: sock keepalive equals: false
     expected := "HTTP/1.1 431 Request Header Fields Too Large\r\nconnection: close\r\n\r\n"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
   testSendOnErrorOtherErrorIs500 =>
@@ -959,7 +940,7 @@ TestCase subclass: HTTP1SocketTest
     err := [Error signal: "boom"] on: Error do: [:e | e]
     (self writer: pair version: #http11) sendOnError: err
     expected := "HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n"
-    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
   testSendOnErrorTransportErrorSendsNothing =>

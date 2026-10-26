@@ -4,7 +4,7 @@
 /// Spike 2: the per-request state an `SpikeExchange` keeps in its owner
 /// process, keyed by the exchange's `Reference` (the role of
 /// `Bandit.Adapter`'s fields plus the transport value). Spike-only.
-sealed typed Value subclass: ExchangeState
+sealed typed Value subclass: SpikeExchangeState
   field: request :: SpikeRequest = SpikeRequest new
   field: socket :: Socket | Nil = nil
   // Bytes read past the request head and not yet consumed.

@@ -46,7 +46,7 @@ sealed typed Object subclass: FrameCodec
   /// the payload, as iodata: a list of the nine header bytes and the
   /// payload binary, ready for `Socket send:`.
   class sealed h2Serialize: type :: Integer flags: flags :: Integer stream: sid :: Integer payload: payload :: Binary -> List =>
-    len := payload byteSize
+    len := (Erlang erlang byte_size: payload)
     #(#(len bitShift: -16, (len bitShift: -8) bitAnd: 255, len bitAnd: 255, type, flags, (sid bitShift: -24) bitAnd: 127, (sid bitShift: -16) bitAnd: 255, (sid bitShift: -8) bitAnd: 255, sid bitAnd: 255), payload)
 
   // === WebSocket (Bandit.WebSocket.Frame.deserialize/2) ===
@@ -119,7 +119,7 @@ sealed typed Object subclass: FrameCodec
   /// `Bandit.WebSocket.PrimitiveOps.ws_mask/2`: XOR with the key
   /// repeated, through `crypto:exor/2`.
   class sealed unmask: payload :: Binary key: key :: Binary -> Binary =>
-    n := payload byteSize
+    n := (Erlang erlang byte_size: payload)
     n =:= 0 ifTrue: [^payload]
     whole := Erlang binary copy: key with: n  // 4 + 1
     Erlang crypto exor: payload with: (whole part: 0 size: n)
@@ -127,7 +127,7 @@ sealed typed Object subclass: FrameCodec
   /// A server frame header (unmasked): FIN, opcode and the length in 7,
   /// 7+16 or 7+64 bits, as iodata.
   class sealed wsSerialize: opcode :: Integer payload: payload :: Binary -> List =>
-    n := payload byteSize
+    n := (Erlang erlang byte_size: payload)
     first := 128 bitOr: opcode
     head := n < 126
       ifTrue: [#(first, n)]

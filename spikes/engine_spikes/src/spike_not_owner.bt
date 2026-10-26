@@ -3,4 +3,4 @@
 
 /// Spike 2: raised when an `SpikeExchange` is used from a process other
 /// than its owner (Bandit's `validate_calling_process!`). Spike-only.
-Error subclass: NotOwner
+Error subclass: SpikeNotOwner

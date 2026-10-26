@@ -104,7 +104,7 @@ typed TestCase subclass: ExchangeStateSpikeTest
           "ok {i} 0123456789abcdef"
         ] ifFalse: ["ok {i}"]
         (status =:= 200 and: [
-          body =:= expected
+          body asStringUnchecked =:= expected
         ]) ifFalse: [
           bad size < 5 ifTrue: [bad := bad addFirst: {i, status, body}]
         ]
@@ -148,10 +148,10 @@ typed TestCase subclass: ExchangeStateSpikeTest
     raised := runner run: [ex method]
     runner stop
     Erlang erlang erase: ex key
-    self assert: raised class equals: NotOwner
+    self assert: raised class equals: SpikeNotOwner
     self
       assert: ((raised match: [
-        e :: NotOwner -> e message;
+        e :: SpikeNotOwner -> e message;
         _ -> ""
       ]) startsWith: "not_owner: an Exchange can only be used from the process")
 

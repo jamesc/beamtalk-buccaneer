@@ -69,7 +69,7 @@ sealed typed Value subclass: ConnLogic
     self withBuffered: (self.buffered at: sid put: bytes)
 
   send: sid :: Integer data: bytes :: Binary replyTo: r :: ReplyTo -> ConnLogic =>
-    n := bytes byteSize
+    n := (Erlang erlang byte_size: bytes)
     (self.sends isEmpty and: [n <= self.window])
       ifTrue: [
         r reply: self.window - n
@@ -89,7 +89,7 @@ sealed typed Value subclass: ConnLogic
     left := #()
     self.sends
       do: [:s |
-        size := (s at: 3) byteSize
+        size := (Erlang erlang byte_size: (s at: 3))
         (blocked not and: [size <= w])
           ifTrue: [
             w := w - size

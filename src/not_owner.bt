@@ -1,0 +1,7 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Raised when an Exchange is used from a process other than its owner
+/// (Bandit's validate_calling_process!). The message starts with
+/// "not_owner:" (docs/engine-interface.md § 1).
+typed Error subclass: NotOwner

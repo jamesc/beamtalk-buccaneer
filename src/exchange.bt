@@ -1,0 +1,191 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.Adapter as an owner-bound handle (docs/engine-interface.md § 1):
+/// a sealed Value holding only an identity and the owning process. The
+/// request's state is an ExchangeState in the owner's process dictionary
+/// under {#buccaneer_exchange, ref}; every method checks the caller is
+/// the owner first. Phase 1 covers the request, readBody, readAll: and
+/// sendResp:; chunked responses, inform:, sendFile: and the 100-continue
+/// come in Phase 3, upgrade in Phase 4.
+sealed typed Value subclass: Exchange
+  // Always set by open:; nilable only because a Value field needs a default.
+  field: ref :: Reference | Nil = nil
+  field: owner :: Pid | Nil = nil
+
+  /// Engine side: start a request's state in the calling process.
+  class sealed open: state :: ExchangeState -> Exchange =>
+    ex := Exchange ref: Erlang erlang make_ref owner: Pid current
+    Erlang erlang put: ex key with: state
+    ex
+
+  /// The process-dictionary key of this exchange's state.
+  key -> Tuple => {#buccaneer_exchange, self.ref}
+
+  /// The state, after the owner check. Raises NotOwner from another
+  /// process, and an error once the exchange is finished.
+  load -> ExchangeState =>
+    me := Pid current
+    me =:= self.owner
+      ifFalse: [
+        NotOwner signal: "not_owner: an Exchange can only be used from the process that received the request (owner {self.owner printString}, caller {me printString})"
+      ]
+    (Erlang erlang get: self key) match: [
+      st :: ExchangeState -> st;
+      _ -> Error signal: "exchange_finished: this request is complete"
+    ]
+
+  store: st :: ExchangeState -> Exchange =>
+    Erlang erlang put: self key with: st
+    self
+
+  // === The request (fixed once the headers are read) ===
+  method -> String => self load method
+
+  scheme -> RequestScheme => self load scheme
+
+  host -> String => self load host
+
+  port -> Integer => self load port
+
+  path -> String => self load path
+
+  query -> String | Nil => self load query
+
+  /// {name, value}, names lowercase, order and duplicates kept.
+  headers -> List(Tuple) => self load headers
+
+  /// The first value for name, or nil.
+  header: name :: String -> Binary | Nil =>
+    Headers getHeader: self load headers name: name
+
+  httpProtocol -> HttpVersion => self load transport version
+
+  /// {address, port} of the client.
+  peer -> Tuple => self socket peername unwrap
+
+  /// {address, port} of this end.
+  sockData -> Tuple => self socket sockname unwrap
+
+  /// The peer certificate, or error: #not_secure on a clear connection.
+  sslData -> Result(Object, Object) =>
+    sock := self socket
+    sock isSecure ifFalse: [^Result error: #not_secure]
+    sock peercert
+
+  socket -> Socket =>
+    sock := self load transport socket
+    sock isNil ifTrue: [Error signal: "Exchange has no socket"]
+    sock
+
+  /// #unset | #sent | #chunked | #upgraded, as Plug.Conn's state.
+  state -> ExchangeRespState => self load respState
+
+  // === The request body ===
+
+  /// The next part of the body with Plug's read_body/2 defaults.
+  readBody -> Result(BodyPart, Object) => self readBody: #{}
+
+  /// The next part of the body: up to #length bytes (default 8_000_000),
+  /// #readLength per socket read (1_000_000), waiting #readTimeout ms
+  /// per read (15_000). A timeout answers error: #timeout and a socket
+  /// failure error: #closed; a malformed body raises HTTPError (a 400).
+  readBody: options :: Dictionary -> Result(BodyPart, Object) =>
+    st := self load
+    read := [
+      [
+        st transport readData: options
+      ] on: HTTPError408 do: [:e | ^Result error: #timeout]
+    ] on: TransportError do: [:e | ^Result error: #closed]
+    {tag, data, transport} := read
+    self store: ((st withTransport: transport) withReqBodyBytes: st reqBodyBytes + (Erlang erlang byte_size: data))
+    Result ok: (BodyPart data: data done: tag =:= #ok)
+
+  /// The rest of the body in one read, or error: #body_too_large when it
+  /// is longer than maxBytes.
+  readAll: maxBytes :: Integer -> Result(Binary, Object) =>
+    read := self readBody: #{#length => maxBytes}
+    read isError ifTrue: [^Result error: read error]
+    part := read value
+    part done ifFalse: [^Result error: #body_too_large]
+    Result ok: part data
+
+  // === The response ===
+
+  /// The whole response (Bandit's send_resp): content-length set from
+  /// body (a String, Binary or iodata), head and body in one send. No
+  /// body goes out for HEAD, 204 or 304. Raises AlreadySent on a second
+  /// response and TransportError if the socket fails.
+  sendResp: status :: Integer headers: hs :: List(Tuple) body: body :: Object -> Exchange =>
+    st := self load
+    st respState =:= #unset
+      ifFalse: [
+        AlreadySent signal: "already_sent: a response was already sent for this request"
+      ]
+    length := Erlang erlang iolist_size: body
+    withLength := Headers
+      addContentLength: hs
+      length: length
+      status: status
+      method: st method
+    headed := self
+      sendHeadersOn: st
+      status: status
+      headers: withLength
+      disposition: #raw
+    sent := self
+      sendDataOn: headed
+      data: body
+      end: true
+    self store: (sent withRespState: #sent)
+
+  /// Bandit's send_headers: a date header unless the caller set one, the
+  /// status recorded, and no body for HEAD, 204 or 304.
+  sendHeadersOn: st :: ExchangeState status: status :: Integer headers: hs :: List(Tuple) disposition: disposition :: BodyDisposition -> ExchangeState =>
+    dated := (Headers getHeader: hs name: "date") isNil ifTrue: [
+      hs addFirst: Clock dateHeader
+    ] ifFalse: [hs]
+    statused := st withStatus: status
+    actual := (self sendsBody: statused) ifTrue: [
+      disposition
+    ] ifFalse: [#noBody]
+    statused
+      withTransport: (statused transport
+        sendHeaders: status
+        headers: dated
+        disposition: actual)
+
+  /// Bandit's send_data: the body counted even when not sent.
+  sendDataOn: st :: ExchangeState data: data :: Object end: endRequest :: Boolean -> ExchangeState =>
+    transport := (self sendsBody: st) ifTrue: [
+      st transport sendData: data end: endRequest
+    ] ifFalse: [st transport]
+    (st withTransport: transport) withRespBodyBytes: st respBodyBytes + (Erlang erlang iolist_size: data)
+
+  /// Bandit's send_resp_body?.
+  sendsBody: st :: ExchangeState -> Boolean =>
+    st method =:= "HEAD" ifTrue: [^false]
+    st status =:= 204 ifTrue: [^false]
+    st status =:= 304 ifTrue: [^false]
+    true
+
+  // === Engine side, after the handler returns ===
+
+  /// The current transport, for the pipeline's sendOnError:.
+  transport -> HTTP1Socket => self load transport
+
+  /// Bandit's commit_response!: raises NotSentError when the handler
+  /// sent nothing (the pipeline answers it with a 500).
+  commit -> Exchange =>
+    self state =:= #unset ifTrue: [
+      NotSentError signal: "a response was neither set nor sent from the connection"
+    ]
+    self
+
+  /// Forget the state, then drain an unread body (ensureCompleted) and
+  /// answer the transport for the next keepalive request. The state goes
+  /// first so a raising drain cannot leak it into the next request.
+  finish -> HTTP1Socket =>
+    st := self load
+    Erlang erlang erase: self key
+    st transport ensureCompleted

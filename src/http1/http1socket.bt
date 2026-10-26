@@ -29,6 +29,8 @@ typed Value subclass: HTTP1Socket
   field: keepalive :: Boolean | Nil = nil
   field: opts :: ConfigOptions = Dictionary new
 
+  class sentKey -> Symbol => #buccaneerSent
+
   /// {method, target, headers, socket}: the request head. Bandit tags
   /// {:ok, ...}; the tag never varies (failures raise), so it is dropped.
   readHeaders -> Tuple =>
@@ -300,6 +302,156 @@ typed Value subclass: HTTP1Socket
 
   /// Only WebSocket upgrades (validated by the pipeline).
   supportsUpgrade: protocol :: Symbol -> Boolean => protocol =:= #websocket
+
+  /// The response line and headers (Bandit's send_headers). #raw holds
+  /// them in sendBuffer so the first sendData: coalesces head and body
+  /// into one send; the other dispositions send at once. #chunkEncoded
+  /// adds transfer-encoding: chunked unless the caller set
+  /// content-length, in which case data streams through unframed.
+  sendHeaders: status :: Integer headers: headers :: List(Tuple) disposition: disposition :: BodyDisposition -> HTTP1Socket =>
+    self writeState =:= #unsent ifFalse: [
+      Error signal: "Response headers already sent"
+    ]
+    respLine := "{self versionString} {status} {Status reasonPhrase: status}\r\n"
+    kept := self handleKeepalive: status headers: headers
+    finalHeaders := kept at: 1
+    socket := kept at: 2
+    hasContentLength := (Headers getHeader: finalHeaders name: "content-length") notNil
+    disposition match: [
+      #raw -> (socket withWriteState: #writing) withSendBuffer: #(respLine, self encodeHeaders: finalHeaders);
+      #chunkEncoded -> hasContentLength
+        ifTrue: [
+          socket send: #(respLine, self encodeHeaders: finalHeaders)
+          socket withWriteState: #chunkStreaming
+        ]
+        ifFalse: [
+          socket send: #(respLine, self encodeHeaders: (finalHeaders addFirst: {"transfer-encoding", "chunked"}))
+          socket withWriteState: #chunking
+        ];
+      #noBody -> (socket send: #(respLine, self encodeHeaders: finalHeaders)) withWriteState: #sent;
+      #inform -> (socket send: #(respLine, self encodeHeaders: finalHeaders)) withWriteState: #unsent
+    ]
+
+  /// The status-line version token.
+  versionString -> String =>
+    self version match: [
+      #http11 -> "HTTP/1.1";
+      #http10 -> "HTTP/1.0";
+      _ -> Error signal: "Not an HTTP/1 version: " ++ self version printString
+    ]
+
+  /// {headers, socket}: the connection header and keepalive decision per
+  /// RFC9112§9.3. 1xx answers leave both alone. A close asked for by
+  /// either side, or forced by closeAfterResponse, is announced in the
+  /// response (RFC9112§9.6); HTTP/1.0 keeps alive only on request.
+  handleKeepalive: status :: Integer headers: headers :: List(Tuple) -> Tuple =>
+    (status between: 100 and: 199) ifTrue: [^{headers, self}]
+    respConn := self loweredOrOpaque: (Headers getHeader: headers name: "connection")
+    self closeAfterResponse ifTrue: [
+      ^{self closeHeaders: headers, self withKeepalive: false}
+    ]
+    respClose := Headers tokenListMember: respConn token: "close"
+    (respClose or: [
+      Headers tokenListMember: self requestConnectionHeader token: "close"
+    ])
+      ifTrue: [
+        respClose ifTrue: [^{headers, self withKeepalive: false}]
+        ^{self closeHeaders: headers, self withKeepalive: false}
+      ]
+    self version =:= #http11 ifTrue: [^{headers, self withKeepalive: true}]
+    (Headers tokenListMember: self requestConnectionHeader token: "keep-alive") ifTrue: [
+      ^{headers addFirst: {"connection", "keep-alive"}, self withKeepalive: true}
+    ]
+    {headers addFirst: {"connection", "close"}, self withKeepalive: false}
+
+  /// headers with any connection header replaced by connection: close.
+  closeHeaders: headers :: List(Tuple) -> List(Tuple) =>
+    (headers reject: [:h |
+      (h at: 1) =:= "connection"
+    ]) addFirst: {"connection", "close"}
+
+  /// iodata for the header block, ending in the blank line.
+  encodeHeaders: headers :: List(Tuple) -> List =>
+    #((headers collect: [:h | #(h at: 1, ": ", h at: 2, "\r\n")]), "\r\n")
+
+  /// Response data (Bandit's send_data); data is iodata. #writing sends
+  /// any buffered head with it; #chunking frames it as one chunk;
+  /// #chunkStreaming (caller-set content-length) sends it as is.
+  sendData: data :: Object end: endRequest :: Boolean -> HTTP1Socket =>
+    self writeState match: [
+      #writing -> ((self send: #(self sendBuffer, data)) withWriteState: (endRequest ifTrue: [
+        #sent
+      ] ifFalse: [#writing])) withSendBuffer: #();
+      #chunking -> (self send: #(self hexOf: (Erlang erlang iolist_size: data), "\r\n", data, "\r\n")) withWriteState: (endRequest ifTrue: [
+        #sent
+      ] ifFalse: [#chunking]);
+      #chunkStreaming -> (self send: data) withWriteState: (endRequest ifTrue: [
+        #sent
+      ] ifFalse: [#chunkStreaming]);
+      _ -> Error signal: "Cannot send data in write state " ++ self writeState printString
+    ]
+
+  /// Send payload or raise TransportError (Bandit's send!). A failed
+  /// send first marks the response sent, so sendOnError: does not try
+  /// again. Bandit messages its own process ({:plug_conn, :sent});
+  /// Beamtalk has no non-blocking receive, so the mark is the process
+  /// dictionary key sentKey, cleared with the rest between requests.
+  send: payload :: Object -> HTTP1Socket =>
+    sock := self socket
+    sock isNil ifTrue: [Error signal: "Send with no socket"]
+    result := sock send: payload
+    result isError
+      ifTrue: [
+        Erlang erlang put: HTTP1Socket sentKey with: true
+        TransportError signal: ("Unrecoverable error: " ++ result error printString)
+      ]
+    self
+
+  /// Drain the rest of the request body so the next keepalive request
+  /// starts clean (Bandit's ensure_completed). Read up to readData:'s
+  /// default 8 MB; more is a 400. A timeout re-checks for a disconnect,
+  /// as Bandit's rescue does.
+  ensureCompleted -> HTTP1Socket =>
+    self readState =:= #read ifTrue: [^self]
+    self keepalive =:= false ifTrue: [^self]
+    [
+      read := self readData: #{}
+      (read at: 1) =:= #ok ifFalse: [
+        HTTPError signal: "Unable to read remaining data in request body"
+      ]
+      read at: 3
+    ]
+      on: HTTPError408
+      do: [:e |
+        sock := self socket
+        sock isNil ifTrue: [HTTPError408 signal: e message]
+        self disconnectedOrTimeout: sock
+      ]
+
+  /// Answer the error's status with connection: close, unless the
+  /// response is already sent or the error is a TransportError (Bandit's
+  /// send_on_error). HTTPErrors map to their status, anything else is a
+  /// 500 (Plug.Exception.status/1). A failure while sending is ignored.
+  /// A response already under way also counts as sent: Bandit learns
+  /// that from the {:plug_conn, :sent} its adapter posts after every
+  /// response, and the write state is the same fact without the mailbox.
+  sendOnError: error :: Exception -> HTTP1Socket =>
+    (error isKindOf: TransportError) ifTrue: [^self]
+    self writeState =:= #unsent ifFalse: [^self withWriteState: #sent]
+    (Erlang erlang get: HTTP1Socket sentKey) =:= true ifTrue: [
+      ^self withWriteState: #sent
+    ]
+    status := (error isKindOf: HTTPError) ifTrue: [
+      HTTPError statusForClassName: error errorClass asString
+    ] ifFalse: [500]
+    [
+      [
+        self
+          sendHeaders: status
+          headers: #({"connection", "close"})
+          disposition: #noBody
+      ] on: TransportError do: [:e | self]
+    ] on: HTTPError do: [:e | self]
 
   doReadRequestLine -> Tuple =>
     packetSize := self http1Opt: #maxRequestLineLength default: 10000

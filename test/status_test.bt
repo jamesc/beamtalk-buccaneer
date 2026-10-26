@@ -1,0 +1,19 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: StatusTest
+
+  testKnownPhrases =>
+    self assert: (Status reasonPhrase: 200) equals: "OK"
+    self assert: (Status reasonPhrase: 418) equals: "I'm a teapot"
+    self assert: (Status reasonPhrase: 511) equals: "Network Authentication Required"
+
+  testUnknownRaises =>
+    caught := false
+    [Status reasonPhrase: 299]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: e message equals: "unknown status code 299"
+      ]
+    self assert: caught

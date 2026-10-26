@@ -733,3 +733,266 @@ TestCase subclass: HTTP1SocketTest
     self assertRaises: [
       socket readData: #{#length => "lots"}
     ] message: "Invalid value for read option length"
+
+  // ===== Write path (Bandit: send_headers, send_data, ensure_completed, send_on_error) =====
+
+  /// A version-set socket on the server side of pair.
+  writer: pair version: version =>
+    (HTTP1Socket new withSocket: (pair at: 1)) withVersion: version
+
+  /// Exactly n bytes from the raw client side.
+  clientRead: pair bytes: n =>
+    ((Erlang gen_tcp)
+      recv: (pair at: 2)
+      with: n
+      with: 2000) unwrap
+
+  testSendRawCoalescesHeadAndBody =>
+    pair := self loopbackPair
+    sock := (self writer: pair version: #http11)
+      sendHeaders: 200
+      headers: #({"content-length", "5"})
+      disposition: #raw
+    self assert: sock writeState equals: #writing
+    self assert: sock keepalive equals: true
+    sent := sock sendData: "hello" end: true
+    self assert: sent writeState equals: #sent
+    self assert: sent sendBuffer isEmpty
+    expected := "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self closeLoopback: pair
+
+  testSendNoBody =>
+    pair := self loopbackPair
+    sock := (self writer: pair version: #http11)
+      sendHeaders: 204
+      headers: #({"x-a", "1"})
+      disposition: #noBody
+    self assert: sock writeState equals: #sent
+    expected := "HTTP/1.1 204 No Content\r\nx-a: 1\r\n\r\n"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self closeLoopback: pair
+
+  testSendChunkedFramesEachWrite =>
+    pair := self loopbackPair
+    sock := (self writer: pair version: #http11)
+      sendHeaders: 200
+      headers: #()
+      disposition: #chunkEncoded
+    self assert: sock writeState equals: #chunking
+    sock2 := sock sendData: "hello world, chunked" end: false
+    self assert: sock2 writeState equals: #chunking
+    sock3 := sock2 sendData: "" end: true
+    self assert: sock3 writeState equals: #sent
+    expected := "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n14\r\nhello world, chunked\r\n0\r\n\r\n"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self closeLoopback: pair
+
+  testSendChunkEncodedWithContentLengthStreams =>
+    pair := self loopbackPair
+    sock := (self writer: pair version: #http11)
+      sendHeaders: 200
+      headers: #({"content-length", "6"})
+      disposition: #chunkEncoded
+    self assert: sock writeState equals: #chunkStreaming
+    done := (sock sendData: "abc" end: false) sendData: #("d", #("ef")) end: true
+    self assert: done writeState equals: #sent
+    expected := "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nabcdef"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self closeLoopback: pair
+
+  testSendInformStaysUnsent =>
+    pair := self loopbackPair
+    sock := (self writer: pair version: #http11)
+      sendHeaders: 100
+      headers: #()
+      disposition: #inform
+    self assert: sock writeState equals: #unsent
+    self assert: sock keepalive isNil
+    final := sock
+      sendHeaders: 204
+      headers: #()
+      disposition: #noBody
+    expected := "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 204 No Content\r\n\r\n"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self assert: final writeState equals: #sent
+    self closeLoopback: pair
+
+  testSendHeadersTwiceRaises =>
+    pair := self loopbackPair
+    sock := (self writer: pair version: #http11)
+      sendHeaders: 204
+      headers: #()
+      disposition: #noBody
+    self
+      assertRaises: [
+        sock
+          sendHeaders: 204
+          headers: #()
+          disposition: #noBody
+      ]
+      message: "Response headers already sent"
+    self closeLoopback: pair
+
+  testSendDataWhenUnsentRaises =>
+    self assertRaisesStarting: [
+      HTTP1Socket new sendData: "x" end: true
+    ] message: "Cannot send data in write state"
+
+  testReasonPhraseInStatusLine =>
+    pair := self loopbackPair
+    (self writer: pair version: #http10)
+      sendHeaders: 431
+      headers: #({"connection", "close"})
+      disposition: #noBody
+    expected := "HTTP/1.0 431 Request Header Fields Too Large\r\nconnection: close\r\n\r\n"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self closeLoopback: pair
+
+  // ----- keepalive (RFC9112§9.3) -----
+  testKeepaliveHTTP11Default =>
+    kept := (HTTP1Socket new withVersion: #http11) handleKeepalive: 200 headers: #()
+    self assert: (kept at: 1) equals: #()
+    self assert: (kept at: 2) keepalive equals: true
+
+  testKeepaliveHTTP10ClosesByDefault =>
+    kept := (HTTP1Socket new withVersion: #http10) handleKeepalive: 200 headers: #()
+    self assert: (kept at: 1) equals: #({"connection", "close"})
+    self assert: (kept at: 2) keepalive equals: false
+
+  testKeepaliveHTTP10OnRequest =>
+    sock := (HTTP1Socket new withVersion: #http10) withRequestConnectionHeader: "keep-alive"
+    kept := sock handleKeepalive: 200 headers: #()
+    self assert: (kept at: 1) equals: #({"connection", "keep-alive"})
+    self assert: (kept at: 2) keepalive equals: true
+
+  testKeepaliveRequestCloseAnnounced =>
+    sock := (HTTP1Socket new withVersion: #http11) withRequestConnectionHeader: "close"
+    kept := sock handleKeepalive: 200 headers: #({"connection", "keep-alive"}, {"x-a", "1"})
+    self assert: (kept at: 1) equals: #({"connection", "close"}, {"x-a", "1"})
+    self assert: (kept at: 2) keepalive equals: false
+
+  testKeepaliveResponseCloseKept =>
+    kept := (HTTP1Socket new withVersion: #http11) handleKeepalive: 200 headers: #({"connection", "Close"}, {"x-a", "1"})
+    self assert: (kept at: 1) equals: #({"connection", "Close"}, {"x-a", "1"})
+    self assert: (kept at: 2) keepalive equals: false
+
+  testKeepaliveCloseAfterResponseReplacesHeader =>
+    sock := (HTTP1Socket new withVersion: #http11) withCloseAfterResponse: true
+    kept := sock handleKeepalive: 200 headers: #({"connection", "keep-alive"})
+    self assert: (kept at: 1) equals: #({"connection", "close"})
+    self assert: (kept at: 2) keepalive equals: false
+
+  testKeepalive1xxUntouched =>
+    sock := (HTTP1Socket new withVersion: #http10) withCloseAfterResponse: true
+    kept := sock handleKeepalive: 101 headers: #({"upgrade", "websocket"})
+    self assert: (kept at: 1) equals: #({"upgrade", "websocket"})
+    self assert: (kept at: 2) keepalive isNil
+
+  // ----- ensureCompleted -----
+  testEnsureCompletedReadIsNoop =>
+    sock := HTTP1Socket new withReadState: #read
+    self assert: sock ensureCompleted equals: sock
+
+  testEnsureCompletedNoKeepaliveIsNoop =>
+    sock := (HTTP1Socket new withReadState: #headersRead) withKeepalive: false
+    self assert: sock ensureCompleted equals: sock
+
+  testEnsureCompletedDrainsContentLength =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "helloGET"
+    done := (self headSocket: head) ensureCompleted
+    self assert: done readState equals: #read
+    self assert: done buffer equals: "GET"
+
+  testEnsureCompletedDrainsChunked =>
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "transfer-encoding: chunked"
+      ++ self nl
+      ++ self nl
+      ++ "3"
+      ++ self nl
+      ++ "abc"
+      ++ self nl
+      ++ "0"
+      ++ self nl
+      ++ self nl
+      ++ "next"
+    done := (self headSocket: head) ensureCompleted
+    self assert: done readState equals: #read
+    self assert: done buffer equals: "next"
+
+  testEnsureCompletedClientGoneIsTransportError =>
+    pair := self loopbackPair
+    head := "POST /x HTTP/1.1"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ self nl
+      ++ "he"
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    socket := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    (Erlang gen_tcp) close: (pair at: 2)
+    caught := false
+    [socket ensureCompleted] on: TransportError do: [:e | caught := true]
+    self assert: caught
+    (Erlang gen_tcp) close: (pair at: 3)
+
+  // ----- sendOnError -----
+  testSendOnErrorHTTPErrorStatus =>
+    pair := self loopbackPair
+    err := [HTTPError431 signal: "Too many headers"] on: Error do: [:e | e]
+    sock := (self writer: pair version: #http11) sendOnError: err
+    self assert: sock writeState equals: #sent
+    self assert: sock keepalive equals: false
+    expected := "HTTP/1.1 431 Request Header Fields Too Large\r\nconnection: close\r\n\r\n"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self closeLoopback: pair
+
+  testSendOnErrorOtherErrorIs500 =>
+    pair := self loopbackPair
+    err := [Error signal: "boom"] on: Error do: [:e | e]
+    (self writer: pair version: #http11) sendOnError: err
+    expected := "HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n"
+    self assert: (self clientRead: pair bytes: expected byteSize) equals: expected
+    self closeLoopback: pair
+
+  testSendOnErrorTransportErrorSendsNothing =>
+    err := [
+      TransportError signal: "Unrecoverable error: #closed"
+    ] on: Error do: [:e | e]
+    sock := HTTP1Socket new
+    self assert: (sock sendOnError: err) equals: sock
+
+  testSendOnErrorAfterSentHeadersIgnored =>
+    pair := self loopbackPair
+    sock := (self writer: pair version: #http11)
+      sendHeaders: 204
+      headers: #()
+      disposition: #noBody
+    err := [Error signal: "late"] on: Error do: [:e | e]
+    self assert: (sock sendOnError: err) writeState equals: #sent
+    self closeLoopback: pair
+
+  testFailedSendMarksSent =>
+    pair := self loopbackPair
+    (pair at: 1) close
+    sock := self writer: pair version: #http11
+    self
+      assertRaisesStarting: [
+        sock
+          sendHeaders: 204
+          headers: #()
+          disposition: #noBody
+      ]
+      message: "Unrecoverable error"
+    err := [Error signal: "after"] on: Error do: [:e | e]
+    after := sock sendOnError: err
+    Erlang erlang erase: HTTP1Socket sentKey
+    self assert: after writeState equals: #sent
+    self closeLoopback: pair

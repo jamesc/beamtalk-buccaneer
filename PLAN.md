@@ -566,7 +566,12 @@ Recorded properly when each phase is done; the expected ones:
 - **No Plug.** An `Exchange` handle with owner-process state replaces
   `Plug.Conn` and its threaded adapter (see the Decision above and the ADR).
   The `{:plug_conn, :sent}` message Bandit sends itself and later checks
-  with `receive ... after 0` becomes a field of the exchange state.
+  with `receive ... after 0` becomes state. **As built (slice 4):**
+  `HTTP1Socket send:` marks a failed send in the process dictionary
+  (`HTTP1Socket sentKey`) before raising, since the raise discards the
+  threaded Value; it is cleared with the rest of the dictionary between
+  keepalive requests. `sendOnError:` also treats any write state past
+  `#unsent` as sent, which is what the adapter's message tells Bandit.
 - **No `receive`.** Every selective receive in Bandit (`http1/socket.ex`
   `send_on_error`, `http2/stream.ex` reads and window waits,
   `ensure_completed`) is replaced: by state flags in HTTP/1, and in HTTP/2
@@ -588,6 +593,10 @@ Recorded properly when each phase is done; the expected ones:
 - **Errors**: `HTTPError` carries Bandit's `plug_status`; there is no
   `Plug.Exception.status/1` protocol, so any other raised error is a 500.
   Transport errors are bare reasons, as in Catalina.
+- **Status phrases**: `Status reasonPhrase:` ports Plug's table; Plug's
+  custom `:statuses` config is not ported, so an unknown code raises.
+- **Write misuse**: `sendHeaders:` twice or `sendData:` before the head
+  raise an `Error` naming the state, where Bandit's clauses fail to match.
 - **Test clients**: Req/Finch become OTP `httpc` via FFI and Beamtalk ports
   of Bandit's raw-socket clients.
 

@@ -268,7 +268,9 @@ typed Value subclass: HTTP1Socket
   /// Lowercase hex for resumed-chunk headers (Bandit emits upper; only
   /// our own parser reads it back, and it accepts both). Digits go
   /// through fromBytes:, not Character value:: the latter answers the
-  /// raw Integer for computed (non-literal) arguments.
+  /// raw Integer for computed (non-literal) arguments. asStringUnchecked:
+  /// one ASCII digit needs no validation, and stays a String across the
+  /// BT-4170 flip (BT-4172).
   hexOf: n :: Integer -> String =>
     n =:= 0 ifTrue: [^"0"]
     out := ""
@@ -277,7 +279,7 @@ typed Value subclass: HTTP1Socket
       whileTrue: [
         d := rest % 16
         code := d < 10 ifTrue: [48 + d] ifFalse: [87 + d]
-        out := ((Binary fromBytes: #(code)) asString concat: out)
+        out := ((Binary fromBytes: #(code)) asStringUnchecked concat: out)
         rest := rest div: 16
       ]
     out
@@ -333,7 +335,7 @@ typed Value subclass: HTTP1Socket
         target: t
         version: ver
         rest: rest;
-      {#ok, {#http_error, reason}, rest} -> reason =:= Headers crlf ifTrue: [
+      {#ok, {#http_error, reason}, rest} -> (Headers stringOrOpaque: reason) =:= Headers crlf ifTrue: [
         (self withBuffer: rest) doReadRequestLine
       ] ifFalse: [
         HTTPError signal: ("Request line HTTP error: " ++ reason printString)
@@ -342,8 +344,11 @@ typed Value subclass: HTTP1Socket
     ]
 
   /// Assemble {method, target, socket} from a decoded request line.
+  /// The token goes through stringOrOpaque: first (BT-4172): Symbols pass
+  /// through, valid UTF-8 answers a String, and anything else still falls
+  /// into the rejecting arm, as before the BT-4170 flip.
   requestHead: m :: Object target: t :: Object version: ver :: Object rest: rest :: Binary -> Tuple =>
-    method := m match: [
+    method := (Headers stringOrOpaque: m) match: [
       s :: Symbol -> s asString;
       b :: String -> b;
       _ -> HTTPError signal: "Request line HTTP error: bad method"
@@ -365,9 +370,9 @@ typed Value subclass: HTTP1Socket
   /// should not look like a server bug in monitoring.
   resolveRequestTarget: target :: Object method: method :: String -> Tuple =>
     target match: [
-      {#abs_path, path} -> {nil, nil, nil, path};
-      {#absoluteURI, scheme, host, #undefined, path} -> {self stringOf: scheme, host, nil, path};
-      {#absoluteURI, scheme, host, port, path} -> {self stringOf: scheme, host, port, path};
+      {#abs_path, path} -> {nil, nil, nil, Headers stringOrOpaque: path};
+      {#absoluteURI, scheme, host, #undefined, path} -> {self stringOf: scheme, Headers stringOrOpaque: host, nil, Headers stringOrOpaque: path};
+      {#absoluteURI, scheme, host, port, path} -> {self stringOf: scheme, Headers stringOrOpaque: host, port, Headers stringOrOpaque: path};
       star :: Symbol -> (star asString =:= "*" and: [
         method =:= "OPTIONS"
       ]) ifTrue: [
@@ -376,7 +381,7 @@ typed Value subclass: HTTP1Socket
         HTTPError signal: "Unsupported request target (RFC9112§3.2)"
       ];
       {#scheme, scheme, port} -> method =:= "CONNECT" ifTrue: [
-        {nil, scheme, port, nil}
+        {nil, Headers stringOrOpaque: scheme, Headers stringOrOpaque: port, nil}
       ] ifFalse: [
         HTTPError signal: "Unsupported request target (RFC9112§3.2)"
       ];
@@ -384,8 +389,9 @@ typed Value subclass: HTTP1Socket
     ]
 
   /// decode_packet answers atoms for well-known tokens, binaries otherwise.
+  /// stringOrOpaque: first (BT-4172), as in requestHead:.
   stringOf: value :: Object -> String =>
-    value match: [
+    (Headers stringOrOpaque: value) match: [
       s :: Symbol -> s asString;
       b :: String -> b;
       _ -> HTTPError signal: "Request line HTTP error: bad token"
@@ -418,18 +424,22 @@ typed Value subclass: HTTP1Socket
       _ -> HTTPError signal: "Header read unknown error"
     ]
 
+  /// The name and value convert once, here (BT-4172): valid UTF-8
+  /// reaches every Headers guard as a String, non-UTF-8 values stay
+  /// opaque, and a garbage name still falls into the rejecting arm.
   headerRead: field :: Object value: value :: Object rest: rest :: Binary headers: headers :: List(Tuple) count: count :: Integer maxCount: maxCount :: Integer -> Tuple =>
-    (Headers fieldValueValid: value) ifFalse: [
+    text := Headers stringOrOpaque: value
+    (Headers fieldValueValid: text) ifFalse: [
       HTTPError signal: "Field value contains invalid characters (RFC9110§5.5)"
     ]
-    name := field match: [
+    name := (Headers stringOrOpaque: field) match: [
       s :: Symbol -> s asString;
       b :: String -> b;
       _ -> HTTPError signal: "Header read HTTP error: bad name"
     ]
     next := count + 1
     next > maxCount ifTrue: [HTTPError431 signal: "Too many headers"]
-    (self withBuffer: rest) doReadHeaders: (headers addFirst: {(Headers asciiLowercase: name), value}) count: next
+    (self withBuffer: rest) doReadHeaders: (headers addFirst: {(Headers asciiLowercase: name), text}) count: next
 
   contentLengthOf: headers :: List(Tuple) -> Integer | Nil =>
     result := Headers getContentLength: headers

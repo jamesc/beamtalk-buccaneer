@@ -32,11 +32,10 @@ typed Handler subclass: SpikeHandler
       d :: Dictionary -> d;
       _ -> #{}
     ]
-    // Catalina delivers binaries; a String type pattern is an is_binary test.
-    buffer := data match: [
-      b :: String -> b;
-      _ -> ""
-    ]
+    // Catalina delivers binaries (BT-4172: isKindOf:, not a String type
+    // pattern — the BT-4170 flip ends sniffed dispatch, and `:: Binary`
+    // is not a legal match pattern).
+    buffer := (data isKindOf: Binary) ifTrue: [data] ifFalse: [""]
     keep := true
     [keep and: [buffer byteSize > 0]]
       whileTrue: [

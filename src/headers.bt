@@ -33,28 +33,12 @@ typed Object subclass: Headers
 
   /// Field values with CR, LF or NUL are invalid (RFC9110§5.5). Values
   /// arrive as Binaries when the bytes are not valid UTF-8; those scan
-  /// byte-wise, since Binary has no substring search.
+  /// byte-wise with Binary>>includesSubstring: (BT-4190).
   class fieldValueValid: value :: Object -> Boolean =>
-    (value isKindOf: String) ifTrue: [^self stringValueValid: value]
-    (value isKindOf: Binary) ifTrue: [^self binaryValueValid: value]
-    false
-
-  class stringValueValid: value :: String -> Boolean =>
+    (value isKindOf: Binary) ifFalse: [^false]
     (value includesSubstring: "\r") ifTrue: [^false]
     (value includesSubstring: "\n") ifTrue: [^false]
     (value includesSubstring: "\0") ifTrue: [^false]
-    true
-
-  class binaryValueValid: value :: Binary -> Boolean =>
-    (((Erlang binary) match: value with: (Binary fromBytes: #(13))) =:= #nomatch) ifFalse: [
-      ^false
-    ]
-    (((Erlang binary) match: value with: (Binary fromBytes: #(10))) =:= #nomatch) ifFalse: [
-      ^false
-    ]
-    (((Erlang binary) match: value with: (Binary fromBytes: #(0))) =:= #nomatch) ifFalse: [
-      ^false
-    ]
     true
 
   /// The first value for name, or nil. Values are Binaries when the
@@ -70,7 +54,7 @@ typed Object subclass: Headers
   class tokenListMember: value :: Object token: token :: String -> Boolean =>
     (value isKindOf: String) ifFalse: [^false]
     items := self splitList: value
-    items do: [:each | (self asciiLowercase: each) =:= token ifTrue: [^true]]
+    items do: [:each | each asciiLowercase =:= token ifTrue: [^true]]
     false
 
   /// Whether any header named header (matched case-insensitively, scanning
@@ -79,7 +63,7 @@ typed Object subclass: Headers
   class headerContainsToken: headers :: List(Tuple) name: header :: String token: token :: String -> Boolean =>
     headers
       do: [:h |
-        (self asciiLowercase: (h at: 1)) =:= header ifTrue: [
+        (h at: 1) asciiLowercase =:= header ifTrue: [
           (self tokenListMember: (h at: 2) token: token) ifTrue: [^true]
         ]
       ]
@@ -235,13 +219,3 @@ typed Object subclass: Headers
       rest isNotEmpty and: [(rest last =:= " ") or: [rest last =:= "\t"]]
     ] whileTrue: [rest := rest take: rest size - 1]
     rest
-
-  /// ASCII-only lowercase (String.downcase/2 :ascii): only A-Z fold.
-  class asciiLowercase: s :: String -> String =>
-    upper := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    lower := "abcdefghijklmnopqrstuvwxyz"
-    s
-      collect: [:ch |
-        idx := upper indexOf: ch
-        idx isNil ifTrue: [ch] ifFalse: [lower at: idx]
-      ]

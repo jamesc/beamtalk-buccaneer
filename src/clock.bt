@@ -38,17 +38,14 @@ typed Object subclass: Clock
   /// Format the current UTC time per RFC9110§5.6.7.
   class computeDateHeader -> String =>
     now := DateTime now
-    dayName := self dayNames at: (self weekdayOf: now)
+    dayName := self dayNames at: now weekday
     monthName := self monthNames at: now month
     day := now format: "dd"
     year := now format: "yyyy"
     clock := now format: "HH:mm:ss"
     "{dayName}, {day} {monthName} {year} {clock} GMT"
 
-  /// Monday = 1 through Sunday = 7, as calendar:day_of_the_week/1.
-  class weekdayOf: dt :: DateTime -> Integer =>
-    (Erlang calendar) day_of_the_week: {dt year, dt month, dt day}
-
+  /// Indexed by DateTime>>weekday: Monday = 1 through Sunday = 7.
   class dayNames -> List(String) =>
     #("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 

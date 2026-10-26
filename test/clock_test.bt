@@ -15,13 +15,13 @@ TestCase subclass: ClockTest
     // No {n} quantifiers: braces interpolate in string literals.
     self assert: (date matchesRegex: "^[A-Z][a-z][a-z], [0-9][0-9] [A-Z][a-z][a-z] [0-9][0-9][0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9] GMT$" options: #())
 
-  testWeekdayOfKnownDate =>
+  testDayNamesMatchWeekday =>
     // 2026-10-25 is a Sunday.
     sunday := DateTime
       year: 2026
       month: 10
       day: 25
-    self assert: (Clock weekdayOf: sunday) equals: 7
+    self assert: (Clock dayNames at: sunday weekday) equals: "Sun"
 
   testDateHeaderMissComputesFresh =>
     header := Clock dateHeader

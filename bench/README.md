@@ -188,3 +188,29 @@ header lowercase (~24%) and the remaining dynamic sends (~16%
 `beamtalk_message_dispatch:send/3`, the open-typed ones BT-4069 leaves
 for BT-4118).
 
+
+## Rerun after BT-4172 (no-sniff boundary conversion)
+
+beamtalk 43b26151a (BT-4070, BT-4200 merged), buccaneer 77e87a4,
+2026-10-26, c = 1, 10, 100, 1000, 5 rounds. Load climbed from 7 to 150
+during the run, so the req/s rounds vary up to 10×; treat the ratios as
+indicative.
+
+| Row | Buccaneer req/s | cowboy | Bandit | B/cowboy | B/Bandit |
+|---|---:|---:|---:|---:|---:|
+| c = 1 | 3,699 | 3,643 | 2,706 | 1.02 | 1.37 |
+| c = 10 | 76,360 | 35,056 | 63,650 | 2.18 | 1.20 |
+| c = 100 | 132,596 | 120,672 | 137,792 | 1.10 | 0.96 |
+| c = 1000 | 138,962 | 109,002 | 133,838 | 1.28 | 1.04 |
+
+Throughput still clears the gate, but the **parse regressed 7×**: Erlang
+2,318 ns, Beamtalk 23,116 ns (10×, was 1.44×); a smoke rerun gave 20,304
+ns (10.1×). Class-process calls per request are still ~0. The cause is
+the BT-4172 migration (0da78e5): `SpikeParser` now runs
+`stringOrOpaque:` and an `isKindOf: String` guard on every request-line
+token and header, and `isKindOf:` on a built-in class costs ~500 ns
+(four registry/cache lookups, `objectIsKindOf/2`), 20× a `:: String`
+type pattern (BT-4221). The pattern is not a drop-in meanwhile: it
+matches invalid-UTF-8 binaries that `isKindOf: String` rejects
+(BT-4222). `HTTP1Socket` has the same shape, so Phase 1 inherits the
+cost until BT-4221 lands.

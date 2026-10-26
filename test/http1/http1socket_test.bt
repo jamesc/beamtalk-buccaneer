@@ -327,9 +327,9 @@ TestCase subclass: HTTP1SocketTest
     pair := self loopbackPair
     (Erlang gen_tcp) close: (pair at: 2)
     sock := HTTP1Socket new withSocket: (pair at: 1)
-    deadline := (Erlang erlang monotonic_time: #millisecond) + 5000
+    deadline := (Time monotonic: #millisecond) + 5000
     done := false
-    [done not and: [(Erlang erlang monotonic_time: #millisecond) < deadline]]
+    [done not and: [(Time monotonic: #millisecond) < deadline]]
       whileTrue: [
         [
           sock disconnectedOrTimeout: (pair at: 1)
@@ -344,9 +344,9 @@ TestCase subclass: HTTP1SocketTest
     pair := self loopbackPair
     (Erlang gen_tcp) send: (pair at: 2) with: "X"
     sock := HTTP1Socket new withSocket: (pair at: 1)
-    deadline := (Erlang erlang monotonic_time: #millisecond) + 5000
+    deadline := (Time monotonic: #millisecond) + 5000
     done := false
-    [done not and: [(Erlang erlang monotonic_time: #millisecond) < deadline]]
+    [done not and: [(Time monotonic: #millisecond) < deadline]]
       whileTrue: [
         [
           sock disconnectedOrTimeout: (pair at: 1)

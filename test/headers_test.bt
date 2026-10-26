@@ -195,6 +195,10 @@ TestCase subclass: HeadersTest
     self deny: (Headers fieldValueValid: (Binary fromBytes: #(97, 13, 98)))
     self deny: (Headers fieldValueValid: (Binary fromBytes: #(97, 10, 98)))
     self deny: (Headers fieldValueValid: (Binary fromBytes: #(97, 0, 98)))
+    // Invalid UTF-8 stays a Binary: Binary>>includesSubstring: scans its bytes.
+    self deny: (Headers fieldValueValid: (Binary fromBytes: #(233, 13, 98)))
+    self deny: (Headers fieldValueValid: (Binary fromBytes: #(233, 10)))
+    self deny: (Headers fieldValueValid: (Binary fromBytes: #(0, 233)))
 
   testBinaryHostRejected =>
     caught := false

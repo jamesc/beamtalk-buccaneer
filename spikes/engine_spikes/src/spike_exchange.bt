@@ -130,8 +130,10 @@ sealed typed Value subclass: SpikeExchange
         ^Result ok: nil
       ]
     // `integer_to_binary/2` is rejected by the FFI arity check (BT-4101).
+    // asStringUnchecked: hex digits are ASCII, and interpolation renders a
+    // Binary quoted after the BT-4170 flip (BT-4172).
     hex := Erlang erlang list_to_binary: (Erlang erlang integer_to_list: data byteSize with: 16)
-    self send: (("{hex}{nl}" concat: data) concat: nl) on: st
+    self send: (("{hex asStringUnchecked}{nl}" concat: data) concat: nl) on: st
     Result ok: nil
 
   head: status :: Integer headers: hs :: List(Tuple) extra: extra :: String -> Binary =>

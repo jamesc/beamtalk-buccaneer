@@ -134,6 +134,20 @@ TestCase subclass: HTTP1SocketTest
       (self socketWith: req) readHeaders
     ] message: "Unsupported request target (RFC9112§3.2)"
 
+  // BT-4172: the boundary conversion keeps rejecting garbage tokens.
+  testGarbageMethodStillRejected =>
+    req := ((Binary fromBytes: #(71, 69, 84, 255)) concat: " / HTTP/1.1") concat: (self nl ++ self nl)
+    self assertRaisesStarting: [
+      (self socketWith: req) readHeaders
+    ] message: "Request line HTTP error"
+
+  testGarbageHeaderNameStillRejected =>
+    head := "GET / HTTP/1.1" ++ self nl ++ "x-a"
+    req := (head concat: (Binary fromBytes: #(255))) concat: (": 1" ++ self nl ++ self nl)
+    self assertRaisesStarting: [
+      (self socketWith: req) readHeaders
+    ] message: "Header read HTTP error"
+
   testUriTooLong =>
     req := "GET /a-very-long-path HTTP/1.1" ++ self nl ++ self nl
     sock := self socketWith: req opts: #{
@@ -358,9 +372,11 @@ TestCase subclass: HTTP1SocketTest
 
   lengthOpts: n => #{#length => n}
 
-  /// Bodies are bytes; tests read them as text.
+  /// Bodies are bytes; tests read them as text. asStringUnchecked: the
+  /// fixtures are trusted ASCII, and it stays a String across the
+  /// BT-4170 flip (BT-4172).
   textOf: body =>
-    (body isKindOf: String) ifTrue: [body] ifFalse: [body asString]
+    (body isKindOf: String) ifTrue: [body] ifFalse: [body asStringUnchecked]
 
   headSocket: head => ((self socketWith: head) readHeaders) at: 4
 

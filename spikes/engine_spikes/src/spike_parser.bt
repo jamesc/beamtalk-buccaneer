@@ -18,16 +18,11 @@ sealed typed Object subclass: SpikeParser
       with: buffer
       with: #()) match: [
       {#ok, {#http_request, m, {#abs_path, p}, {1, minor}}, rest} -> self
-        readHeaders: rest
-        socket: sock
-        request: (SpikeRequest
-          method: (self methodName: m)
-          target: p
-          minor: minor
-          headers: #()
-          contentLength: 0)
-        headers: #()
-        length: 0;
+        requestHead: m
+        target: p
+        minor: minor
+        rest: rest
+        socket: sock;
       {#more, _} -> (self more: sock) andThen: [:more |
         self readHead: (buffer concat: more) socket: sock
       ];
@@ -41,14 +36,13 @@ sealed typed Object subclass: SpikeParser
       with: buffer
       with: #()) match: [
       {#ok, {#http_header, _n, field, _r, value}, rest} -> self
-        readHeaders: rest
+        headerRead: field
+        value: value
+        rest: rest
         socket: sock
         request: request
-        headers: (headers addFirst: {self headerName: field, value})
-        length: (self
-          lengthFrom: field
-          value: value
-          else: length);
+        headers: headers
+        length: length;
       {#ok, #http_eoh, rest} -> Result ok: {(request withHeaders: headers reversed) withContentLength: length, rest};
       {#more, _} -> (self more: sock)
         andThen: [:more |
@@ -62,6 +56,47 @@ sealed typed Object subclass: SpikeParser
       _ -> Result error: #bad_header
     ]
 
+  /// One decoded request line (BT-4172: the target converts once, here).
+  /// A non-UTF-8 target fails the request, as a mistyped field did.
+  class sealed requestHead: m :: Object target: raw :: Object minor: minor :: Integer rest: rest :: Binary socket: sock :: Socket | Nil -> Result(Tuple, Object) =>
+    text := self stringOrOpaque: raw
+    (text isKindOf: String) ifFalse: [^Result error: #bad_request_line]
+    self
+      readHeaders: rest
+      socket: sock
+      request: (SpikeRequest
+        method: (self methodName: m)
+        target: text
+        minor: minor
+        headers: #()
+        contentLength: 0)
+      headers: #()
+      length: 0
+
+  /// One decoded header (BT-4172: the value converts once, here, so the
+  /// stored headers and the content-length parse share it).
+  class sealed headerRead: field :: Object value: raw :: Object rest: rest :: Binary socket: sock :: Socket | Nil request: request :: SpikeRequest headers: headers :: List(Tuple) length: length :: Integer -> Result(Tuple, Object) =>
+    text := self stringOrOpaque: raw
+    stored := headers addFirst: {self headerName: field, text}
+    (text isKindOf: String)
+      ifFalse: [
+        ^self
+          readHeaders: rest
+          socket: sock
+          request: request
+          headers: stored
+          length: length
+      ]
+    self
+      readHeaders: rest
+      socket: sock
+      request: request
+      headers: stored
+      length: (self
+        lengthFrom: field
+        value: text
+        else: length)
+
   /// CR LF: Beamtalk string literals have no `\r`/`\n` escapes (BT-4100).
   class sealed crlf -> String =>
     (Character value: 13) asString ++ (Character value: 10) asString
@@ -71,17 +106,39 @@ sealed typed Object subclass: SpikeParser
     sock isNil ifTrue: [^Result error: #incomplete]
     sock recv: 0 timeout: 15000
 
+  /// decode_packet bytes as text: valid UTF-8 answers the String,
+  /// anything else passes through unchanged. The spike package cannot see
+  /// the library's Headers, so the boundary conversion lives here
+  /// (BT-4172): a no-op while dispatch still sniffs, and after the
+  /// BT-4170 flip it keeps every downstream String use fed with Strings.
+  class sealed stringOrOpaque: value :: Object -> Object =>
+    (value isKindOf: String) ifTrue: [^value]
+    (value isKindOf: Binary) ifFalse: [^value]
+    self checkedBinary: value
+
+  /// Valid UTF-8 as a String, invalid bytes passed through opaque.
+  /// `Binary>>asString` answers a bare String on success while dispatch
+  /// sniffs (a `Result ok:` after the BT-4170 flip) and a `Result error:`
+  /// on failure (a raw error tuple on toolchains before BT-4169), so
+  /// every shape is handled.
+  class sealed checkedBinary: bin :: Binary -> Object =>
+    bin asString match: [
+      s :: String -> s;
+      r :: Result -> r isError ifTrue: [bin] ifFalse: [r value];
+      _ -> bin
+    ]
+
   /// `decode_packet` answers well-known methods and header names as atoms,
   /// others as binaries.
   class sealed methodName: m :: Object -> String =>
-    m match: [
+    (self stringOrOpaque: m) match: [
       s :: Symbol -> s asString;
       b :: String -> b;
       _ -> ""
     ]
 
   class sealed headerName: field :: Object -> String =>
-    field match: [
+    (self stringOrOpaque: field) match: [
       s :: Symbol -> s asString lowercase;
       b :: String -> b lowercase;
       _ -> ""

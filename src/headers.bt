@@ -7,6 +7,30 @@
 /// lowercase, order and duplicates kept.
 typed Object subclass: Headers
 
+  /// decode_packet bytes as text: valid UTF-8 answers the String,
+  /// anything else passes through unchanged. Convert once, at the
+  /// decode_packet boundary (BT-4172): while dispatch still sniffs this
+  /// is a no-op, and after the BT-4170 flip it keeps every `isKindOf:`
+  /// guard below fed with Strings, with non-UTF-8 values still opaque.
+  /// Mirrored in SpikeParser (engine_spikes cannot depend on this
+  /// library): keep the two behavior-identical.
+  class stringOrOpaque: value :: Object -> Object =>
+    (value isKindOf: String) ifTrue: [^value]
+    (value isKindOf: Binary) ifFalse: [^value]
+    self checkedBinary: value
+
+  /// Valid UTF-8 as a String, invalid bytes passed through opaque.
+  /// `Binary>>asString` answers a bare String on success while dispatch
+  /// sniffs (a `Result ok:` after the BT-4170 flip) and a `Result error:`
+  /// on failure (a raw error tuple on toolchains before BT-4169), so
+  /// every shape is handled.
+  class checkedBinary: bin :: Binary -> Object =>
+    bin asString match: [
+      s :: String -> s;
+      r :: Result -> r isError ifTrue: [bin] ifFalse: [r value];
+      _ -> bin
+    ]
+
   /// Control characters as real strings (string literals have no \r \n
   /// \t escapes, BT-4100).
   class cr -> String => (Character value: 13) asString

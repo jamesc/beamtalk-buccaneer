@@ -60,7 +60,7 @@ sealed typed Object subclass: SpikeClient
         readHeaders: sock
         buffer: rest
         status: status
-        headers: (headers addFirst: {SpikeParser headerName: field, value});
+        headers: (headers addFirst: {SpikeParser headerName: field, SpikeParser stringOrOpaque: value});
       {#ok, #http_eoh, rest} -> self
         readBody: sock
         buffer: rest

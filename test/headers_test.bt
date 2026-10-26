@@ -206,6 +206,24 @@ TestCase subclass: HeadersTest
       ]
     self assert: caught
 
+  // ===== stringOrOpaque (BT-4172: decode_packet boundary conversion) =====
+  testStringOrOpaquePassesStringsThrough =>
+    self assert: (Headers stringOrOpaque: "close") equals: "close"
+    self assert: (Headers stringOrOpaque: nil) equals: nil
+    self assert: (Headers stringOrOpaque: #close) equals: #close
+
+  testStringOrOpaqueConvertsValidUtf8 =>
+    text := Headers stringOrOpaque: (Binary fromBytes: #(99, 108, 111, 115, 101))
+    self assert: text equals: "close"
+    self assert: (text isKindOf: String)
+
+  testStringOrOpaqueKeepsInvalidUtf8Opaque =>
+    opaque := Binary fromBytes: #(99, 97, 102, 233)
+    kept := Headers stringOrOpaque: opaque
+    self assert: kept equals: opaque
+    self assert: (kept isKindOf: Binary)
+    self deny: (kept isKindOf: String)
+
   testGetHostHeader =>
     self assert: (Headers getHostHeader: #()) unwrap equals: nil
     self assert: (Headers getHostHeader: #({"host", "example.com"})) unwrap equals: "example.com"

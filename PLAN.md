@@ -691,7 +691,7 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 | `hasField:` cost (~20 µs) | BT-4071 | Done (merged 2026-10-25) | performance (gate) |
 | Value construction is a call into the class process (Phase 0 spike 1) | BT-4099 | Done (merged 2026-10-25) | performance (gate) |
 | FFI call path: proxy apply + result coercion per call (spike 1 rerun profile) | BT-4153 | Done (merged 2026-10-25) | performance (gate margins) |
-| Sealed self-sends in test fixtures target a nonexistent module | BT-4152 | Backlog | worked around (`engine_spikes` package) |
+| Sealed self-sends in test fixtures target a nonexistent module | BT-4152 | Done (merged 2026-10-25, #4537) | fixed; `engine_spikes` package kept (more realistic vehicle) |
 | Binary patterns: size from an earlier segment; bitstrings, literal segments, size expressions; two `_` | BT-4096, BT-4097, BT-4098 | Done (merged 2026-10-25) | spike 4 worked around; Phases 4-6 use the real syntax |
 | Atomic spawn-and-monitor for an actor | BT-4104 | Backlog, needs-spec | Phase 6 rule meanwhile (spike 6) |
 | Test classes calling a dependency's class methods | BT-4094 | Done (merged 2026-10-25) | loopback fixture keeps the shape as shared setup |

@@ -83,7 +83,7 @@ TestCase subclass: HTTP1SocketTest
     self assert: headers equals: #({"host", "example.com"}, {"x-a", "1"})
     self assert: socket version equals: #http11
     self assert: socket readState equals: #read
-    self assert: socket buffer equals: ""
+    self assert: (socket buffer asStringUnchecked) equals: ""
 
   testAbsoluteForm =>
     req := "GET http://example.com:8080/path HTTP/1.1" ++ self nl ++ self nl
@@ -216,7 +216,7 @@ TestCase subclass: HTTP1SocketTest
     {_method, _target, _headers, socket} := (self socketWith: req) readHeaders
     self assert: socket readState equals: #headersRead
     self assert: socket unreadContentLength equals: 3
-    self assert: socket buffer equals: "abc"
+    self assert: (socket buffer asStringUnchecked) equals: "abc"
 
   testTransferEncodingChunked =>
     req := "POST /x HTTP/1.1"
@@ -278,7 +278,7 @@ TestCase subclass: HTTP1SocketTest
     two := "GET /two HTTP/1.1" ++ self nl ++ self nl
     {_method, target, _headers, socket} := (self socketWith: one ++ two) readHeaders
     self assert: (target at: 4) equals: "/one"
-    self assert: socket buffer equals: two
+    self assert: (socket buffer asStringUnchecked) equals: two
 
   testNonAsciiHeaderValue =>
     head := "GET / HTTP/1.1" ++ self nl ++ "x-a: caf"

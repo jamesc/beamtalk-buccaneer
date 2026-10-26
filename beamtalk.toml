@@ -7,7 +7,7 @@ version = "0.1.0"
 description = "Pure-Beamtalk HTTP server built on Catalina, a port of Bandit"
 
 [dependencies]
-catalina = "0.1.0"
+catalina = "0.2.0"
 
 # Every class is `typed`; a type warning fails the build (as Catalina's AGENTS.md).
 [diagnostics]

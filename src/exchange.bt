@@ -61,8 +61,8 @@ sealed typed Value subclass: Exchange
 
   httpProtocol -> HttpVersion => self load transport version
 
-  /// {address, port} of the client.
-  peer -> Tuple => self socket peername unwrap
+  /// {address, port} of the client, or nil when Catalina was given none.
+  peer -> Tuple | Nil => self socket peername unwrap
 
   /// {address, port} of this end.
   sockData -> Tuple => self socket sockname unwrap

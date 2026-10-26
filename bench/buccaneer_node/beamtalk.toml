@@ -7,7 +7,7 @@ version = "0.1.0"
 description = "Spike 1's Buccaneer side of the HTTP bench (not published)"
 
 [dependencies]
-catalina = "0.1.0"
+catalina = "0.2.0"
 
 # Typed as the library is: a type warning fails the build.
 [diagnostics]

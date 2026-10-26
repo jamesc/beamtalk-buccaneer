@@ -12,6 +12,8 @@ typed Object subclass: Headers
   /// decode_packet boundary (BT-4172): while dispatch still sniffs this
   /// is a no-op, and after the BT-4170 flip it keeps every `isKindOf:`
   /// guard below fed with Strings, with non-UTF-8 values still opaque.
+  /// Mirrored in SpikeParser (engine_spikes cannot depend on this
+  /// library): keep the two behavior-identical.
   class stringOrOpaque: value :: Object -> Object =>
     (value isKindOf: String) ifTrue: [^value]
     (value isKindOf: Binary) ifFalse: [^value]

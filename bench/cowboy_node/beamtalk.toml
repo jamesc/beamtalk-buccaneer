@@ -4,7 +4,7 @@
 [package]
 name = "cowboy_node"
 version = "0.1.0"
-description = "Spike 1's gate baseline: beamtalk-http 0.1.10 on cowboy (not published)"
+description = "Spike 1's gate baseline: beamtalk-http 0.2.0 on cowboy (not published)"
 
 [dependencies]
-http = { git = "https://github.com/jamesc/beamtalk-http", tag = "v0.1.10" }
+http = { git = "https://github.com/jamesc/beamtalk-http", tag = "v0.2.0" }

@@ -2,7 +2,7 @@
 
 Phase 0 spike 1 (PLAN.md § Phase 0, BT-4079): what a request costs when
 Buccaneer parses HTTP/1 with `erlang:decode_packet` through the FFI on
-Catalina, against the release gate's baseline (beamtalk-http 0.1.10 on
+Catalina, against the release gate's baseline (beamtalk-http 0.2.0 on
 cowboy) and Bandit 1.12.5 (context). Throwaway, like the rest of Phase 0;
 Phase 7 builds the real harness.
 
@@ -28,7 +28,7 @@ load generator in a third. All answer every request with `200`,
 | Server | Package | Handler |
 |---|---|---|
 | Buccaneer spike | `bench/buccaneer_node` | Catalina (100 acceptors) running the spike's `SpikeHandler`: `SpikeParser` (`decode_packet` FFI), an owner-bound `SpikeExchange`, Bandit's keep-alive loop and process-dictionary clearing, GC every 5 requests. The spike classes are copied from `spikes/engine_spikes/src/` by `run.sh` (`beamtalk build` skips symlinked sources). |
-| cowboy (the gate) | `bench/cowboy_node` | beamtalk-http 0.1.10 (`v0.1.10`, 3905b53) `HTTPServer start: 0 handler: [:req \| HTTPResponse new: ...]`; cowboy 2.18.0 with ranch defaults, as beamtalk-http starts it (10 acceptors, `max_keepalive` 1000). |
+| cowboy (the gate) | `bench/cowboy_node` | beamtalk-http 0.2.0 (`v0.2.0`, 0c45603) `HTTPServer start: 0 handler: [:req \| HTTPResponse new: ...]`; cowboy 2.18.0 with ranch defaults, as beamtalk-http starts it (10 acceptors, `max_keepalive` 1000). |
 | Bandit (context) | `bench/bandit` | Bandit 1.12.5 with a bare Plug (`send_resp(conn, 200, "hello world")`), 100 acceptors. |
 
 The load generator (`hb_load.erl`) is closed-loop: each of `c` connections

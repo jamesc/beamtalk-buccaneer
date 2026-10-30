@@ -14,10 +14,13 @@ sealed typed Value subclass: Exchange
   field: owner :: Pid | Nil = nil
 
   /// Engine side: start a request's state in the calling process.
+  /// The put goes through store:, an instance method: a direct
+  /// erlang:put/2 here trips ClassMethodProcessResource1, since a class
+  /// method with no classState: runs in the caller's process (which is
+  /// exactly where this state belongs).
   class sealed open: state :: ExchangeState -> Exchange =>
     ex := Exchange ref: Erlang erlang make_ref owner: Pid current
-    Erlang erlang put: ex key with: state
-    ex
+    ex store: state
 
   /// The process-dictionary key of this exchange's state.
   key -> Tuple => {#buccaneer_exchange, self.ref}

@@ -488,7 +488,7 @@ once green. Blocked by BT-4090, Phase 5, Phase 1 and Phase 0.
 Reuse Catalina's harness (`bench/harness`, `test/stress`, the peer-VM
 runner) and extend it with an HTTP load generator. Servers run side by side,
 interleaved round by round: **beamtalk-http on Buccaneer** against
-**beamtalk-http 0.1.10 on cowboy** (the gate), with **Buccaneer
+**beamtalk-http 0.2.0 on cowboy** (the gate), with **Buccaneer
 standalone** (the adapter's cost on its own) and **Bandit 1.12.5** (a mix
 project with the equivalent handler as a bare Plug) reported for context.
 

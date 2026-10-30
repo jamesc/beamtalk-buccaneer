@@ -79,12 +79,14 @@ stop_server(_Timeout) ->
 
 start(buccaneer, Opts) ->
     M = 'bt@buccaneer_node@buccaneer_node',
-    Srv = M:'class_start:'(nil, #{port => maps:get(port, Opts, 0), numAcceptors => 100}),
-    {ok, Srv, M:'class_port:'(nil, Srv)};
+    Self = class_self('BuccaneerNode', M),
+    Srv = M:'class_start:'(Self, #{port => maps:get(port, Opts, 0), numAcceptors => 100}),
+    {ok, Srv, M:'class_port:'(Self, Srv)};
 start(cowboy, Opts) ->
     M = 'bt@cowboy_node@cowboy_node',
-    Srv = M:'class_start:'(nil, maps:get(port, Opts, 0)),
-    {ok, Srv, M:'class_port:'(nil, Srv)};
+    Self = class_self('CowboyNode', M),
+    Srv = M:'class_start:'(Self, maps:get(port, Opts, 0)),
+    {ok, Srv, M:'class_port:'(Self, Srv)};
 start(bandit, Opts) ->
     {ok, Pid} = 'Elixir.Bandit':start_link([
         {plug, 'Elixir.BanditNode.HelloPlug'},
@@ -95,9 +97,20 @@ start(bandit, Opts) ->
     {ok, {_, Port}} = 'Elixir.ThousandIsland':listener_info(Pid),
     {ok, Pid, Port}.
 
-stop(buccaneer, Srv) -> 'bt@buccaneer_node@buccaneer_node':'class_stop:'(nil, Srv);
-stop(cowboy, Srv) -> 'bt@cowboy_node@cowboy_node':'class_stop:'(nil, Srv);
+stop(buccaneer, Srv) ->
+    M = 'bt@buccaneer_node@buccaneer_node',
+    M:'class_stop:'(class_self('BuccaneerNode', M), Srv);
+stop(cowboy, Srv) ->
+    M = 'bt@cowboy_node@cowboy_node',
+    M:'class_stop:'(class_self('CowboyNode', M), Srv);
 stop(bandit, Pid) -> 'Elixir.ThousandIsland':stop(Pid, 5000).
+
+%% The receiver for a direct class-method call: the class object tuple.
+%% Codegen passes it as `self` and reads element 2 on every self-send,
+%% so the `nil` this harness used to pass dies with `element(2, nil)`.
+class_self(Name, Module) ->
+    {beamtalk_object, list_to_atom(atom_to_list(Name) ++ " class"), Module,
+     beamtalk_class_registry:whereis_class(Name)}.
 
 %% === Parse microbenchmark (Buccaneer node only) ===
 
@@ -105,7 +118,8 @@ stop(bandit, Pid) -> 'Elixir.ThousandIsland':stop(Pid, 5000).
 %% `decode_packet` to `http_eoh`, and the Beamtalk `SpikeParser`.
 parse_bench(N) ->
     Req = request(),
-    Bt = fun() -> 'bt@buccaneer_node@spike_parser':'class_readHead:socket:'(nil, Req, nil) end,
+    Parser = class_self('SpikeParser', 'bt@buccaneer_node@spike_parser'),
+    Bt = fun() -> 'bt@buccaneer_node@spike_parser':'class_readHead:socket:'(Parser, Req, nil) end,
     Erl = fun() -> erl_parse(Req) end,
     %% Same answer shape check: both see 7 headers and an empty rest.
     {7, <<>>} = Erl(),
@@ -165,8 +179,9 @@ ascii_lower(B) -> << <<(if C >= $A, C =< $Z -> C + 32; true -> C end)>> || <<C>>
 %% {percent, "M:F/A"}, heaviest first.
 profile_parse(Samples) ->
     Req = request(),
+    Parser = class_self('SpikeParser', 'bt@buccaneer_node@spike_parser'),
     Worker = spawn(fun Loop() ->
-        'bt@buccaneer_node@spike_parser':'class_readHead:socket:'(nil, Req, nil),
+        'bt@buccaneer_node@spike_parser':'class_readHead:socket:'(Parser, Req, nil),
         Loop()
     end),
     timer:sleep(200),

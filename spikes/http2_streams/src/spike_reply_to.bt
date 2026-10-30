@@ -6,18 +6,20 @@
 /// throwaway native connection hands to `ConnLogic`. A plain Value:
 /// storable in a Dictionary, usable from any later message. Replies go
 /// out with `gen_server:reply/2` through the FFI, in the `{ok, V}` /
-/// `{error, E}` shape `beamtalk_actor:sync_send/3` unwraps. Spike-only.
-sealed typed Value subclass: ReplyTo
+/// `{error, E}` shape `beamtalk_actor:sync_send/3` unwraps. Named
+/// `SpikeReplyTo` because the stdlib now ships its own `ReplyTo`.
+/// Spike-only.
+sealed typed Value subclass: SpikeReplyTo
   // gen_server's `From`, `{pid, tag}`.
   field: from :: Tuple = {nil, nil}
 
   /// Answer the parked caller with `value`. A no-op if the caller has
   /// already timed out or died (OTP: the reply goes to a dead alias).
-  reply: value :: Object -> ReplyTo =>
+  reply: value :: Object -> SpikeReplyTo =>
     Erlang gen_server reply: self.from with: {#ok, value}
     self
 
   /// Make the parked caller's send raise `error`, as a failed sync call.
-  replyError: error :: Exception -> ReplyTo =>
+  replyError: error :: Exception -> SpikeReplyTo =>
     Erlang gen_server reply: self.from with: {#error, error}
     self

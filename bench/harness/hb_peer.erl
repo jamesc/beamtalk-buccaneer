@@ -2,7 +2,7 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% @doc Start a server peer node: a separate BEAM VM running the Buccaneer
-%% spike (`buccaneer`), beamtalk-http 0.1.10 on cowboy (`cowboy`) or Bandit
+%% spike (`buccaneer`), beamtalk-http 0.2.0 on cowboy (`cowboy`) or Bandit
 %% 1.12.5 (`bandit`), driven over the peer control channel (standard_io,
 %% so no epmd or distribution). Adapted from Catalina's `bench_peer`.
 %%

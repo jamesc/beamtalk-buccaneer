@@ -14,8 +14,13 @@ sealed typed Value subclass: SpikeExchange
   field: owner :: Pid | Nil = nil
 
   /// Engine side: start a request's state in the calling process.
+  /// The put goes through store:, an instance method: a direct
+  /// erlang:put/2 here trips ClassMethodProcessResource1, since a class
+  /// method with no classState: runs in the caller's process (which is
+  /// exactly where this state belongs). Likewise Pid current instead of
+  /// erlang:self/0.
   class sealed open: request :: SpikeRequest socket: sock :: Socket | Nil buffer: buffer :: Binary -> SpikeExchange =>
-    ex := self ref: Erlang erlang make_ref owner: Erlang erlang self
+    ex := self ref: Erlang erlang make_ref owner: Pid current
     initial := SpikeExchangeState
       request: request
       socket: sock
@@ -24,7 +29,7 @@ sealed typed Value subclass: SpikeExchange
       bytesRead: 0
       respState: #unset
       status: 0
-    Erlang erlang put: ex key with: initial
+    ex store: initial
     ex
 
   /// The process-dictionary key of this exchange's state.

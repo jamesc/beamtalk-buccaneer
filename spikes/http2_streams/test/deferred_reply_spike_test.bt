@@ -3,7 +3,7 @@
 
 /// Spike 5 (PLAN.md Phase 0): the deferred reply HTTP/2 needs (BT-4090),
 /// prototyped with a throwaway native-backed connection whose decisions
-/// are Beamtalk (`ConnLogic`, `ReplyTo`). Stream processes
+/// are Beamtalk (`ConnLogic`, `SpikeReplyTo`). Stream processes
 /// (`StreamWorker`) block on `conn readData:` and on a flow-controlled
 /// `conn sendData:data:`; the connection parks the calls and answers them
 /// later, out of order, from `handleInfo:`. Frames are simulated with
@@ -139,6 +139,10 @@ typed TestCase subclass: DeferredReplySpikeTest
   /// process alias, and the alias is gone once the call returns.
   testLateReplyToTimedOutCallerIsHarmless -> Nil =>
     c := self conn: 65535 timeout: 15000
+    // Methods in a class share the runner process, and every stopped
+    // connection leaves an EXIT behind, so the mailbox is not empty here.
+    // Snapshot it: the late reply must add nothing.
+    before := Erlang erlang process_info: Erlang erlang self with: #messages
     timedOut := [
       Erlang gen_server
         call: c pid
@@ -151,7 +155,7 @@ typed TestCase subclass: DeferredReplySpikeTest
     self frame: {#data, 7, "late"} to: c
     self assert: c ping equals: #pong
     self assert: c parked equals: 0
-    self assert: (Erlang erlang process_info: Erlang erlang self with: #message_queue_len) equals: {#message_queue_len, 0}
+    self assert: (Erlang erlang process_info: Erlang erlang self with: #messages) equals: before
     c stop
     nil
 

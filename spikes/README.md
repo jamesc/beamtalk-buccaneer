@@ -205,7 +205,7 @@ header; Phase 6 keeps it unless the HTTP/2 rows of Phase 7 show it.
 
 `DeferredConn` is a native-backed actor (ADR 0056) whose gen_server only
 answers `{noreply, ...}` and hands `From` to `ConnLogic`, a Beamtalk Value.
-`ConnLogic` keeps `ReplyTo` tokens in a Dictionary by stream id and answers
+`ConnLogic` keeps `SpikeReplyTo` tokens in a Dictionary by stream id and answers
 them with `gen_server:reply` through the FFI from ordinary methods,
 including the ones `handleInfo:` reaches.
 
@@ -233,7 +233,7 @@ Input for BT-4090's spec:
 6. All BT-4090 needs is `self deferReply -> ReplyTo` inside a sync method
    and "the method's answer is then ignored"; `reply:` and `replyError:`
    can be plain Beamtalk over `gen_server:reply`.
-7. Building the `ReplyTo` Value was a class-process call (BT-4099, now
+7. Building the `SpikeReplyTo` Value was a class-process call (BT-4099, now
    merged: construction is direct, which is why a parked-then-answered
    call costs the same as a plain one on the rerun).
 

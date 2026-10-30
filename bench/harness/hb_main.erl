@@ -2,7 +2,7 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% @doc `just spike-bench` (Phase 0 spike 1): keep-alive `GET /` against the
-%% Buccaneer spike (Catalina + `SpikeHandler`), beamtalk-http 0.1.10 on
+%% Buccaneer spike (Catalina + `SpikeHandler`), beamtalk-http 0.2.0 on
 %% cowboy (the release gate's baseline) and Bandit 1.12.5 (context).
 %%
 %% Each server runs in its own peer VM for the whole run, the load
@@ -174,7 +174,7 @@ report(Rows, Results, Parses, Env) ->
         "# Spike 1: HTTP/1 keep-alive GET~n~n"
         "- Started: ~s~n- Machine: ~s~n- OS: ~s~n- OTP: ~s (ERTS ~s), ~p schedulers~n"
         "- Elixir: ~s~n- Beamtalk: ~s~n- Buccaneer worktree: ~s~n"
-        "- Servers: Buccaneer spike (Catalina + SpikeHandler), beamtalk-http 0.1.10 on cowboy, Bandit 1.12.5~n"
+        "- Servers: Buccaneer spike (Catalina + SpikeHandler), beamtalk-http 0.2.0 on cowboy, Bandit 1.12.5~n"
         "- Rounds: ~p, ~p ms measured after ~p ms warm-up per measurement~n"
         "- Load at start: ~s~n- Load at end: ~s~n- Load per measurement: ~s~n~n"
         "Medians over the rounds. `B/cowboy` and `B/Bandit` are Buccaneer / the other: "

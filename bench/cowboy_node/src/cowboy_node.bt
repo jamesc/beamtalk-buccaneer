@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// CowboyNode — what the Erlang bench harness calls in the cowboy peer
-/// node: beamtalk-http 0.1.10's `HTTPServer` (cowboy) with a block handler
+/// node: beamtalk-http 0.2.0's `HTTPServer` (cowboy) with a block handler
 /// answering a fixed `hello world`, the release gate's baseline.
 sealed typed Object subclass: CowboyNode
 

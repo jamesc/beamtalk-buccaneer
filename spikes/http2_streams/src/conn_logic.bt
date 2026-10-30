@@ -3,7 +3,7 @@
 
 /// Spike 5: the connection's decisions, in Beamtalk, run inside the
 /// `DeferredConn` process. Every sync call arrives parked with a
-/// `ReplyTo`; the logic answers it at once or keeps the token and answers
+/// `SpikeReplyTo`; the logic answers it at once or keeps the token and answers
 /// from a later `handleInfo:`, in any order. Each method answers the next
 /// logic value (the gen_server stores it).
 ///
@@ -18,7 +18,7 @@
 sealed typed Value subclass: ConnLogic
   field: window :: Integer = 65535
   field: sendTimeout :: Integer = 15000
-  field: readers :: Dictionary(Integer, ReplyTo) = #{}
+  field: readers :: Dictionary(Integer, SpikeReplyTo) = #{}
   field: buffered :: Dictionary(Integer, Binary) = #{}
   // {tag, streamId, data, replyTo}, oldest first.
   field: sends :: List(Tuple) = #()
@@ -28,7 +28,7 @@ sealed typed Value subclass: ConnLogic
 
   /// A sync call, parked: answer it now or keep `from` for later.
   call: selector :: Symbol args: args :: List(Object) from: from :: Tuple -> ConnLogic =>
-    r := ReplyTo from: from
+    r := SpikeReplyTo from: from
     selector match: [
       #readData: -> self read: (self int: (args at: 1)) replyTo: r;
       #sendData:data: -> self
@@ -48,11 +48,11 @@ sealed typed Value subclass: ConnLogic
       _ -> self
     ]
 
-  answer: r :: ReplyTo with: value :: Object -> ConnLogic =>
+  answer: r :: SpikeReplyTo with: value :: Object -> ConnLogic =>
     r reply: value
     self
 
-  read: sid :: Integer replyTo: r :: ReplyTo -> ConnLogic =>
+  read: sid :: Integer replyTo: r :: SpikeReplyTo -> ConnLogic =>
     (self.buffered includesKey: sid)
       ifTrue: [
         r reply: (self.buffered at: sid)
@@ -68,7 +68,7 @@ sealed typed Value subclass: ConnLogic
       ]
     self withBuffered: (self.buffered at: sid put: bytes)
 
-  send: sid :: Integer data: bytes :: Binary replyTo: r :: ReplyTo -> ConnLogic =>
+  send: sid :: Integer data: bytes :: Binary replyTo: r :: SpikeReplyTo -> ConnLogic =>
     n := (Erlang erlang byte_size: bytes)
     (self.sends isEmpty and: [n <= self.window])
       ifTrue: [

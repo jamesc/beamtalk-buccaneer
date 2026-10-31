@@ -1,10 +1,12 @@
 // Copyright 2026 James Casey
 // SPDX-License-Identifier: Apache-2.0
 
+/// Request/response headers: {name, value} tuples (what decode_packet
+/// produces), names lowercase, order and duplicates kept. Values are
+/// Strings, or Binaries when the bytes are not valid UTF-8.
+type HttpHeaders = List(Tuple(String, String | Binary))
+
 /// Bandit.Headers: request/response header helpers.
-///
-/// Headers are {name, value} tuples (what decode_packet produces), names
-/// lowercase, order and duplicates kept.
 typed Object subclass: Headers
 
   /// decode_packet bytes as text: valid UTF-8 answers the String,
@@ -43,7 +45,7 @@ typed Object subclass: Headers
 
   /// The first value for name, or nil. Values are Binaries when the
   /// bytes are not valid UTF-8 (String is a Binary, so one type covers both).
-  class getHeader: headers :: List(Tuple) name: header :: String -> Binary | Nil =>
+  class getHeader: headers :: HttpHeaders name: header :: String -> Binary | Nil =>
     headers do: [:h | (h at: 1) =:= header ifTrue: [^h at: 2]]
     nil
 
@@ -60,7 +62,7 @@ typed Object subclass: Headers
   /// Whether any header named header (matched case-insensitively, scanning
   /// every instance) contains token (already lowercase) as a
   /// comma-separated member of its value.
-  class headerContainsToken: headers :: List(Tuple) name: header :: String token: token :: String -> Boolean =>
+  class headerContainsToken: headers :: HttpHeaders name: header :: String token: token :: String -> Boolean =>
     headers
       do: [:h |
         (h at: 1) asciiLowercase =:= header ifTrue: [
@@ -70,14 +72,14 @@ typed Object subclass: Headers
     false
 
   /// The host header, rejecting repeats (RFC9112§3.2, RFC9110§7.2).
-  class getHostHeader: headers :: List(Tuple) -> Result =>
+  class getHostHeader: headers :: HttpHeaders -> Result(String | Binary | Nil, String) =>
     found := headers select: [:h | (h at: 1) =:= "host"]
     found size =:= 0 ifTrue: [^Result ok: nil]
     found size =:= 1 ifTrue: [^Result ok: (found first at: 2)]
     Result error: "multiple host headers (RFC9112§3.2, RFC9110§7.2)"
 
   /// The transfer-encoding header, rejecting repeats (RFC9112§6.1, §6.3).
-  class getTransferEncoding: headers :: List(Tuple) -> Result =>
+  class getTransferEncoding: headers :: HttpHeaders -> Result(String | Binary | Nil, String) =>
     found := headers select: [:h | (h at: 1) =:= "transfer-encoding"]
     found size =:= 0 ifTrue: [^Result ok: nil]
     found size =:= 1 ifTrue: [^Result ok: (found first at: 2)]
@@ -86,7 +88,7 @@ typed Object subclass: Headers
   /// Split a host header into {host, port}; the port is nil when absent.
   /// Raises HTTPError on an invalid port. Covers [::1]:4000 (RFC3986).
   /// Non-string (non-UTF8) hosts are rejected; Bandit passes them opaquely.
-  class parseHostlikeHeader: hostHeader :: Object -> Tuple =>
+  class parseHostlikeHeader: hostHeader :: Object -> Tuple(String, Integer | Nil) =>
     (hostHeader isKindOf: String) ifFalse: [
       HTTPError signal: "Invalid host header"
     ]
@@ -114,13 +116,13 @@ typed Object subclass: Headers
 
   /// The content-length, tolerating a repeated value only when every
   /// instance agrees (RFC9112§6.3).
-  class getContentLength: headers :: List(Tuple) -> Result =>
+  class getContentLength: headers :: HttpHeaders -> Result(Integer | Nil, String) =>
     found := headers select: [:h | (h at: 1) =:= "content-length"]
     found size =:= 0 ifTrue: [^Result ok: nil]
     found size =:= 1 ifTrue: [^self parseContentLength: (found first at: 2)]
     Result error: "invalid content-length header (RFC9112§6.3)"
 
-  class parseContentLength: value :: Object -> Result =>
+  class parseContentLength: value :: Object -> Result(Integer, String) =>
     (value isKindOf: String) ifFalse: [
       ^Result error: "invalid content-length header (RFC9112§6.3.5)"
     ]
@@ -141,7 +143,7 @@ typed Object subclass: Headers
   /// Set the response content-length (RFC9110§8.6): never on 1xx or 204,
   /// kept as the handler set it on 304/HEAD with an empty body, otherwise
   /// the body's length, overwriting any previous value.
-  class addContentLength: headers :: List(Tuple) length: length :: Integer status: status :: Integer method: method :: String -> List(Tuple) =>
+  class addContentLength: headers :: HttpHeaders length: length :: Integer status: status :: Integer method: method :: String -> HttpHeaders =>
     ((status between: 100 and: 199) or: [
       status =:= 204
     ]) ifTrue: [^self dropContentLength: headers]
@@ -150,7 +152,7 @@ typed Object subclass: Headers
     ]) ifTrue: [^headers]
     (self dropContentLength: headers) addFirst: {"content-length", length asString}
 
-  class dropContentLength: headers :: List(Tuple) -> List(Tuple) =>
+  class dropContentLength: headers :: HttpHeaders -> HttpHeaders =>
     headers reject: [:h | (h at: 1) =:= "content-length"]
 
   class parsePort: portStr :: String -> Integer =>
@@ -167,7 +169,7 @@ typed Object subclass: Headers
 
   /// The leading digits as ok {value, rest}, or error when the first
   /// character is not a digit.
-  class parseInteger: s :: String -> Result =>
+  class parseInteger: s :: String -> Result(Tuple(Integer, String), Symbol) =>
     digits := "0123456789"
     (s isEmpty or: [
       (digits indexOf: s first) isNil

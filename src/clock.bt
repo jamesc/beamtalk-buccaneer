@@ -14,7 +14,7 @@ typed Object subclass: Clock
   class cacheKey -> Symbol => #dateHeader
 
   /// {"date", <rfc9110 date>} from the cache, or freshly computed on a miss.
-  class dateHeader -> Tuple =>
+  class dateHeader -> Tuple(String, String) =>
     cached := self cachedDate
     cached isNil
       ifTrue: [

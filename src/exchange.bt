@@ -23,7 +23,7 @@ sealed typed Value subclass: Exchange
     ex store: (state withReqHeaderEndTime: BuccaneerTelemetry monotonicTime)
 
   /// The process-dictionary key of this exchange's state.
-  key -> Tuple => {#buccaneer_exchange, self.ref}
+  key -> Tuple(Symbol, Reference | Nil) => {#buccaneer_exchange, self.ref}
 
   /// The state, after the owner check. Raises NotOwner from another
   /// process, and an error once the exchange is finished.
@@ -33,19 +33,19 @@ sealed typed Value subclass: Exchange
       ifFalse: [
         NotOwner signal: "not_owner: an Exchange can only be used from the process that received the request (owner {self.owner printString}, caller {me printString})"
       ]
-    (Erlang erlang get: self key) match: [
+    (ProcessDictionary at: self key) match: [
       st :: ExchangeState -> st;
       _ -> Error signal: "exchange_finished: this request is complete"
     ]
 
   store: st :: ExchangeState -> Exchange =>
-    Erlang erlang put: self key with: st
+    ProcessDictionary at: self key put: st
     self
 
   // === The request (fixed once the headers are read) ===
   method -> String => self load method
 
-  scheme -> RequestScheme => self load scheme
+  scheme -> Scheme => self load scheme
 
   host -> String => self load host
 
@@ -56,7 +56,7 @@ sealed typed Value subclass: Exchange
   query -> String | Nil => self load query
 
   /// {name, value}, names lowercase, order and duplicates kept.
-  headers -> List(Tuple) => self load headers
+  headers -> HttpHeaders => self load headers
 
   /// The first value for name, or nil.
   header: name :: String -> Binary | Nil =>
@@ -65,7 +65,7 @@ sealed typed Value subclass: Exchange
   httpProtocol -> HttpVersion => self load transport version
 
   /// {address, port} of the client, or nil when Catalina was given none.
-  peer -> Tuple | Nil =>
+  peer -> SocketAddress | Nil =>
     sock := self load transport socket
     sock isNil ifTrue: [^nil]
     peer := sock peername
@@ -73,7 +73,7 @@ sealed typed Value subclass: Exchange
     peer value
 
   /// {address, port} of this end.
-  sockData -> Tuple => self socket sockname unwrap
+  sockData -> SocketAddress => self socket sockname unwrap
 
   /// The peer certificate, or error: #not_secure on a clear connection.
   sslData -> Result(Object, Object) =>
@@ -98,7 +98,7 @@ sealed typed Value subclass: Exchange
   /// #readLength per socket read (1_000_000), waiting #readTimeout ms
   /// per read (15_000). A timeout answers error: #timeout and a socket
   /// failure error: #closed; a malformed body raises HTTPError (a 400).
-  readBody: options :: Dictionary -> Result(BodyPart, Object) =>
+  readBody: options :: Dictionary(Symbol, Object) -> Result(BodyPart, Object) =>
     st := self load
     read := [
       [
@@ -132,7 +132,7 @@ sealed typed Value subclass: Exchange
   /// body (a String, Binary or iodata), head and body in one send. No
   /// body goes out for HEAD, 204 or 304. Raises AlreadySent on a second
   /// response and TransportError if the socket fails.
-  sendResp: status :: Integer headers: hs :: List(Tuple) body: body :: Object -> Exchange =>
+  sendResp: status :: Integer headers: hs :: HttpHeaders body: body :: Object -> Exchange =>
     st := self load
     st respState =:= #unset
       ifFalse: [
@@ -158,7 +158,7 @@ sealed typed Value subclass: Exchange
 
   /// Bandit's send_headers: a date header unless the caller set one, the
   /// status recorded, and no body for HEAD, 204 or 304.
-  sendHeadersOn: st :: ExchangeState status: status :: Integer headers: hs :: List(Tuple) disposition: disposition :: BodyDisposition -> ExchangeState =>
+  sendHeadersOn: st :: ExchangeState status: status :: Integer headers: hs :: HttpHeaders disposition: disposition :: BodyDisposition -> ExchangeState =>
     dated := (Headers getHeader: hs name: "date") isNil ifTrue: [
       hs addFirst: Clock dateHeader
     ] ifFalse: [hs]
@@ -210,7 +210,7 @@ sealed typed Value subclass: Exchange
   /// Forget the state without draining (the pipeline's error paths;
   /// idempotent, unlike finish).
   forget -> Exchange =>
-    Erlang erlang erase: self key
+    ProcessDictionary erase: self key
     self
 
   /// Forget the state, then drain an unread body (ensureCompleted) and
@@ -218,5 +218,5 @@ sealed typed Value subclass: Exchange
   /// first so a raising drain cannot leak it into the next request.
   finish -> HTTP1Socket =>
     st := self load
-    Erlang erlang erase: self key
+    ProcessDictionary erase: self key
     st transport ensureCompleted

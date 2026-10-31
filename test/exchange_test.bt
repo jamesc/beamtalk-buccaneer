@@ -13,7 +13,7 @@ TestCase subclass: ExchangeTest
 
   tearDown =>
     (Ets exists: Clock tableName) ifTrue: [(Ets named: Clock tableName) delete]
-    Erlang erlang erase: HTTP1Socket sentKey
+    ProcessDictionary erase: HTTP1Socket sentKey
     self
 
   nl => "\r\n"
@@ -104,7 +104,7 @@ TestCase subclass: ExchangeTest
   testFinishLeavesNoState =>
     ex := Exchange open: ExchangeState new
     ex finish
-    self assert: (Erlang erlang get: ex key) equals: #undefined
+    self assert: (ProcessDictionary at: ex key) isNil
 
   // ===== the request body =====
   testReadBodyWhole =>
@@ -153,7 +153,7 @@ TestCase subclass: ExchangeTest
     self assert: (ex readBody: #{
       #readTimeout => 100
     }) equals: (Result error: #timeout)
-    Erlang erlang erase: ex key
+    ex forget
     Loopback close: pair
 
   testReadBodyClosed =>
@@ -169,7 +169,7 @@ TestCase subclass: ExchangeTest
     ex := self open: pair request: head
     (Erlang gen_tcp) close: (pair at: 2)
     self assert: ex readBody equals: (Result error: #closed)
-    Erlang erlang erase: ex key
+    ex forget
     (Erlang gen_tcp) close: (pair at: 3)
 
   testReadBodyMalformedChunkRaises =>
@@ -186,7 +186,7 @@ TestCase subclass: ExchangeTest
     ex := self open: pair request: head
     raised := [ex readBody] on: HTTPError do: [:e | e]
     self assert: raised message equals: "Unable to parse chunk size"
-    Erlang erlang erase: ex key
+    ex forget
     Loopback close: pair
 
   testReadAll =>
@@ -200,7 +200,7 @@ TestCase subclass: ExchangeTest
     pair := Loopback pairWithReadTimeout: 5000
     ex := self open: pair request: (self postHead: "hello world")
     self assert: (ex readAll: 5) equals: (Result error: #body_too_large)
-    Erlang erlang erase: ex key
+    ex forget
     Loopback close: pair
 
   // ===== the response =====

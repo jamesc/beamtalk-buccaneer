@@ -1,0 +1,148 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: HTTP1HandlerTest
+
+  nl -> String => "\r\n"
+
+  handlerWith: config handler: handler -> HTTP1Handler =>
+    HTTP1Handler
+      config: config
+      handler: handler
+      buffer: (Binary fromBytes: #())
+      requestsProcessed: 0
+      baseline: (ProcessDictionary keys)
+      connData: {false, {127, 0, 0, 1}}
+
+  configWith: handler -> BuccaneerConfig =>
+    BuccaneerConfig from: #{#handler => handler}
+
+  stateOf: result -> HTTP1Handler =>
+    result state match: [
+      h :: HTTP1Handler -> h;
+      _ -> Error signal: "Expected HTTP1Handler userState"
+    ]
+
+  /// Send `head`, serve one `handleData:` worth, answer {result, pair}.
+  serveHead: head handler: handler -> Tuple =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    config := self configWith: handler
+    h := self handlerWith: config handler: handler
+    {(h serve: (Binary fromBytes: #()) socket: (pair at: 1)), pair}
+
+  getHead =>
+    "GET /hello HTTP/1.1" ++ self nl ++ "host: example.com" ++ self nl ++ self nl
+
+  testServeOk =>
+    handler := [:ex |
+      ex
+        sendResp: 200
+        headers: #()
+        body: "hi"
+    ]
+    {result, pair} := self serveHead: self getHead handler: handler
+    self assert: result kind equals: #continue
+    self assert: (self stateOf: result) requestsProcessed equals: 1
+    resp := Loopback responseOf: pair body: 2
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    Loopback close: pair
+
+  testServePipelined =>
+    both := self getHead
+      ++ ("GET /second HTTP/1.1" ++ self nl ++ "host: x" ++ self nl ++ self nl)
+    handler := [:ex |
+      ex
+        sendResp: 200
+        headers: #()
+        body: ex path
+    ]
+    {result, pair} := self serveHead: both handler: handler
+    self assert: result kind equals: #continue
+    self assert: (self stateOf: result) requestsProcessed equals: 2
+    self assert: ((Loopback responseOf: pair body: 6) endsWith: "/hello")
+    self assert: ((Loopback responseOf: pair body: 7) endsWith: "/second")
+    Loopback close: pair
+
+  testServeErrorCloses =>
+    {result, pair} := self
+      serveHead: "GARBAGE" ++ self nl ++ self nl
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    self assert: result kind equals: #close
+    resp := Loopback responseOf: pair body: 0
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request")
+    Loopback close: pair
+
+  testMaxRequestsClosesAfterResponse =>
+    config := BuccaneerConfig from: #{
+      #handler => [:ex | ex],
+      #http1 => #{#maxRequests => 1}
+    }
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: self getHead
+    h := self
+      handlerWith: config
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: "hi"
+      ]
+    result := h serve: (Binary fromBytes: #()) socket: (pair at: 1)
+    self assert: result kind equals: #close
+    resp := Loopback responseOf: pair body: 2
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    Loopback close: pair
+
+  testHttp10Closes =>
+    {result, pair} := self
+      serveHead: "GET / HTTP/1.0" ++ self nl ++ self nl
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    self assert: result kind equals: #close
+    resp := Loopback responseOf: pair body: 0
+    self assert: (resp startsWith: "HTTP/1.0 200 OK")
+    Loopback close: pair
+
+  testClearsDictionary =>
+    {result, pair} := self
+      serveHead: self getHead
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    self assert: result kind equals: #continue
+    left := (ProcessDictionary keys)
+      select: [:k |
+        k match: [
+          t :: Tuple -> (t at: 1) =:= #buccaneer_exchange;
+          _ -> false
+        ]
+      ]
+    self assert: left equals: #()
+    self assert: (ProcessDictionary at: HTTP1Socket sentKey) isNil
+    Loopback close: pair
+
+  testCloseAfterResponse =>
+    config := BuccaneerConfig from: #{#handler => [:ex | ex]}
+    h := self handlerWith: config handler: [:ex | ex]
+    self deny: h closeAfterResponse
+    one := BuccaneerConfig from: #{
+      #handler => [:ex | ex],
+      #http1 => #{#maxRequests => 2}
+    }
+    h1 := (self handlerWith: one handler: [:ex | ex]) withRequestsProcessed: 1
+    self assert: h1 closeAfterResponse
+    h0 := self handlerWith: one handler: [:ex | ex]
+    self deny: h0 closeAfterResponse

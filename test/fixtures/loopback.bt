@@ -36,9 +36,22 @@ sealed Object subclass: Loopback
 
   /// A response head plus `n` body bytes from the raw client side.
   class sealed responseOf: pair :: Tuple body: n :: Integer -> String =>
+    self responseOn: (pair at: 2) body: n
+
+  /// A response head plus `n` body bytes from a raw client socket.
+  class sealed responseOn: client :: Object body: n :: Integer -> String =>
     head := ""
-    [
-      (head includesSubstring: "\r\n\r\n") not
-    ] whileTrue: [head := head concat: (Loopback clientRead: pair bytes: 1)]
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang gen_tcp)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
     n =:= 0 ifTrue: [^head asStringUnchecked]
-    (head concat: (Loopback clientRead: pair bytes: n)) asStringUnchecked
+    (head
+      concat: (((Erlang gen_tcp)
+        recv: client
+        with: n
+        with: 2000) unwrap)) asStringUnchecked

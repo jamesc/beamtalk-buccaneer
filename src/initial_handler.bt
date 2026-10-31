@@ -1,0 +1,82 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.InitialHandler: look at a new connection and decide what it
+/// speaks. ALPN first (TLS sockets); otherwise sniff three bytes for a
+/// TLS ClientHello, which gets a warning and a close. Anything else
+/// starts HTTP/1 with the sniffed bytes buffered. HTTP/2 (`h2` ALPN,
+/// the `PRI` preface) arrives in Phase 6: until then both close
+/// quietly, as Bandit with HTTP/2 disabled does.
+typed Object subclass: InitialHandler
+
+  /// `{#http1, buffered}` or `#close`.
+  class sealed run: sock :: Socket options: config :: BuccaneerConfig -> Symbol | Tuple =>
+    alpn := sock negotiatedProtocol
+    alpn isOk
+      ifTrue: [
+        protocol := alpn value
+        protocol =:= "h2" ifTrue: [^#close]
+        protocol =:= "http/1.1" ifTrue: [
+          ^self http1IfEnabled: config data: (Binary fromBytes: #())
+        ]
+      ]
+    self sniff: sock options: config
+
+  /// HTTP/1 if enabled, else close.
+  class sealed http1IfEnabled: config :: BuccaneerConfig data: buffer :: Binary -> Symbol | Tuple =>
+    enabled := config http1 at: #enabled ifAbsent: [true]
+    enabled =:= false ifTrue: [^#close]
+    {#http1, buffer}
+
+  /// Peek at the wire: TLS gets a warning and a close, `PRI` starts
+  /// the preface sniff, anything else (or a timeout, or an idle
+  /// connection) starts HTTP/1. A dead socket closes quietly.
+  class sealed sniff: sock :: Socket options: config :: BuccaneerConfig -> Symbol | Tuple =>
+    first := sock recv: 3 timeout: nil
+    first isError
+      ifTrue: [
+        first error =:= #timeout ifTrue: [
+          ^self http1IfEnabled: config data: (Binary fromBytes: #())
+        ]
+        ^#close
+      ]
+    bytes := first value
+    (self isTlsHello: bytes)
+      ifTrue: [
+        Logger warn: "Connection that looks like TLS received on a clear channel" metadata: #{
+          #domain => #(#buccaneer),
+          #plug => config displayHandler
+        }
+        ^#close
+      ]
+    bytes =:= (Binary fromBytes: #(80, 82, 73))
+      ifTrue: [
+        ^self
+          sniffPreface: sock
+          options: config
+          buffer: bytes
+      ]
+    self http1IfEnabled: config data: bytes
+
+  /// `<<22, 3, 1|3>>`: a TLS ClientHello (1.3 sends legacy 0x0303).
+  class sealed isTlsHello: bytes :: Binary -> Boolean =>
+    bytes =:= (Binary fromBytes: #(22, 3, 1)) or: [
+      bytes =:= (Binary fromBytes: #(22, 3, 3))
+    ]
+
+  /// The 21 bytes after `PRI`: the full HTTP/2 preface closes (Phase 6
+  /// takes this arm), anything else — or a timeout — starts HTTP/1
+  /// with everything buffered.
+  class sealed sniffPreface: sock :: Socket options: config :: BuccaneerConfig buffer: buffer :: Binary -> Symbol | Tuple =>
+    rest := sock recv: 21 timeout: nil
+    rest isError
+      ifTrue: [
+        rest error =:= #timeout ifTrue: [
+          ^self http1IfEnabled: config data: buffer
+        ]
+        ^#close
+      ]
+    rest value =:= (Binary fromIolist: #(" * HTTP/2.0\r\n\r\nSM\r\n\r\n")) ifTrue: [
+      ^#close
+    ]
+    self http1IfEnabled: config data: (buffer concat: rest value)

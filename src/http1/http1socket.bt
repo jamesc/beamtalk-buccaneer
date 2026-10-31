@@ -23,7 +23,7 @@ typed Value subclass: HTTP1Socket
   field: unreadContentLength :: Integer | Nil = nil
   field: bodyEncoding :: Binary | Nil = nil
   field: version :: HttpVersion = #http10
-  field: sendBuffer :: List = #()
+  field: sendBuffer :: List(Object) = #()
   field: requestConnectionHeader :: Binary | Nil = nil
   field: closeAfterResponse :: Boolean = false
   field: keepalive :: Boolean | Nil = nil
@@ -35,8 +35,8 @@ typed Value subclass: HTTP1Socket
   /// {:ok, ...}; the tag never varies (failures raise), so it is dropped.
   /// A new head starts a new response cycle, so the previous request's
   /// sent mark goes first: a malformed head must still get its error page.
-  readHeaders -> Tuple =>
-    Erlang erlang erase: HTTP1Socket sentKey
+  readHeaders -> Tuple(String, Tuple, HttpHeaders, HTTP1Socket) =>
+    ProcessDictionary erase: HTTP1Socket sentKey
     head := self doReadRequestLine
     method := head at: 1
     target := head at: 2
@@ -71,7 +71,7 @@ typed Value subclass: HTTP1Socket
   /// read_data). Options (#length default 8_000_000, #readLength default
   /// 1_000_000, #readTimeout default 15_000) cap one call; #more means
   /// call again. Data is bytes; it may be a String or a Binary.
-  readData: options :: Dictionary -> Tuple =>
+  readData: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
     self readState =:= #headersRead ifFalse: [^{#ok, "", self}]
     unread := self unreadContentLength
     unread isNil ifFalse: [^self readContentLengthData: unread options: options]
@@ -80,7 +80,7 @@ typed Value subclass: HTTP1Socket
     encoding isNil ifFalse: [HTTPError signal: "Unsupported transfer-encoding"]
     {#ok, "", self}
 
-  readContentLengthData: unread :: Integer options: options :: Dictionary -> Tuple =>
+  readContentLengthData: unread :: Integer options: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
     maxLength := self
       dataOpt: #length
       default: 8000000
@@ -106,7 +106,7 @@ typed Value subclass: HTTP1Socket
 
   /// {bytes, rest}: exactly toRead bytes, reading more when the buffer
   /// runs short (Bandit's read_exactly!).
-  readExactly: toRead :: Integer from: buffer :: Binary readSize: readSize :: Integer timeout: timeout :: Integer -> Tuple =>
+  readExactly: toRead :: Integer from: buffer :: Binary readSize: readSize :: Integer timeout: timeout :: Integer -> Tuple(Binary, Binary) =>
     still := toRead - buffer size
     still =:= 0 ifTrue: [^{buffer, ""}]
     still < 0
@@ -130,7 +130,7 @@ typed Value subclass: HTTP1Socket
       readSize: readSize
       timeout: timeout
 
-  readChunkedData: options :: Dictionary -> Tuple =>
+  readChunkedData: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
     maxLength := self
       dataOpt: #length
       default: 8000000
@@ -144,7 +144,7 @@ typed Value subclass: HTTP1Socket
 
   /// {tag, body, socket}, looping over chunks until the body ends or
   /// maxLength is reached (Bandit's do_read_chunked_data!).
-  readChunkedData: buffer :: Binary body: body :: Binary bodyLength: length :: Integer maxLength: maxLength :: Integer options: options :: Dictionary -> Tuple =>
+  readChunkedData: buffer :: Binary body: body :: Binary bodyLength: length :: Integer maxLength: maxLength :: Integer options: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
     maxToRead := maxLength - length
     chunk := self
       readChunk: buffer
@@ -170,7 +170,7 @@ typed Value subclass: HTTP1Socket
   /// {data, rest}: one chunk; oversized chunks answer a fake chunk header
   /// in front of the rest so the next call resumes mid-chunk (Bandit's
   /// do_read_chunk!).
-  readChunk: buffer :: Binary maxToRead: maxToRead :: Integer options: options :: Dictionary -> Tuple =>
+  readChunk: buffer :: Binary maxToRead: maxToRead :: Integer options: options :: Dictionary(Symbol, Object) -> Tuple(Binary, Binary) =>
     sized := self readChunkSize: buffer options: options
     size := sized at: 1
     rest := sized at: 2
@@ -214,7 +214,7 @@ typed Value subclass: HTTP1Socket
 
   /// {size, rest}: the chunk size, reading on until the CRLF appears.
   /// Past 16 buffered bytes the header is rejected (RFC9112§7.1).
-  readChunkSize: buffer :: Binary options: options :: Dictionary -> Tuple =>
+  readChunkSize: buffer :: Binary options: options :: Dictionary(Symbol, Object) -> Tuple(Integer, Binary) =>
     buffer size < 16 ifTrue: [^self chunkSizeIn: buffer options: options]
     found := (Erlang binary) match: (buffer part: 0 size: 16) with: "\r\n"
     found match: [
@@ -222,7 +222,7 @@ typed Value subclass: HTTP1Socket
       _ -> HTTPError signal: "Was not able to parse a chunk size less than 16 octets in length"
     ]
 
-  chunkSizeIn: buffer :: Binary options: options :: Dictionary -> Tuple =>
+  chunkSizeIn: buffer :: Binary options: options :: Dictionary(Symbol, Object) -> Tuple(Integer, Binary) =>
     found := (Erlang binary) match: buffer with: "\r\n"
     found match: [
       {pos, 2} -> self parseChunkSize: buffer lineLength: pos;
@@ -236,7 +236,7 @@ typed Value subclass: HTTP1Socket
         options: options
     ]
 
-  parseChunkSize: buffer :: Binary lineLength: length :: Integer -> Tuple =>
+  parseChunkSize: buffer :: Binary lineLength: length :: Integer -> Tuple(Integer, Binary) =>
     line := buffer part: 0 size: length
     rest := buffer part: (length + 2) size: (buffer size - length - 2)
     {(self parseChunkSizeLine: line), rest}
@@ -285,7 +285,7 @@ typed Value subclass: HTTP1Socket
 
   /// The zero-size chunk's trailers: read and ignored, warning when
   /// present (Bandit reuses its header reader on a default-options socket).
-  readTrailers: rest :: Binary -> Tuple =>
+  readTrailers: rest :: Binary -> Tuple(Binary, Binary) =>
     fake := (HTTP1Socket new withSocket: self socket) withBuffer: rest
     read := fake doReadHeaders: #() count: 0
     trailers := read at: 1
@@ -296,7 +296,7 @@ typed Value subclass: HTTP1Socket
     {"", trailerSocket buffer}
 
   /// A readData: option with Bandit's default. Non-integers raise.
-  dataOpt: key :: Symbol default: default :: Integer options: options :: Dictionary -> Integer =>
+  dataOpt: key :: Symbol default: default :: Integer options: options :: Dictionary(Symbol, Object) -> Integer =>
     raw := options at: key ifAbsent: [^default]
     (raw isKindOf: Integer) ifFalse: [
       Error signal: ("Invalid value for read option " ++ key asString)
@@ -311,7 +311,7 @@ typed Value subclass: HTTP1Socket
   /// into one send; the other dispositions send at once. #chunkEncoded
   /// adds transfer-encoding: chunked unless the caller set
   /// content-length, in which case data streams through unframed.
-  sendHeaders: status :: Integer headers: headers :: List(Tuple) disposition: disposition :: BodyDisposition -> HTTP1Socket =>
+  sendHeaders: status :: Integer headers: headers :: HttpHeaders disposition: disposition :: BodyDisposition -> HTTP1Socket =>
     self writeState =:= #unsent ifFalse: [
       Error signal: "Response headers already sent"
     ]
@@ -347,7 +347,7 @@ typed Value subclass: HTTP1Socket
   /// RFC9112§9.3. 1xx answers leave both alone. A close asked for by
   /// either side, or forced by closeAfterResponse, is announced in the
   /// response (RFC9112§9.6); HTTP/1.0 keeps alive only on request.
-  handleKeepalive: status :: Integer headers: headers :: List(Tuple) -> Tuple =>
+  handleKeepalive: status :: Integer headers: headers :: HttpHeaders -> Tuple(HttpHeaders, HTTP1Socket) =>
     (status between: 100 and: 199) ifTrue: [^{headers, self}]
     respConn := self loweredOrOpaque: (Headers getHeader: headers name: "connection")
     self closeAfterResponse ifTrue: [
@@ -368,13 +368,13 @@ typed Value subclass: HTTP1Socket
     {headers addFirst: {"connection", "close"}, self withKeepalive: false}
 
   /// headers with any connection header replaced by connection: close.
-  closeHeaders: headers :: List(Tuple) -> List(Tuple) =>
+  closeHeaders: headers :: HttpHeaders -> HttpHeaders =>
     (headers reject: [:h |
       (h at: 1) =:= "connection"
     ]) addFirst: {"connection", "close"}
 
   /// iodata for the header block, ending in the blank line.
-  encodeHeaders: headers :: List(Tuple) -> List =>
+  encodeHeaders: headers :: HttpHeaders -> List(Object) =>
     #((headers collect: [:h | #(h at: 1, ": ", h at: 2, "\r\n")]), "\r\n")
 
   /// Response data (Bandit's send_data); data is iodata. #writing sends
@@ -403,7 +403,7 @@ typed Value subclass: HTTP1Socket
     sock := self socket
     sock isNil ifTrue: [Error signal: "Send with no socket"]
     result := sock send: payload
-    Erlang erlang put: HTTP1Socket sentKey with: true
+    ProcessDictionary at: HTTP1Socket sentKey put: true
     result isError
       ifTrue: [
         TransportError signal: ("Unrecoverable error: " ++ result error printString) reason: result error
@@ -444,7 +444,7 @@ typed Value subclass: HTTP1Socket
   sendOnError: error :: Exception -> HTTP1Socket =>
     (error isKindOf: TransportError) ifTrue: [^self]
     self writeState =:= #unsent ifFalse: [^self withWriteState: #sent]
-    (Erlang erlang get: HTTP1Socket sentKey) =:= true ifTrue: [
+    (ProcessDictionary at: HTTP1Socket sentKey) =:= true ifTrue: [
       ^self withWriteState: #sent
     ]
     [
@@ -457,7 +457,7 @@ typed Value subclass: HTTP1Socket
         disposition: #noBody
     ] on: Error do: [:e | self]
 
-  doReadRequestLine -> Tuple =>
+  doReadRequestLine -> Tuple(String, Tuple, HTTP1Socket) =>
     packetSize := self http1Opt: #maxRequestLineLength default: 10000
     decoded := Erlang erlang
       decode_packet: #http_bin
@@ -490,7 +490,7 @@ typed Value subclass: HTTP1Socket
   /// The token goes through stringOrOpaque: first (BT-4172): Symbols pass
   /// through, valid UTF-8 answers a String, and anything else still falls
   /// into the rejecting arm, as before the BT-4170 flip.
-  requestHead: m :: Object target: t :: Object version: ver :: Object rest: rest :: Binary -> Tuple =>
+  requestHead: m :: Object target: t :: Object version: ver :: Object rest: rest :: Binary -> Tuple(String, Tuple, HTTP1Socket) =>
     method := (Headers stringOrOpaque: m) match: [
       s :: Symbol -> s asString;
       b :: String -> b;
@@ -540,7 +540,7 @@ typed Value subclass: HTTP1Socket
       _ -> HTTPError signal: "Request line HTTP error: bad token"
     ]
 
-  doReadHeaders: headers :: List(Tuple) count: count :: Integer -> Tuple =>
+  doReadHeaders: headers :: HttpHeaders count: count :: Integer -> Tuple(HttpHeaders, HTTP1Socket) =>
     packetSize := self http1Opt: #maxHeaderLength default: 10000
     maxCount := self http1Opt: #maxHeaderCount default: 50
     decoded := Erlang erlang
@@ -572,7 +572,7 @@ typed Value subclass: HTTP1Socket
   /// The name and value convert once, here (BT-4172): valid UTF-8
   /// reaches every Headers guard as a String, non-UTF-8 values stay
   /// opaque, and a garbage name still falls into the rejecting arm.
-  headerRead: field :: Object value: value :: Object rest: rest :: Binary headers: headers :: List(Tuple) count: count :: Integer maxCount: maxCount :: Integer -> Tuple =>
+  headerRead: field :: Object value: value :: Object rest: rest :: Binary headers: headers :: HttpHeaders count: count :: Integer maxCount: maxCount :: Integer -> Tuple(HttpHeaders, HTTP1Socket) =>
     text := Headers stringOrOpaque: value
     (Headers fieldValueValid: text) ifFalse: [
       HTTPError signal: "Field value contains invalid characters (RFC9110§5.5)"
@@ -586,7 +586,7 @@ typed Value subclass: HTTP1Socket
     next > maxCount ifTrue: [HTTPError signal: "Too many headers" reason: 431]
     (self withBuffer: rest) doReadHeaders: (headers addFirst: {name asciiLowercase, text}) count: next
 
-  contentLengthOf: headers :: List(Tuple) -> Integer | Nil =>
+  contentLengthOf: headers :: HttpHeaders -> Integer | Nil =>
     result := Headers getContentLength: headers
     result isError
       ifTrue: [
@@ -595,7 +595,7 @@ typed Value subclass: HTTP1Socket
     length := result value
     length
 
-  transferEncodingOf: headers :: List(Tuple) -> Binary | Nil =>
+  transferEncodingOf: headers :: HttpHeaders -> Binary | Nil =>
     result := Headers getTransferEncoding: headers
     result isError
       ifTrue: [

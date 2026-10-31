@@ -1,0 +1,83 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP1.Handler's request loop as a Value: one per connection,
+/// held in the connection handler's userState. Serves requests until
+/// the connection closes, clearing the process dictionary and
+/// collecting garbage between keepalive requests.
+sealed typed Value subclass: HTTP1Handler
+  field: config :: BuccaneerConfig
+  field: handler :: ExchangeHandlerLike
+  field: buffer :: Binary = ""
+  field: requestsProcessed :: Integer = 0
+  field: baseline :: List(Object) = #()
+  field: connData :: Tuple(Boolean, Tuple | Symbol)
+
+  /// Serve the bytes in `data` plus any buffered pipelined bytes.
+  serve: data :: Binary socket: sock :: Socket -> HandlerResult =>
+    (self withBuffer: (self buffer concat: data)) serveBuffered: sock
+
+  /// Serve one request from the buffer, then keep alive or close.
+  serveBuffered: sock :: Socket -> HandlerResult =>
+    transport := ((HTTP1Socket new withSocket: sock) withBuffer: self buffer) withOpts: #{
+      #http1 => self config http1
+    }
+    result := Pipeline
+      runRequest: (transport withCloseAfterResponse: self closeAfterResponse)
+      handler: self handler
+      connectionSpan: sock telemetrySpan
+      connData: self connData
+      options: self config
+    result isError ifTrue: [^HandlerResult close: self]
+    self maybeKeepalive: result value socket: sock
+
+  /// Whether this request is the last (Bandit's request_limit_reached?).
+  closeAfterResponse -> Boolean =>
+    limit := self config http1 at: #maxRequests ifAbsent: [0]
+    (limit isKindOf: Integer) ifFalse: [^false]
+    limit =:= 0 ifTrue: [^false]
+    self requestsProcessed + 1 >= limit
+
+  /// After an answered request: close, or clear, collect and continue
+  /// (recursing on pipelined bytes, as Bandit's tail call does).
+  maybeKeepalive: transport :: HTTPTransport socket: sock :: Socket -> HandlerResult =>
+    transport match: [
+      s :: HTTP1Socket -> self maybeKeepaliveSocket: s socket: sock;
+      _ -> HandlerResult close: self
+    ]
+
+  maybeKeepaliveSocket: transport :: HTTP1Socket socket: sock :: Socket -> HandlerResult =>
+    (transport closeAfterResponse or: [
+      transport keepalive not
+    ]) ifTrue: [^HandlerResult close: self]
+    self clearProcessDictionary
+    advanced := (self withRequestsProcessed: self requestsProcessed + 1) withBuffer: transport buffer
+    gcEvery := self config http1 at: #gcEveryNKeepaliveRequests ifAbsent: [5]
+    (gcEvery isKindOf: Integer)
+      ifTrue: [
+        (advanced requestsProcessed % gcEvery) =:= 0 ifTrue: [
+          Erlang erlang garbage_collect
+        ]
+      ]
+    (SocketHelpers iodataEmpty: advanced buffer) ifTrue: [
+      ^HandlerResult continue: advanced
+    ]
+    advanced serveBuffered: sock
+
+  /// Erase every key that was not there when the connection started,
+  /// except Catalina's telemetry marker, as Bandit's clear_process_dict.
+  clearProcessDictionary -> HTTP1Handler =>
+    keys := ProcessDictionary keys
+    keys
+      do: [:k |
+        ((self baseline includes: k) or: [
+          self isEngineKey: k
+        ]) ifFalse: [ProcessDictionary erase: k]
+      ]
+    self
+
+  isEngineKey: k :: Object -> Boolean =>
+    k match: [
+      {#catalina_exception_emitted, _c} -> true;
+      _ -> false
+    ]

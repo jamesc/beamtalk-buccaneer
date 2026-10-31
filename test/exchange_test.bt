@@ -70,6 +70,11 @@ TestCase subclass: ExchangeTest
     ex finish
     Loopback close: pair
 
+  testPeerNilWithoutSocket =>
+    ex := Exchange open: ExchangeState new
+    self assert: (ex peer isNil)
+    ex finish
+
   // ===== ownership and lifetime =====
   testOwnerCheck =>
     ex := Exchange open: ExchangeState new
@@ -166,6 +171,23 @@ TestCase subclass: ExchangeTest
     self assert: ex readBody equals: (Result error: #closed)
     Erlang erlang erase: ex key
     (Erlang gen_tcp) close: (pair at: 3)
+
+  testReadBodyMalformedChunkRaises =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "transfer-encoding: chunked"
+      ++ self nl
+      ++ self nl
+      ++ "ZZZ"
+      ++ self nl
+    ex := self open: pair request: head
+    raised := [ex readBody] on: HTTPError do: [:e | e]
+    self assert: raised message equals: "Unable to parse chunk size"
+    Erlang erlang erase: ex key
+    Loopback close: pair
 
   testReadAll =>
     pair := Loopback pairWithReadTimeout: 5000

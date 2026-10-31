@@ -40,7 +40,7 @@ TestCase subclass: HTTP1SocketTest
       on: HTTPError
       do: [:e |
         caught := true
-        self assert: (HTTPError statusForClassName: e errorClass asString) equals: expected
+        self assert: (HTTPError statusFor: e) equals: expected
       ]
     self assert: caught
 
@@ -338,9 +338,7 @@ TestCase subclass: HTTP1SocketTest
       whileTrue: [
         [
           sock disconnectedOrTimeout: (pair at: 1)
-        ] on: HTTPError408 do: [:e |
-          e message =:= "Body read timeout" ifTrue: [done := true]
-        ]
+        ] on: HTTPError do: [:e | e reason =:= 408 ifTrue: [done := true]]
       ]
     self assert: done
     self closeLoopback: pair
@@ -929,9 +927,16 @@ TestCase subclass: HTTP1SocketTest
     (Erlang gen_tcp) close: (pair at: 3)
 
   // ----- sendOnError -----
+  testSendOnErrorNilSocket =>
+    err := [HTTPError signal: "x"] on: HTTPError do: [:e | e]
+    sock := HTTP1Socket new sendOnError: err
+    self assert: sock writeState equals: #unsent
+
   testSendOnErrorHTTPErrorStatus =>
     pair := self loopbackPair
-    err := [HTTPError431 signal: "Too many headers"] on: Error do: [:e | e]
+    err := [
+      HTTPError signal: "Too many headers" reason: 431
+    ] on: Error do: [:e | e]
     sock := (self writer: pair version: #http11) sendOnError: err
     self assert: sock writeState equals: #sent
     self assert: sock keepalive equals: false

@@ -38,7 +38,7 @@ typed Object subclass: BuccaneerLogger
           stacktrace: stacktrace
           metadata: meta);
       _f :: False -> nil;
-      _ -> Error signal: ("Invalid value for option " ++ key asString)
+      _ -> Error signal: ("Invalid value for #" ++ key asString)
     ]
     nil
 

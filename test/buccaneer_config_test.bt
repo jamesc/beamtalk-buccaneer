@@ -41,6 +41,54 @@ TestCase subclass: BuccaneerConfigTest
     valueConfig := BuccaneerConfig from: #{#handler => CallHandler new}
     self assert: (valueConfig handler isKindOf: CallHandler)
 
+  testRejectsActorHandler =>
+    actor := OtherProcess spawn
+    self assertRaises: [
+      BuccaneerConfig from: #{#handler => actor}
+    ] message: "Invalid value for #handler: must not be an Actor"
+    actor stop
+
+  testRejectsBadLoggingOptions =>
+    self
+      assertRaises: [
+        BuccaneerConfig from: #{
+          #handler => self handlerBlock,
+          #http => #{#logProtocolErrors => #always}
+        }
+      ]
+      message: "Invalid value for #logProtocolErrors"
+    self
+      assertRaises: [
+        BuccaneerConfig from: #{
+          #handler => self handlerBlock,
+          #http => #{#logClientClosures => 42}
+        }
+      ]
+      message: "Invalid value for #logClientClosures"
+    self
+      assertRaises: [
+        BuccaneerConfig
+          from: #{
+            #handler => self handlerBlock,
+            #http => #{#logExceptionsWithStatusCodes => #always}
+          }
+      ]
+      message: "Invalid value for #logExceptionsWithStatusCodes"
+
+  testAcceptsLoggingOptions =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #http => #{
+          #logProtocolErrors => false,
+          #logClientClosures => #verbose,
+          #logExceptionsWithStatusCodes => #(500)
+        }
+      }
+    self assert: (config http at: #logProtocolErrors) equals: false
+    self assert: (config http at: #logClientClosures) equals: #verbose
+    self assert: (config http at: #logExceptionsWithStatusCodes) equals: #(500)
+
   testDefaults =>
     config := BuccaneerConfig from: #{#handler => self handlerBlock}
     self assert: config scheme equals: #http

@@ -6,9 +6,11 @@
 /// are always {ip, port}; Bandit's :local/:unspec mapping has no case.
 typed Object subclass: SocketHelpers
 
-  /// {secure?, peerAddress} for the pipeline (Bandit's conn_data).
-  /// Raises TransportError when the peer address is unavailable
-  /// (`peername` answers `ok: nil` then; it never errors).
+  /// {secure?, peerAddress} for the pipeline (Bandit's conn_data;
+  /// the port stays behind, as in Bandit). Raises TransportError when
+  /// the peer address is unavailable (`peername` answers `ok: nil`
+  /// then; it never errors). The pipeline only reads secure? today;
+  /// the Phase 2 adapter takes the peer as the connection's remote IP.
   class sealed connData: sock :: Socket -> Tuple =>
     peer := sock peername
     (peer isError or: [(peer value) isNil])

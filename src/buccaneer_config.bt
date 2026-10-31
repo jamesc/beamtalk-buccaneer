@@ -38,6 +38,7 @@ typed Value subclass: BuccaneerConfig
       section: options
       name: #http
       keys: self httpKeys
+    self checkHttpLoggingOptions: http
     http1 := self
       section: options
       name: #http1
@@ -94,10 +95,42 @@ typed Value subclass: BuccaneerConfig
   class checkHandler: opts :: ConfigOptions -> Object =>
     handler := opts at: #handler ifAbsent: [nil]
     handler isNil ifTrue: [Error signal: "A value is required for #handler"]
+    (handler isKindOf: Actor) ifTrue: [
+      Error signal: "Invalid value for #handler: must not be an Actor"
+    ]
     ((handler isKindOf: Block) or: [
       handler respondsTo: #call:
     ]) ifFalse: [Error signal: "Invalid value for #handler"]
     handler
+
+  /// Fail fast on logging verbosity typos: these are read on error
+  /// paths, where a raise would mask the error being reported.
+  class checkHttpLoggingOptions: http :: ConfigOptions -> Nil =>
+    self checkVerbosity: (http at: #logProtocolErrors ifAbsent: [
+      nil
+    ]) name: "#logProtocolErrors"
+    self checkVerbosity: (http at: #logClientClosures ifAbsent: [
+      nil
+    ]) name: "#logClientClosures"
+    self checkStatusCodes: (http at: #logExceptionsWithStatusCodes ifAbsent: [
+      nil
+    ])
+
+  class checkVerbosity: raw :: Object name: name :: String -> Nil =>
+    raw isNil ifTrue: [^nil]
+    raw match: [
+      #short -> nil;
+      #verbose -> nil;
+      _f :: False -> nil;
+      _ -> Error signal: "Invalid value for " ++ name
+    ]
+
+  class checkStatusCodes: raw :: Object -> Nil =>
+    raw isNil ifTrue: [^nil]
+    (raw isKindOf: Integer) ifTrue: [^nil]
+    (raw isKindOf: List) ifTrue: [^nil]
+    (raw respondsTo: #includes:) ifTrue: [^nil]
+    Error signal: "Invalid value for #logExceptionsWithStatusCodes"
 
   class checkScheme: opts :: ConfigOptions -> Scheme =>
     raw := opts at: #scheme ifAbsent: [#http]

@@ -200,7 +200,8 @@ is still sending.
 - **Anything else the handler raises** is caught by the pipeline: a 500 if
   nothing was sent, the request span's `exception` event, a log line if the
   status is in `logExceptionsWithStatusCodes` (default 500-599). It is
-  re-signalled, not re-raised unchanged, until BT-4057.
+  re-raised unchanged with `pass` (BT-4057), preserving kind, reason
+  and stacktrace, so the connection crashes as in Bandit.
 
 ### 5. Upgrade and the engine-level `WebSock` protocol
 

@@ -4,21 +4,16 @@
 /// Bandit.HTTPError: an error suitable for return as an HTTP status.
 ///
 /// Raised for malformed requests, which never reach the handler; the
-/// pipeline answers the mapped status with Connection: close. Beamtalk
-/// exceptions hold no instance state and caught instances do not dispatch
-/// custom methods, so each non-400 status is a subclass (a catch filter)
-/// and the pipeline maps via statusForClassName:.
+/// pipeline answers the mapped status with Connection: close. The
+/// status travels as the exception's reason
+/// (`HTTPError signal: msg reason: 414`); a missing reason means 400,
+/// as Bandit's plug_status default does.
 typed Error subclass: HTTPError
 
-  /// The response status for a caught error (Plug.Exception.status/1).
-  /// Unknown subclasses default to 400, as Bandit's defexception does.
-  /// If BT-4159 lands, these collapse to HTTPError signal:reason: with
-  /// Integer reasons and the subclasses go away.
-  class statusForClassName: name :: String -> Integer =>
-    name match: [
-      "HTTPError" -> 400;
-      "HTTPError408" -> 408;
-      "HTTPError414" -> 414;
-      "HTTPError431" -> 431;
+  /// The response status for a caught error: its Integer reason, or
+  /// 400. Both the socket and the tests map through here.
+  class statusFor: error :: Exception -> Integer =>
+    error reason match: [
+      n :: Integer -> n;
       _ -> 400
     ]

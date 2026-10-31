@@ -572,6 +572,10 @@ Recorded properly when each phase is done; the expected ones:
   threaded Value; it is cleared with the rest of the dictionary between
   keepalive requests. `sendOnError:` also treats any write state past
   `#unsent` as sent, which is what the adapter's message tells Bandit.
+  **As built (slice 6):** `send:` marks `sentKey` on every send attempt,
+  not just failures: the pipeline answers errors on the request's
+  original transport (still `#unsent`), so the mark is what tells
+  `sendOnError:` a response already went out.
 - **No `receive`.** Every selective receive in Bandit (`http1/socket.ex`
   `send_on_error`, `http2/stream.ex` reads and window waits,
   `ensure_completed`) is replaced: by state flags in HTTP/1, and in HTTP/2
@@ -579,8 +583,8 @@ Recorded properly when each phase is done; the expected ones:
 - **Stream processes are monitored, not linked** (until BT-4052). A `kill`
   of the connection leaves its streams running until their next call to it.
 - **Re-raise.** Where Bandit re-raises with `:erlang.raise/3`, Buccaneer
-  re-signals (BT-4057), so an `exit(normal)` inside a handler ends the
-  request as an error. Switch when `Exception>>pass` lands.
+  re-raises unchanged with `Exception>>pass` (BT-4057 landed in slice 6),
+  preserving kind, reason and stacktrace.
 - **Options** are camelCased and nested by section: `#http`, `#http1`,
   `#http2`, `#websocket`, and Catalina's under `#catalina` (Bandit's
   `thousand_island_options`). Telemetry events are `[buccaneer, ...]`.
@@ -593,6 +597,12 @@ Recorded properly when each phase is done; the expected ones:
 - **Errors**: `HTTPError` carries Bandit's `plug_status`; there is no
   `Plug.Exception.status/1` protocol, so any other raised error is a 500.
   Transport errors are bare reasons, as in Catalina.
+- **Request host and path are Strings.** Where Bandit passes opaque
+  (non-UTF8) bytes through, Buccaneer answers 400: `ExchangeState`
+  types host and path as `String`. Absolute-form authority hosts and
+  request paths that are not valid UTF-8 are rejected, as are
+  non-numeric authority ports (CONNECT ports arrive as strings and are
+  parsed; absolute-form ports arrive parsed).
 - **Status phrases**: `Status reasonPhrase:` ports Plug's table; Plug's
   custom `:statuses` config is not ported, so an unknown code raises.
 - **Write misuse**: `sendHeaders:` twice or `sendData:` before the head

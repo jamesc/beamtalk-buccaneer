@@ -16,7 +16,9 @@
 ///
 /// `#plug` is the server's display handler; `#conn` is the ExchangeState
 /// (Bandit's `Plug.Conn`), initial on `start`, final on `stop`. Times
-/// are native monotonic, bytes are octets.
+/// are native monotonic, bytes are octets. A separate class rather than
+/// a reuse of `CatalinaTelemetry`: that one hardcodes `[catalina, ...]`
+/// events and handler-keyed metadata, and it is sealed.
 sealed typed Value subclass: BuccaneerTelemetry
   field: spanName :: Symbol = #request
   field: telemetrySpanContext :: Reference | Nil = nil
@@ -68,7 +70,8 @@ sealed typed Value subclass: BuccaneerTelemetry
       metadata: (self.startMetadata merge: metadata)
 
   /// Emit `exception` with `#kind`, `#exception` and `#stacktrace`. As
-  /// in Bandit, an `#error` kind is reported as `#exit`.
+  /// in Bandit (`Bandit.Telemetry.span_exception`, kept for pre-1.5.7
+  /// compatibility), an `#error` kind is reported as `#exit`.
   exceptionKind: kind :: Symbol reason: reason :: Object stacktrace: stacktrace :: Object -> BuccaneerTelemetry =>
     mapped := kind =:= #error ifTrue: [#exit] ifFalse: [kind]
     metadata := self.startMetadata merge: #{

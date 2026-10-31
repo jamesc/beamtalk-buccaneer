@@ -3,23 +3,29 @@
 
 TestCase subclass: HTTPErrorTest
 
-  testStatusForClassName =>
-    self assert: (HTTPError statusForClassName: "HTTPError") equals: 400
-    self assert: (HTTPError statusForClassName: "HTTPError408") equals: 408
-    self assert: (HTTPError statusForClassName: "HTTPError414") equals: 414
-    self assert: (HTTPError statusForClassName: "HTTPError431") equals: 431
-    self assert: (HTTPError statusForClassName: "NoSuchError") equals: 400
+  testReasonRoundTrip =>
+    err := [
+      HTTPError signal: "Request URI is too long" reason: 414
+    ] on: HTTPError do: [:e | e]
+    self assert: err message equals: "Request URI is too long"
+    self assert: err reason equals: 414
 
-  testSubclassCaughtByBase =>
-    caught := false
-    [HTTPError414 signal: "Request URI is too long"]
-      on: HTTPError
-      do: [:e |
-        caught := true
-        self assert: e errorClass asString equals: "HTTPError414"
-        self assert: (HTTPError statusForClassName: e errorClass asString) equals: 414
-      ]
-    self assert: caught
+  testReasonDefaultsNil =>
+    err := [HTTPError signal: "bad"] on: HTTPError do: [:e | e]
+    self assert: err reason isNil
+
+  testStatusFor =>
+    err := [HTTPError signal: "x" reason: 414] on: HTTPError do: [:e | e]
+    self assert: (HTTPError statusFor: err) equals: 414
+    plain := [HTTPError signal: "x"] on: HTTPError do: [:e | e]
+    self assert: (HTTPError statusFor: plain) equals: 400
+
+  testPassPreservesReason =>
+    err := [
+      [HTTPError signal: "x" reason: 414] on: HTTPError do: [:e | e pass]
+    ] on: HTTPError do: [:e | e]
+    self assert: err reason equals: 414
+    self assert: err message equals: "x"
 
   testSignalCarriesMessageAndClass =>
     caught := false
@@ -31,7 +37,6 @@ TestCase subclass: HTTPErrorTest
         // errorClass is declared String but answers a Symbol; asString is the
         // identity on both, so this holds either way the stdlib settles.
         self assert: e errorClass asString equals: "HTTPError"
-        self assert: (HTTPError statusForClassName: e errorClass asString) equals: 400
       ]
     self assert: caught
 

@@ -33,7 +33,10 @@ typed Value subclass: HTTP1Socket
 
   /// {method, target, headers, socket}: the request head. Bandit tags
   /// {:ok, ...}; the tag never varies (failures raise), so it is dropped.
+  /// A new head starts a new response cycle, so the previous request's
+  /// sent mark goes first: a malformed head must still get its error page.
   readHeaders -> Tuple =>
+    Erlang erlang erase: HTTP1Socket sentKey
     head := self doReadRequestLine
     method := head at: 1
     target := head at: 2
@@ -421,37 +424,38 @@ typed Value subclass: HTTP1Socket
       ]
       read at: 3
     ]
-      on: HTTPError408
+      on: HTTPError
       do: [:e |
+        e reason =:= 408 ifFalse: [e pass]
         sock := self socket
-        sock isNil ifTrue: [HTTPError408 signal: e message]
+        sock isNil ifTrue: [HTTPError signal: e message reason: 408]
         self disconnectedOrTimeout: sock
       ]
 
   /// Answer the error's status with connection: close, unless the
   /// response is already sent or the error is a TransportError (Bandit's
   /// send_on_error). HTTPErrors map to their status, anything else is a
-  /// 500 (Plug.Exception.status/1). A failure while sending is ignored.
-  /// A response already under way also counts as sent: Bandit learns
-  /// that from the {:plug_conn, :sent} its adapter posts after every
-  /// response, and the write state is the same fact without the mailbox.
+  /// 500 (Plug.Exception.status/1). Total: anything the send itself
+  /// raises (a dead socket, an unknown status) is swallowed, since this
+  /// runs on error paths that must not raise. A response already under
+  /// way also counts as sent: Bandit learns that from the
+  /// {:plug_conn, :sent} its adapter posts after every response, and
+  /// the write state is the same fact without the mailbox.
   sendOnError: error :: Exception -> HTTP1Socket =>
     (error isKindOf: TransportError) ifTrue: [^self]
     self writeState =:= #unsent ifFalse: [^self withWriteState: #sent]
     (Erlang erlang get: HTTP1Socket sentKey) =:= true ifTrue: [
       ^self withWriteState: #sent
     ]
-    status := (error isKindOf: HTTPError) ifTrue: [
-      HTTPError statusForClassName: error errorClass asString
-    ] ifFalse: [500]
     [
-      [
-        self
-          sendHeaders: status
-          headers: #({"connection", "close"})
-          disposition: #noBody
-      ] on: TransportError do: [:e | self]
-    ] on: HTTPError do: [:e | self]
+      status := (error isKindOf: HTTPError) ifTrue: [
+        HTTPError statusFor: error
+      ] ifFalse: [500]
+      self
+        sendHeaders: status
+        headers: #({"connection", "close"})
+        disposition: #noBody
+    ] on: Error do: [:e | self]
 
   doReadRequestLine -> Tuple =>
     packetSize := self http1Opt: #maxRequestLineLength default: 10000
@@ -463,7 +467,7 @@ typed Value subclass: HTTP1Socket
       ifTrue: [
         reason := decoded error reason
         reason =:= #invalid ifTrue: [
-          HTTPError414 signal: "Request URI is too long"
+          HTTPError signal: "Request URI is too long" reason: 414
         ]
         HTTPError signal: ("Request line unknown error: " ++ reason printString)
       ]
@@ -546,7 +550,9 @@ typed Value subclass: HTTP1Socket
     decoded isError
       ifTrue: [
         reason := decoded error reason
-        reason =:= #invalid ifTrue: [HTTPError431 signal: "Header too long"]
+        reason =:= #invalid ifTrue: [
+          HTTPError signal: "Header too long" reason: 431
+        ]
         HTTPError signal: ("Header read unknown error: " ++ reason printString)
       ]
     decoded match: [
@@ -577,7 +583,7 @@ typed Value subclass: HTTP1Socket
       _ -> HTTPError signal: "Header read HTTP error: bad name"
     ]
     next := count + 1
-    next > maxCount ifTrue: [HTTPError431 signal: "Too many headers"]
+    next > maxCount ifTrue: [HTTPError signal: "Too many headers" reason: 431]
     (self withBuffer: rest) doReadHeaders: (headers addFirst: {name asciiLowercase, text}) count: next
 
   contentLengthOf: headers :: List(Tuple) -> Integer | Nil =>
@@ -642,11 +648,11 @@ typed Value subclass: HTTP1Socket
     TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason
 
   /// After a timeout or empty read, check whether the peer is still
-  /// connected: TransportError for a disconnect, HTTPError408 for a
-  /// genuine timeout.
+  /// connected: TransportError for a disconnect, HTTPError with reason
+  /// 408 for a genuine timeout.
   disconnectedOrTimeout: sock :: Socket -> Binary =>
     probe := sock recv: 0 timeout: 0
-    probe isOk ifTrue: [HTTPError408 signal: "Body read timeout"]
+    probe isOk ifTrue: [HTTPError signal: "Body read timeout" reason: 408]
     reason := probe error
-    reason =:= #timeout ifTrue: [HTTPError408 signal: "Read timeout"]
+    reason =:= #timeout ifTrue: [HTTPError signal: "Read timeout" reason: 408]
     TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason

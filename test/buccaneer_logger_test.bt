@@ -47,7 +47,7 @@ TestCase subclass: BuccaneerLoggerTest
     raised := [
       self log: self httpError options: #{#logProtocolErrors => 42}
     ] on: Error do: [:e | e]
-    self assert: (raised message startsWith: "Invalid value for option")
+    self assert: (raised message startsWith: "Invalid value for #log")
 
   testBanner =>
     self assert: (BuccaneerLogger banner: self httpError) equals: "** (HTTPError) bad thing"

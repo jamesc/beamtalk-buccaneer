@@ -65,7 +65,12 @@ sealed typed Value subclass: Exchange
   httpProtocol -> HttpVersion => self load transport version
 
   /// {address, port} of the client, or nil when Catalina was given none.
-  peer -> Tuple | Nil => self socket peername unwrap
+  peer -> Tuple | Nil =>
+    sock := self load transport socket
+    sock isNil ifTrue: [^nil]
+    peer := sock peername
+    peer isError ifTrue: [^nil]
+    peer value
 
   /// {address, port} of this end.
   sockData -> Tuple => self socket sockname unwrap
@@ -98,7 +103,9 @@ sealed typed Value subclass: Exchange
     read := [
       [
         st transport readData: options
-      ] on: HTTPError408 do: [:e | ^Result error: #timeout]
+      ] on: HTTPError do: [:e |
+        e reason =:= 408 ifTrue: [^Result error: #timeout] ifFalse: [e pass]
+      ]
     ] on: TransportError do: [:e | ^Result error: #closed]
     {tag, data, transport} := read
     started := st reqBodyStartTime ifNil: [BuccaneerTelemetry monotonicTime]
@@ -190,11 +197,20 @@ sealed typed Value subclass: Exchange
   transport -> HTTP1Socket => self load transport
 
   /// Bandit's commit_response!: raises NotSentError when the handler
-  /// sent nothing (the pipeline answers it with a 500).
+  /// sent nothing (the pipeline answers it with a 500). Every response
+  /// state is named, so a state Phase 3 adds without extending this
+  /// fails loudly instead of hanging the response.
   commit -> Exchange =>
-    self state =:= #unset ifTrue: [
-      NotSentError signal: "a response was neither set nor sent from the connection"
+    self state match: [
+      #unset -> NotSentError signal: "a response was neither set nor sent from the connection";
+      #sent -> self;
+      _ -> Error signal: "commit: unhandled response state"
     ]
+
+  /// Forget the state without draining (the pipeline's error paths;
+  /// idempotent, unlike finish).
+  forget -> Exchange =>
+    Erlang erlang erase: self key
     self
 
   /// Forget the state, then drain an unread body (ensureCompleted) and

@@ -15,7 +15,9 @@ Protocol define: HTTPTransport
   /// for the HTTP/1.0 missing-host rule.
   version -> HttpVersion
 
-  /// {method, target, headers, transport}: the request head.
+  /// {method, target, headers, transport}: the request head. Header
+  /// names are lowercase: transports normalize at the boundary (HPACK
+  /// names already are), and `Headers getHostHeader:` relies on it.
   readHeaders -> Tuple
 
   /// {#ok | #more, data, transport}: the next body part.

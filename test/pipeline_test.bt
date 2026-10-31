@@ -39,7 +39,7 @@ TestCase subclass: PipelineTest
 
   /// Run one request on `pair` (whose head the caller already sent).
   /// Answers the Result; handler errors are re-signalled.
-  runOn: pair handler: handler -> Object =>
+  runOn: pair handler: handler -> Result(HTTPTransport, Object) =>
     transport := HTTP1Socket new withSocket: (pair at: 1)
     config := BuccaneerConfig from: #{#handler => handler}
     Pipeline
@@ -55,6 +55,21 @@ TestCase subclass: PipelineTest
     pair := Loopback pairWithReadTimeout: 5000
     (Erlang gen_tcp) send: (pair at: 2) with: head
     {(self runOn: pair handler: handler), pair}
+
+  /// Assert nothing more arrives on the pair.
+  assertQuiet: pair =>
+    probe := (Erlang gen_tcp)
+      recv: (pair at: 2)
+      with: 1
+      with: 200
+    self assert: probe isError
+
+  /// Assert this process holds no exchange state.
+  assertNoExchangeState =>
+    left := (Erlang erlang get_keys) select: [:k |
+      (k isKindOf: Tuple) and: [(k at: 1) =:= #buccaneer_exchange]
+    ]
+    self assert: left equals: #()
 
   testOkGet =>
     handler := [:ex |
@@ -82,10 +97,7 @@ TestCase subclass: PipelineTest
           body: ""
       ]
     self assert: result isOk
-    left := (Erlang erlang get_keys) select: [:k |
-      (k isKindOf: Tuple) and: [(k at: 1) =:= #buccaneer_exchange]
-    ]
-    self assert: left equals: #()
+    self assertNoExchangeState
     Loopback close: pair
 
   testEchoRequest =>
@@ -101,7 +113,7 @@ TestCase subclass: PipelineTest
           ++ "|"
           ++ ((ex query) ifNil: ["nil"])
     ]
-    head := "GET http://example.com:8080/a/b?x=1?y=2 HTTP/1.1"
+    head := "GET http://example.com:8080/a/b?x=1?y=2#frag HTTP/1.1"
       ++ self nl
       ++ "host: ignored.com"
       ++ self nl
@@ -185,12 +197,12 @@ TestCase subclass: PipelineTest
       ex
         sendResp: 200
         headers: #()
-        body: ex host ++ "|" ++ ex port printString
+        body: ex host ++ "|" ++ ex port printString ++ "|" ++ ex path
     ]
     head := "CONNECT example.com:443 HTTP/1.1" ++ self nl ++ "host: x" ++ self nl ++ self nl
     {result, pair} := self serveHead: head handler: handler
     self assert: result isOk
-    self assert: ((Loopback responseOf: pair body: 15) endsWith: "example.com|443")
+    self assert: ((Loopback responseOf: pair body: 16) endsWith: "example.com|443|")
     Loopback close: pair
 
   testUnsentHandler500 =>
@@ -232,22 +244,19 @@ TestCase subclass: PipelineTest
     resp := Loopback responseOf: pair body: 2
     self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
     self assert: (resp endsWith: "\r\n\r\nhi")
-    probe := (Erlang gen_tcp)
-      recv: (pair at: 2)
-      with: 1
-      with: 200
-    self assert: probe isError
+    self assertQuiet: pair
     self assert: raised message equals: "late"
     Loopback close: pair
 
   testHandlerHTTPErrorMapsStatus =>
     {result, pair} := self serveHead: self getHead handler: [:ex |
-      HTTPError414 signal: ex method
+      HTTPError signal: ex method reason: 414
     ]
     self assert: result isError
-    self assert: (result error isKindOf: HTTPError414)
+    self assert: (result error reason) equals: 414
     resp := Loopback responseOf: pair body: 0
     self assert: (resp startsWith: "HTTP/1.1 414")
+    self assertNoExchangeState
     Loopback close: pair
 
   testTransportErrorSendsNothing =>
@@ -269,11 +278,7 @@ TestCase subclass: PipelineTest
       options: config
     self assert: result isError
     self assert: (result error isKindOf: TransportError)
-    probe := (Erlang gen_tcp)
-      recv: (pair at: 2)
-      with: 1
-      with: 200
-    self assert: probe isError
+    self assertQuiet: pair
     Loopback close: pair
 
   testMetricsAndTelemetry =>
@@ -324,6 +329,215 @@ TestCase subclass: PipelineTest
     {result, pair} := self serveHead: both handler: handler
     self assert: result isOk
     self assert: (((result value buffer) asStringUnchecked) startsWith: "GET /second")
+    Loopback close: pair
+
+  testDrainFailureAfterSend =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "transfer-encoding: chunked"
+      ++ self nl
+      ++ self nl
+      ++ "ZZZ"
+      ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    result := self
+      runOn: pair
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: "hi"
+      ]
+    self assert: result isError
+    resp := Loopback responseOf: pair body: 2
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assertQuiet: pair
+    self assertNoExchangeState
+    Loopback close: pair
+
+  testHandlerThrowPreserved =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: self getHead
+    raised := [
+      self runOn: pair handler: [:_ex | Erlang erlang throw: #oops]
+    ] on: ThrowError do: [:e | e]
+    self assert: (raised isKindOf: ThrowError)
+    resp := Loopback responseOf: pair body: 0
+    self assert: (resp startsWith: "HTTP/1.1 500 Internal Server Error")
+    Loopback close: pair
+
+  testLogStatusOptions =>
+    base := BuccaneerConfig from: #{#handler => [:ex | ex]}
+    self assert: (Pipeline logStatus: 500 options: base)
+    self deny: (Pipeline logStatus: 404 options: base)
+    single := BuccaneerConfig from: #{
+      #handler => [:ex | ex],
+      #http => #{#logExceptionsWithStatusCodes => 404}
+    }
+    self assert: (Pipeline logStatus: 404 options: single)
+    self deny: (Pipeline logStatus: 500 options: single)
+    list := BuccaneerConfig
+      from: #{
+        #handler => [:ex | ex],
+        #http => #{#logExceptionsWithStatusCodes => #(404, 500)}
+      }
+    self assert: (Pipeline logStatus: 500 options: list)
+    validated := BuccaneerConfig from: #{#handler => [:ex | ex]}
+    bad := validated withHttp: #{#logExceptionsWithStatusCodes => #always}
+    raised := [Pipeline logStatus: 500 options: bad] on: Error do: [:e | e]
+    self assert: (raised message startsWith: "Invalid value for #log")
+
+  testConnectBadPort400 =>
+    {result, pair} := self
+      serveHead: "CONNECT example.com:abc HTTP/1.1" ++ self nl ++ "host: x" ++ self nl ++ self nl
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    self assert: result isError
+    resp := Loopback responseOf: pair body: 0
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request")
+    Loopback close: pair
+
+  testAbsoluteHostBadPort =>
+    raised := [
+      Pipeline
+        absoluteHost: "example.com"
+        port: "abc"
+        scheme: #http
+    ] on: HTTPError do: [:e | e]
+    self assert: raised message equals: "Header contains invalid port"
+
+  testTwoHosts400 =>
+    head := "GET / HTTP/1.1"
+      ++ self nl
+      ++ "host: a"
+      ++ self nl
+      ++ "host: b"
+      ++ self nl
+      ++ self nl
+    {result, pair} := self
+      serveHead: head
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    self assert: result isError
+    resp := Loopback responseOf: pair body: 0
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request")
+    Loopback close: pair
+
+  testBuildStateSecure =>
+    st := Pipeline
+      buildState: HTTP1Socket new
+      method: "GET"
+      target: {nil, nil, nil, "/p"}
+      headers: #({"host", "x"})
+      connData: {true, {127, 0, 0, 1}}
+    self assert: st scheme equals: #https
+    self assert: st host equals: "x"
+    self assert: st port equals: 443
+    self assert: st path equals: "/p"
+
+  testBaseMetadataSpan =>
+    span := CatalinaTelemetry
+      startSpan: #connection
+      measurements: #{}
+      metadata: #{}
+    config := BuccaneerConfig from: #{#handler => [:ex | ex]}
+    meta := Pipeline baseMetadata: span handler: config
+    self assert: (meta at: #connection_telemetry_span_context) equals: span telemetrySpanContext
+    self assert: (meta includesKey: #plug)
+
+  testHandlerRaiseReportsOnce =>
+    handler := [:_ex | Error signal: "boom"]
+    TelemetryCollector attachAll: handler table: self tableName
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: self getHead
+    raised := [self runOn: pair handler: handler] on: Error do: [:e | e]
+    self assert: raised message equals: "boom"
+    self
+      assert: (TelemetryCollector
+        events: #request
+        named: #start
+        in: self tableName) size
+      equals: 1
+    self
+      assert: (TelemetryCollector
+        events: #request
+        named: #exception
+        in: self tableName) size
+      equals: 1
+    self
+      assert: (TelemetryCollector
+        events: #request
+        named: #stop
+        in: self tableName)
+      equals: #()
+    Loopback close: pair
+
+  testSequentialRequestsIsolated =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: self getHead
+    first := self
+      runOn: pair
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    self assert: first isOk
+    Loopback responseOf: pair body: 0
+    (Erlang gen_tcp) send: (pair at: 2) with: "GARBAGE" ++ self nl ++ self nl
+    second := self
+      runOn: pair
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    self assert: second isError
+    resp := Loopback responseOf: pair body: 0
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request")
+    Loopback close: pair
+
+  testHandlerBadReasonNoEscape =>
+    {result, pair} := self serveHead: self getHead handler: [:ex |
+      HTTPError signal: "weird" reason: 999
+    ]
+    self assert: result isError
+    self assertQuiet: pair
+    Loopback close: pair
+
+  testGetMetricsOmitUnreadBody =>
+    handler := [:ex |
+      ex
+        sendResp: 200
+        headers: #()
+        body: "hi"
+    ]
+    TelemetryCollector attachAll: handler table: self tableName
+    {result, pair} := self serveHead: self getHead handler: handler
+    self assert: result isOk
+    Loopback responseOf: pair body: 2
+    stop := (TelemetryCollector
+      events: #request
+      named: #stop
+      in: self tableName) first
+    m := stop at: 2
+    self deny: (m includesKey: #req_body_bytes)
+    self deny: (m includesKey: #req_body_start_time)
+    self assert: (m at: #resp_body_bytes) equals: 2
+    self assert: ((m at: #req_header_end_time) isKindOf: Integer)
     Loopback close: pair
 
   testInvalidHandler =>

@@ -22,7 +22,10 @@ typed Object subclass: Pipeline
   class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
     startTime := BuccaneerTelemetry monotonicTime
     base := self baseMetadata: connectionSpan handler: config
-    [
+    // Only the prologue runs protected here. runInner: has its own
+    // handler and re-raises internal errors, which must reach the
+    // caller — not this one, which would report them twice.
+    prepared := [
       {method, target, headers, transport2} := transport readHeaders
       initial := self
         buildState: transport2
@@ -36,48 +39,39 @@ typed Object subclass: Pipeline
         startSpan: #request
         measurements: #{#monotonic_time => startTime}
         metadata: meta
-      self
-        runInner: ex
-        span: span
-        handler: handler
-        transport: transport2
-        metadata: meta
-        options: config
+      {ex, span, transport2, meta}
     ]
       on: Exception
       do: [:e :: Exception |
-        // isKindOf:, not match:: type patterns reject non-leaf classes
-        // and when: guards allow only comparisons and arithmetic
-        // (HTTPError has subclasses; ADR 0107 Phase B).
-        (e isKindOf: HTTPError)
-          ifTrue: [
-            self
-              protocolError: e
-              span: (self startOuterSpan: base startTime: startTime)
-              transport: transport
-              metadata: base
-              options: config
-          ]
-          ifFalse: [
-            (e isKindOf: TransportError)
-              ifTrue: [
-                self
-                  protocolError: e
-                  span: (self startOuterSpan: base startTime: startTime)
-                  transport: transport
-                  metadata: base
-                  options: config
-              ]
-              ifFalse: [
-                self
-                  internalError: e
-                  span: (self startOuterSpan: base startTime: startTime)
-                  transport: transport
-                  metadata: base
-                  options: config
-              ]
-          ]
+        e match: [
+          h :: HTTPError -> ^self
+            protocolError: h
+            span: (self startOuterSpan: base startTime: startTime)
+            transport: transport
+            metadata: base
+            options: config;
+          t :: TransportError -> ^self
+            protocolError: t
+            span: (self startOuterSpan: base startTime: startTime)
+            transport: transport
+            metadata: base
+            options: config;
+          _ -> self
+            internalError: e
+            span: (self startOuterSpan: base startTime: startTime)
+            transport: transport
+            metadata: base
+            options: config
+        ]
       ]
+    {ex, span, transport2, meta} := prepared
+    self
+      runInner: ex
+      span: span
+      handler: handler
+      transport: transport2
+      metadata: meta
+      options: config
 
   /// A head that never parsed gets a span with no conn.
   class sealed startOuterSpan: meta :: Dictionary startTime: start :: Integer -> BuccaneerTelemetry =>
@@ -118,34 +112,29 @@ typed Object subclass: Pipeline
     ]
       on: Exception
       do: [:e :: Exception |
-        (e isKindOf: HTTPError)
-          ifTrue: [
-            self
-              protocolError: e
-              span: span
-              transport: transport
-              metadata: meta
-              options: config
-          ]
-          ifFalse: [
-            (e isKindOf: TransportError)
-              ifTrue: [
-                self
-                  protocolError: e
-                  span: span
-                  transport: transport
-                  metadata: meta
-                  options: config
-              ]
-              ifFalse: [
-                self
-                  internalError: e
-                  span: span
-                  transport: transport
-                  metadata: meta
-                  options: config
-              ]
-          ]
+        // Success forgets via finish; errors forget here, so a failed
+        // request leaves no state behind.
+        ex forget
+        e match: [
+          h :: HTTPError -> self
+            protocolError: h
+            span: span
+            transport: transport
+            metadata: meta
+            options: config;
+          t :: TransportError -> self
+            protocolError: t
+            span: span
+            transport: transport
+            metadata: meta
+            options: config;
+          _ -> self
+            internalError: e
+            span: span
+            transport: transport
+            metadata: meta
+            options: config
+        ]
       ]
 
   /// A malformed request or a socket failure: stop the span with the
@@ -183,7 +172,7 @@ typed Object subclass: Pipeline
             metadata: meta)
       ]
     transport sendOnError: error
-    error signal
+    error pass
 
   /// Whether #logExceptionsWithStatusCodes (default 500-599) covers a
   /// status: an Integer, a List, or anything answering includes:.
@@ -193,7 +182,7 @@ typed Object subclass: Pipeline
     (raw isKindOf: Integer) ifTrue: [^status =:= raw]
     (raw isKindOf: List) ifTrue: [^raw includes: status]
     (raw respondsTo: #includes:) ifTrue: [^raw includes: status]
-    Error signal: "Invalid value for option #logExceptionsWithStatusCodes"
+    Error signal: "Invalid value for #logExceptionsWithStatusCodes"
 
   /// The stop measurements for a served request: the stamps and byte
   /// counts the request reached, as the adapter's metrics.

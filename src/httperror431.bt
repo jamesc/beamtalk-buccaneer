@@ -1,5 +1,0 @@
-// Copyright 2026 James Casey
-// SPDX-License-Identifier: Apache-2.0
-
-/// HTTPError with plugStatus 431: too many headers, or one too long.
-typed HTTPError subclass: HTTPError431

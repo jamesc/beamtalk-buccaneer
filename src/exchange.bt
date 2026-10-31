@@ -19,7 +19,7 @@ sealed typed Value subclass: Exchange
   /// method with no classState: runs in the caller's process (which is
   /// exactly where this state belongs).
   class sealed open: state :: ExchangeState -> Exchange =>
-    ex := Exchange ref: Erlang erlang make_ref owner: Pid current
+    ex := Exchange ref: Reference new owner: Pid current
     ex store: (state withReqHeaderEndTime: BuccaneerTelemetry monotonicTime)
 
   /// The process-dictionary key of this exchange's state.
@@ -114,7 +114,7 @@ sealed typed Value subclass: Exchange
         (st withReqBodyStartTime: started) withReqBodyEndTime: BuccaneerTelemetry monotonicTime
       ]
       ifFalse: [st withReqBodyStartTime: started]
-    self store: ((stamped withTransport: transport) withReqBodyBytes: st reqBodyBytes + (Erlang erlang byte_size: data))
+    self store: ((stamped withTransport: transport) withReqBodyBytes: st reqBodyBytes + data size)
     Result ok: (BodyPart data: data done: tag =:= #ok)
 
   /// The rest of the body in one read, or error: #body_too_large when it

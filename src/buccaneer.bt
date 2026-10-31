@@ -1,8 +1,77 @@
 // Copyright 2026 James Casey
 // SPDX-License-Identifier: Apache-2.0
 
-/// Buccaneer — main class for the buccaneer library.
+/// Buccaneer — the server engine. `start:` validates the options and
+/// starts a Catalina server running `ConnectionHandler`; the answered
+/// `ServerSupervisor` is Catalina's, as Bandit returns Thousand
+/// Island's (`srv listenerInfo`, `srv stop: 15000`).
 Object subclass: Buccaneer
 
-  /// Return a greeting string.
-  class greet => "Hello from buccaneer!"
+  /// Start a server. Answers `Result ok:` with the server, or Catalina's
+  /// error. Raises on invalid options. The handler answers one request;
+  /// see `ExchangeHandler`.
+  class sealed start: options :: ConfigOptions -> Result(ServerSupervisor, Error) =>
+    config := BuccaneerConfig from: options
+    started := Catalina start: (self catalinaOptions: config)
+    started isError ifTrue: [^started]
+    srv := started value
+    self logStartup: config server: srv
+    Result ok: srv
+
+  /// Start a server with the handler apart from the options, so a block
+  /// handler's parameter is typed `Exchange`. Overwrites `#handler`.
+  class sealed start: options :: ConfigOptions handler: handler :: Block(Exchange, Object) -> Result(ServerSupervisor, Error) =>
+    self start: (options at: #handler put: handler)
+
+  /// Catalina's options: its section plus this engine's handler.
+  class sealed catalinaOptions: config :: BuccaneerConfig -> Dictionary(Symbol, Object) =>
+    (config catalina at: #handler put: ConnectionHandler) at: #handlerOptions put: #{
+      #config => config,
+      #handler => config handler
+    }
+
+  /// This package's version, for the startup log.
+  class sealed version -> String =>
+    ((Erlang application) get_key: #buccaneer with: #vsn) match: [
+      {ok, vsn} -> vsn asString;
+      _ -> "unknown"
+    ]
+
+  /// Bandit's startup line at the configured level, unless disabled.
+  class sealed logStartup: config :: BuccaneerConfig server: srv :: ServerSupervisor -> Nil =>
+    level := config startupLog
+    level =:= false ifTrue: [^nil]
+    line := "Running "
+      ++ config displayHandler printString
+      ++ " with Buccaneer "
+      ++ self version
+      ++ " at "
+      ++ (self boundAddress: (srv listenerInfo unwrap) scheme: config scheme)
+    meta := #{#domain => #(#buccaneer), #plug => config displayHandler}
+    level match: [
+      #emergency -> Logger error: line metadata: meta;
+      #alert -> Logger error: line metadata: meta;
+      #critical -> Logger error: line metadata: meta;
+      #error -> Logger error: line metadata: meta;
+      #warning -> Logger warn: line metadata: meta;
+      #notice -> Logger info: line metadata: meta;
+      #info -> Logger info: line metadata: meta;
+      #debug -> Logger debug: line metadata: meta;
+      _ -> nil
+    ]
+    nil
+
+  /// Where the server listens, as Bandit's bound_address.
+  class sealed boundAddress: addr :: SocketAddress scheme: scheme :: Scheme -> String =>
+    address := addr at: 1
+    port := addr at: 2
+    tag := scheme asString
+    (address isKindOf: Tuple) ifFalse: [
+      ^(address printString) ++ " " ++ port printString ++ " (" ++ tag ++ ")"
+    ]
+    ((Erlang inet) ntoa: address) asString
+      ++ ":"
+      ++ port printString
+      ++ " ("
+      ++ tag
+      ++ ")"

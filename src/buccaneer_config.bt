@@ -15,7 +15,7 @@ type Scheme = #http | #https
 /// Bandit's keys in camelCase. Unknown keys raise, as a typo the user
 /// should hear about.
 typed Value subclass: BuccaneerConfig
-  field: handler :: Object = nil
+  field: handler :: ExchangeHandlerLike | Nil = nil
   field: scheme :: Scheme = #http
   field: port :: Integer = 4000
   field: displayHandler :: Object = nil
@@ -169,8 +169,17 @@ typed Value subclass: BuccaneerConfig
       section: opts
       name: #catalina
       keys: ServerConfig optionNames
-    withPort := base
-    (base includesKey: #port) ifFalse: [withPort := base at: #port put: port]
+    withTransport := base
+    (base includesKey: #transport)
+      ifFalse: [
+        scheme =:= #https ifTrue: [
+          withTransport := base at: #transport put: SSLTransport
+        ]
+      ]
+    withPort := withTransport
+    (withTransport includesKey: #port) ifFalse: [
+      withPort := withTransport at: #port put: port
+    ]
     extra := self convenienceTransportOptions: opts scheme: scheme
     extra isEmpty ifTrue: [^withPort]
     trans := withPort at: #transportOptions ifAbsent: [nil]

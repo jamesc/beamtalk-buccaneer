@@ -14,7 +14,7 @@ TestCase subclass: PipelineTest
   tearDown =>
     TelemetryCollector detach: self tableName
     (Ets named: self tableName) delete
-    Erlang erlang erase: HTTP1Socket sentKey
+    ProcessDictionary erase: HTTP1Socket sentKey
     self
 
   nl -> String => "\r\n"
@@ -66,9 +66,13 @@ TestCase subclass: PipelineTest
 
   /// Assert this process holds no exchange state.
   assertNoExchangeState =>
-    left := (Erlang erlang get_keys) select: [:k |
-      (k isKindOf: Tuple) and: [(k at: 1) =:= #buccaneer_exchange]
-    ]
+    left := (ProcessDictionary keys)
+      select: [:k |
+        k match: [
+          t :: Tuple -> (t at: 1) =:= #buccaneer_exchange;
+          _ -> false
+        ]
+      ]
     self assert: left equals: #()
 
   testOkGet =>

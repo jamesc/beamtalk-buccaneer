@@ -1,0 +1,69 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// TLS through a real server: `Buccaneer start:` with `#scheme => #https`
+/// and the test certificate serves HTTPS; without key material the
+/// start answers an error. Certificates live in `test/fixtures/`.
+TestCase subclass: TlsTest
+
+  certfile -> String => "test/fixtures/cert.pem"
+
+  keyfile -> String => "test/fixtures/key.pem"
+
+  connect: port =>
+    ((Erlang ssl)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false}, {#verify, #verify_none})) unwrap
+
+  scenario: port request: req body: n =>
+    client := self connect: port
+    (Erlang ssl) send: client with: req
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang ssl)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
+    body := (((Erlang ssl)
+      recv: client
+      with: n
+      with: 2000) unwrap) asStringUnchecked
+    (Erlang ssl) close: client
+    {head asStringUnchecked, body}
+
+  testHttpsServesRequests =>
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => self certfile,
+        #keyfile => self keyfile,
+        #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: (ex scheme printString ++ "|" ++ ex path)
+        ]
+      }) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    {head, body} := self
+      scenario: port
+      request: "GET /tls HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 11
+    self assert: (head startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: body equals: "#https|/tls"
+    self assert: (srv stop: 5000) isOk
+
+  testHttpsWithoutKeyMaterialIsError =>
+    started := Buccaneer
+      start: #{#port => 0, #scheme => #https, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]}
+    self assert: started isError

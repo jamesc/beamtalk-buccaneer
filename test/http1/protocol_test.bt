@@ -1,0 +1,414 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http1/protocol_test.exs`, Phase 1 sections: invalid
+/// requests, method coverage and case, request-line limits, and the
+/// origin/absolute/asterisk target forms with Host handling. Each test
+/// starts a real server and speaks raw TCP, asserting the exact wire
+/// behavior. Error responses use HTTP/1.0 framing and close, with no
+/// body, as the version is unknown or the request unusable.
+TestCase subclass: ProtocolTest
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  server =>
+    (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: (ex method ++ "|" ++ ex path ++ "|" ++ ex host)
+        ]}) unwrap
+
+  /// Send `req`, answer head plus `n` body bytes, closing the client.
+  scenario: port request: req body: n =>
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: req
+    resp := Loopback responseOn: client body: n
+    (Erlang gen_tcp) close: client
+    resp asStringUnchecked
+
+  testGarbageRequestLine400 =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GARBAGE\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (srv stop: 5000) isOk
+
+  testUnknownVersion400 =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET / HTTP/9.9\r\nhost: x\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (srv stop: 5000) isOk
+
+  testMissingHost400 =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET / HTTP/1.1\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (srv stop: 5000) isOk
+
+  testRequestLineTooLong414 =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: ("GET /" ++ ("x" repeat: 10001) ++ " HTTP/1.1\r\nhost: x\r\n\r\n")
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.0 414 Request-URI Too Long\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (srv stop: 5000) isOk
+
+  testGetEchoed =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 7
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "GET|/|x")
+    self assert: (srv stop: 5000) isOk
+
+  testPostEchoed =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "POST /submit HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n"
+      body: 14
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "POST|/submit|x")
+    self assert: (srv stop: 5000) isOk
+
+  testPutEchoed =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "PUT /r HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n"
+      body: 8
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "PUT|/r|x")
+    self assert: (srv stop: 5000) isOk
+
+  testDeleteEchoed =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "DELETE /r HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 11
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "DELETE|/r|x")
+    self assert: (srv stop: 5000) isOk
+
+  testUnknownMethodEchoed =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "FROBNICATE / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 14
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "FROBNICATE|/|x")
+    self assert: (srv stop: 5000) isOk
+
+  testLowercaseMethodPassesThrough =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "get / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 7
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "get|/|x")
+    self assert: (srv stop: 5000) isOk
+
+  testHeadSendsNoBody =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "HEAD /h HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp includesSubstring: "content-length: 9")
+    self assert: (resp endsWith: "\r\n\r\n")
+    self assert: (srv stop: 5000) isOk
+
+  testAbsoluteFormTarget =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET http://example.com/abs HTTP/1.1\r\nhost: example.com\r\n\r\n"
+      body: 20
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "GET|/abs|example.com")
+    self assert: (srv stop: 5000) isOk
+
+  testOptionsStar =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "OPTIONS * HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 11
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "OPTIONS|*|x")
+    self assert: (srv stop: 5000) isOk
+
+  readingServer =>
+    (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          raw := (ex readAll: 8000000) value
+          hd := ex header: "x-echo"
+          hdStr := hd isNil ifTrue: ["-"] ifFalse: [hd asStringUnchecked]
+          ex
+            sendResp: 200
+            headers: #()
+            body: (ex method
+              ++ "|"
+              ++ ex path
+              ++ "|"
+              ++ ex host
+              ++ "|"
+              ++ hdStr
+              ++ "|"
+              ++ raw asStringUnchecked)
+        ]}) unwrap
+
+  /// The socket is closed after the response; the next recv errors #closed.
+  assertClosed: client =>
+    tail := (Erlang gen_tcp)
+      recv: client
+      with: 1
+      with: 2000
+    self assert: tail isError
+    self assert: tail error printString equals: "closed"
+
+  testDuplicateHeadersFirstWins =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET /h HTTP/1.1\r\nhost: example.com:4000\r\nx-echo: v1\r\nx-echo: v2\r\n\r\n"
+      body: 22
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "GET|/h|example.com|v1|")
+    self assert: (srv stop: 5000) isOk
+
+  testHeaderNamesCaseInsensitive =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET /h HTTP/1.1\r\nhost: x\r\nX-Echo: vv\r\n\r\n"
+      body: 12
+    self assert: (resp endsWith: "GET|/h|x|vv|")
+    self assert: (srv stop: 5000) isOk
+
+  testHostPortSplit =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET / HTTP/1.1\r\nhost: example.com:4000\r\n\r\n"
+      body: 20
+    self assert: (resp endsWith: "GET|/|example.com|-|")
+    self assert: (srv stop: 5000) isOk
+
+  testConnectionCloseRequest =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n"
+    resp := Loopback responseOn: client body: 7
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (resp endsWith: "GET|/|x")
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testContentLengthBodyRead =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhello"
+      body: 20
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "POST|/echo|x|-|hello")
+    self assert: (srv stop: 5000) isOk
+
+  testEmptyBodyRead =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "POST /e HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n"
+      body: 12
+    self assert: (resp endsWith: "POST|/e|x|-|")
+    self assert: (srv stop: 5000) isOk
+
+  testUnreadBodyDrained =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /one HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhello"
+    first := Loopback responseOn: client body: 11
+    (Erlang gen_tcp) send: client with: "GET /two HTTP/1.1\r\nhost: x\r\n\r\n"
+    second := Loopback responseOn: client body: 10
+    (Erlang gen_tcp) close: client
+    self assert: (first endsWith: "POST|/one|x")
+    self assert: (second endsWith: "GET|/two|x")
+    self assert: (srv stop: 5000) isOk
+
+  testInvalidContentLength400 =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST / HTTP/1.1\r\nhost: x\r\ncontent-length: abc\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedBodyRead =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "POST /c HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+      body: 17
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "POST|/c|x|-|hello")
+    self assert: (srv stop: 5000) isOk
+
+  testBadChunk400 =>
+    srv := self readingServer
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST / HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\nZZZ\r\nhello\r\n0\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.1 400 Bad Request\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (srv stop: 5000) isOk
+
+  test204SendsNoBody =>
+    noBody := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 204
+            headers: #()
+            body: "should-not-send"
+        ]}) unwrap
+    port := (noBody listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.1 204 No Content\r\n")
+    self deny: (resp includesSubstring: "content-length")
+    self deny: (resp includesSubstring: "should-not-send")
+    self assert: (noBody stop: 5000) isOk
+
+  test500OnRaise =>
+    raiser := (Buccaneer start: #{
+      #port => 0,
+      #handler => [:ex | Error signal: "boom"]
+    }) unwrap
+    port := (raiser listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.1 500 Internal Server Error\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (raiser stop: 5000) isOk
+
+  test500WhenHandlerDoesNotRespond =>
+    silent := (Buccaneer start: #{#port => 0, #handler => [:ex | ex]}) unwrap
+    port := (silent listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.1 500 Internal Server Error\r\n")
+    self assert: (silent stop: 5000) isOk
+
+  testPipelinedTwoResponses =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /a HTTP/1.1\r\nhost: x\r\n\r\nGET /b HTTP/1.1\r\nhost: x\r\n\r\n"
+    first := Loopback responseOn: client body: 8
+    second := Loopback responseOn: client body: 8
+    (Erlang gen_tcp) close: client
+    self assert: (first endsWith: "GET|/a|x")
+    self assert: (second endsWith: "GET|/b|x")
+    self assert: (srv stop: 5000) isOk
+
+  testHttp10Closes =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET / HTTP/1.0\r\n\r\n"
+    resp := Loopback responseOn: client body: 6
+    self assert: (resp startsWith: "HTTP/1.0 200 OK\r\n")
+    self assert: (resp includesSubstring: "connection: close")
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testMaxRequests1 =>
+    srv := (Buccaneer
+      start: #{#port => 0, #http1 => #{#maxRequests => 1}, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: ex path
+        ]}) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /a HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 2
+    self assert: (resp includesSubstring: "connection: close")
+    self assert: (resp endsWith: "/a")
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testMidBodyCloseSurvives =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    doomed := self connect: port
+    (Erlang gen_tcp) send: doomed with: "POST /up HTTP/1.1\r\nhost: x\r\ncontent-length: 100\r\n\r\npart"
+    (Erlang gen_tcp) close: doomed
+    Timer sleep: 200
+    resp := self
+      scenario: port
+      request: "GET /ok HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 9
+    self assert: (resp endsWith: "GET|/ok|x")
+    self assert: (srv stop: 5000) isOk

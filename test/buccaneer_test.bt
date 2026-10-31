@@ -3,4 +3,91 @@
 
 TestCase subclass: BuccaneerTest
 
-  testBasic => self assert: (Buccaneer greet) equals: "Hello from buccaneer!"
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  connectResult: port =>
+    (Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})
+
+  testStartStop =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]}) unwrap
+    ((srv listenerInfo unwrap) at: 2) match: [
+      n :: Integer -> self assert: (n > 0);
+      _ -> self assert: false
+    ]
+    self assert: (srv stop: 5000) isOk
+
+  testStartTwoArg =>
+    srv := (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: "hi"
+      ]) unwrap
+    ((srv listenerInfo unwrap) at: 2) match: [
+      n :: Integer -> self assert: (n > 0);
+      _ -> self assert: false
+    ]
+    self assert: (srv stop: 5000) isOk
+
+  testStartServesRequests =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: ex path
+        ]}) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /hello HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 6
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp endsWith: "/hello")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testVersion =>
+    self assert: ((Buccaneer version =:= "unknown") or: [
+      Buccaneer version =:= "0.1.0"
+    ])
+
+  testBoundAddress =>
+    self assert: (Buccaneer boundAddress: {{127, 0, 0, 1}, 4000} scheme: #http) equals: "127.0.0.1:4000 (http)"
+
+  testStopClosesListener =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]}) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    self assert: (srv stop: 5000) isOk
+    refused := self connectResult: port
+    self assert: refused isError
+
+  testUnknownOptionRaises =>
+    caught := false
+    [Buccaneer start: #{#bogus => 1, #handler => [:ex | ex]}]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: (e message includesSubstring: "Unsupported key(s)")
+      ]
+    self assert: caught

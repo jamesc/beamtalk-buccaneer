@@ -1,0 +1,41 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// SPIKE (stdlib proposal): the calling process's dictionary behind a
+/// documented contract, instead of raw `Erlang erlang` BIFs.
+///
+/// Every method acts on the CALLING process (there is no way to name
+/// another process's dictionary); owner-bound state like `Exchange`'s
+/// is the intended use. Keyspace is the caller's responsibility:
+/// tuple keys (`{#exchange, ref}`) for owned state, agreed atoms for
+/// marks. The lint fires on the raw BIFs below by design; the
+/// `@expect` annotations concentrate that acknowledgement here so no
+/// caller needs one. If this graduates to stdlib, the open questions
+/// are a scoped `with:do:` form and automatic key namespacing.
+typed Object subclass: ProcessDictionary
+
+  /// The value at key, or nil (`get/1` answers `undefined`, which
+  /// reads as missing everywhere else in Beamtalk).
+  @expect class_method_process_resource
+  class sealed at: key :: Object -> Object =>
+    found := Erlang erlang get: key
+    found =:= #undefined ifTrue: [nil] ifFalse: [found]
+
+  /// The value at key, or the absent block's value.
+  @expect class_method_process_resource
+  class sealed at: key :: Object ifAbsent: absent :: Block(Object) -> Object =>
+    found := Erlang erlang get: key
+    found isNil ifTrue: [absent value] ifFalse: [found]
+
+  /// Store value at key.
+  @expect class_method_process_resource
+  class sealed at: key :: Object put: value :: Object -> Object =>
+    Erlang erlang put: key with: value
+    value
+
+  /// Drop key. Answers nothing useful.
+  @expect class_method_process_resource
+  class sealed erase: key :: Object -> Object => Erlang erlang erase: key
+
+  /// All keys.
+  class sealed keys -> List(Object) => Erlang erlang get_keys

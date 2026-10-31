@@ -11,7 +11,7 @@ typed Object subclass: SocketHelpers
   /// the peer address is unavailable (`peername` answers `ok: nil`
   /// then; it never errors). The pipeline only reads secure? today;
   /// the Phase 2 adapter takes the peer as the connection's remote IP.
-  class sealed connData: sock :: Socket -> Tuple =>
+  class sealed connData: sock :: Socket -> Tuple(Boolean, Tuple | Symbol) =>
     peer := sock peername
     (peer isError or: [(peer value) isNil])
       ifTrue: [

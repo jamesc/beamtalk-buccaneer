@@ -1,0 +1,37 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Hello, Buccaneer: the smallest standalone server. It needs only
+/// `buccaneer` and `catalina`.
+///
+/// From a REPL with this package loaded:
+///
+/// ```beamtalk
+/// Workspace load: "examples/hello.bt"
+/// srv := Hello start
+/// // curl http://localhost:4000/hello
+/// srv stop: 5000
+/// ```
+///
+/// `Hello run` is the same server for `beamtalk run`: it blocks until
+/// interrupted (Ctrl-C), so the script stays up to serve.
+Object subclass: Hello
+
+  /// Start the example server on port 4000 and answer it.
+  class start -> ServerSupervisor => self startOn: 4000
+
+  /// Start the example server on `port` and answer it.
+  class startOn: port :: Integer -> ServerSupervisor =>
+    started := Buccaneer
+      start: #{#port => port, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: ("hello " ++ ex path)
+        ]}
+    started unwrap
+
+  /// Start the server on port 4000 and serve until interrupted.
+  class run =>
+    self startOn: 4000
+    [true] whileTrue: [Timer sleep: 60000]

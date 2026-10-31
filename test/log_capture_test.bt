@@ -1,0 +1,20 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: LogCaptureTest
+
+  tableName -> Symbol => #logCaptureTest
+
+  setUp =>
+    LogCapture detach: self tableName
+    LogCapture attach: self tableName
+    self
+
+  tearDown =>
+    LogCapture detach: self tableName
+    self
+
+  testCaptures =>
+    Logger error: "hello-logcap-probe" metadata: #{#domain => #(#buccaneer)}
+    content := LogCapture await: "hello-logcap-probe" in: (System getEnv: "TMPDIR" default: "/tmp") ++ "/logCaptureTest.log"
+    self assert: (content includesSubstring: "hello-logcap-probe")

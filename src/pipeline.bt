@@ -19,7 +19,7 @@ typed Object subclass: Pipeline
   /// `connectionSpan` is Catalina's connection span (nil in tests);
   /// `connData` is {secure?, peerAddress}; `config` is the server's
   /// BuccaneerConfig.
-  class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+  class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple(Boolean, Tuple | Symbol) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
     startTime := BuccaneerTelemetry monotonicTime
     base := self baseMetadata: connectionSpan handler: config
     // Only the prologue runs protected here. runInner: has its own
@@ -74,14 +74,14 @@ typed Object subclass: Pipeline
       options: config
 
   /// A head that never parsed gets a span with no conn.
-  class sealed startOuterSpan: meta :: Dictionary startTime: start :: Integer -> BuccaneerTelemetry =>
+  class sealed startOuterSpan: meta :: Dictionary(Symbol, Object) startTime: start :: Integer -> BuccaneerTelemetry =>
     BuccaneerTelemetry
       startSpan: #request
       measurements: #{#monotonic_time => start}
       metadata: meta
 
   /// Shared request metadata: the connection span context and the plug.
-  class sealed baseMetadata: connectionSpan :: CatalinaTelemetry | Nil handler: config :: BuccaneerConfig -> Dictionary =>
+  class sealed baseMetadata: connectionSpan :: CatalinaTelemetry | Nil handler: config :: BuccaneerConfig -> Dictionary(Symbol, Object) =>
     context := connectionSpan match: [
       s :: CatalinaTelemetry -> s telemetrySpanContext;
       _ -> nil
@@ -101,7 +101,7 @@ typed Object subclass: Pipeline
 
   /// The inner request: call the handler, commit, forget the exchange,
   /// stop the span. Errors here all know their conn.
-  class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+  class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
     [
       self callHandler: handler with: ex
       ex commit
@@ -140,7 +140,7 @@ typed Object subclass: Pipeline
   /// A malformed request or a socket failure: stop the span with the
   /// error, log per the #http section, answer the error status unless
   /// answered, and ask the handler to close.
-  class sealed protocolError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+  class sealed protocolError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
     span stopWith: #{} metadata: (meta at: #error put: error message)
     BuccaneerLogger
       maybeLogProtocolError: error
@@ -153,7 +153,7 @@ typed Object subclass: Pipeline
   /// Anything else: the span's exception event, a log line when 500 is
   /// configured, a 500 unless answered — then re-signal, so the
   /// connection crashes as in Bandit.
-  class sealed internalError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary options: config :: BuccaneerConfig -> Never =>
+  class sealed internalError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Never =>
     kind := (error isKindOf: ExitError) ifTrue: [
       #exit
     ] ifFalse: [(error isKindOf: ThrowError) ifTrue: [#throw] ifFalse: [#error]]
@@ -186,7 +186,7 @@ typed Object subclass: Pipeline
 
   /// The stop measurements for a served request: the stamps and byte
   /// counts the request reached, as the adapter's metrics.
-  class sealed metricsFrom: st :: ExchangeState -> Dictionary =>
+  class sealed metricsFrom: st :: ExchangeState -> Dictionary(Symbol, Object) =>
     out := #{#req_header_end_time => st reqHeaderEndTime}
     st reqBodyStartTime isNil
       ifFalse: [
@@ -206,7 +206,7 @@ typed Object subclass: Pipeline
 
   /// The exchange state for a parsed head (Bandit's build_conn!, minus
   /// the conn).
-  class sealed buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: List(Tuple) connData: connData :: Tuple -> ExchangeState =>
+  class sealed buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: HttpHeaders connData: connData :: Tuple(Boolean, Tuple | Symbol) -> ExchangeState =>
     scheme := (connData at: 1) =:= true ifTrue: [#https] ifFalse: [#http]
     hostPort := self
       hostAndPort: scheme
@@ -218,7 +218,7 @@ typed Object subclass: Pipeline
 
   /// {host, port} from an absolute target, else the Host header
   /// (Bandit's determine_host_and_port!).
-  class sealed hostAndPort: scheme :: RequestScheme version: ver :: HttpVersion target: target :: Tuple headers: headers :: List(Tuple) -> Tuple =>
+  class sealed hostAndPort: scheme :: Scheme version: ver :: HttpVersion target: target :: Tuple headers: headers :: HttpHeaders -> Tuple(String, Integer) =>
     host := target at: 2
     port := target at: 3
     (host isNil and: [port isNil])
@@ -252,7 +252,7 @@ typed Object subclass: Pipeline
   /// host is rejected: Bandit passes opaque bytes through, but the
   /// state's host is a String. Authority ports arrive as strings
   /// (CONNECT) and are parsed; absolute-form ports arrive parsed.
-  class sealed absoluteHost: host :: Object port: port :: Object scheme: scheme :: RequestScheme -> Tuple =>
+  class sealed absoluteHost: host :: Object port: port :: Object scheme: scheme :: Scheme -> Tuple(String, Integer) =>
     h := host match: [
       s :: String -> s;
       _ -> HTTPError signal: "Unable to obtain host and port: invalid host"
@@ -269,14 +269,14 @@ typed Object subclass: Pipeline
     {h, p}
 
   /// {path, query} from a target, without the fragment.
-  class sealed pathAndQuery: target :: Tuple -> Tuple =>
+  class sealed pathAndQuery: target :: Tuple -> Tuple(String, String | Nil) =>
     raw := target at: 4
     raw isNil ifTrue: [^{"", nil}]
     (raw isKindOf: Symbol) ifTrue: [^{"*", nil}]
     self splitPath: raw
 
   /// Split a path into {path, query} on the first "?".
-  class sealed splitPath: path :: Object -> Tuple =>
+  class sealed splitPath: path :: Object -> Tuple(String, String | Nil) =>
     text := path match: [
       s :: String -> s;
       _ -> HTTPError signal: "Unsupported request target (RFC9112§3.2)"
@@ -286,6 +286,6 @@ typed Object subclass: Pipeline
     q isNil ifTrue: [^{noFragment, nil}]
     {(noFragment take: q - 1), (noFragment drop: q)}
 
-  class sealed defaultPortFor: scheme :: RequestScheme -> Integer =>
+  class sealed defaultPortFor: scheme :: Scheme -> Integer =>
     scheme =:= #https ifTrue: [^443]
     80

@@ -1,0 +1,42 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Capture OTP log output in a file for assertions, as Bandit's
+/// LoggerHelpers. A logger_std_h handler (test packages cannot ship
+/// native modules, so no custom handler) appends every event; tests
+/// match on unique content, since concurrent classes share the
+/// logger. One file per test class.
+sealed typed Object subclass: LogCapture
+
+  /// Start capturing into a file under TMPDIR. Answers the path.
+  class sealed attach: name :: Symbol -> String =>
+    path := (System getEnv: "TMPDIR" default: "/tmp") ++ "/" ++ name asString ++ ".log"
+    (Erlang logger) remove_handler: name
+    (File exists: path) ifTrue: [File delete: path]
+    chars := path toBytes
+    result := (Erlang logger)
+      add_handler: name
+      with: #logger_std_h
+      with: #{#level => #debug, #config => #{#type => #file, #file => chars}}
+    result isError ifTrue: [
+      Error signal: "LogCapture attach failed: " ++ result error printString
+    ]
+    path
+
+  class sealed detach: name :: Symbol -> Nil =>
+    (Erlang logger) remove_handler: name
+    nil
+
+  /// The captured output, waiting up to three seconds for `token`
+  /// (other test classes share the node, so logging under parallel
+  /// load can take a second or more to land).
+  class sealed await: token :: String in: path :: String -> String =>
+    content := ""
+    60
+      timesRepeat: [
+        read := File readAll: path
+        content := read isError ifTrue: [""] ifFalse: [read value]
+        (content includesSubstring: token) ifTrue: [^content]
+        Timer sleep: 50
+      ]
+    content

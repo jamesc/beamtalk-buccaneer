@@ -4,7 +4,7 @@
 TestCase subclass: HTTP1SocketTest
 
   tearDown =>
-    Erlang erlang erase: HTTP1Socket sentKey
+    ProcessDictionary erase: HTTP1Socket sentKey
     self
 
   nl => "\r\n"
@@ -983,6 +983,6 @@ TestCase subclass: HTTP1SocketTest
       message: "Unrecoverable error"
     err := [Error signal: "after"] on: Error do: [:e | e]
     after := sock sendOnError: err
-    Erlang erlang erase: HTTP1Socket sentKey
+    ProcessDictionary erase: HTTP1Socket sentKey
     self assert: after writeState equals: #sent
     self closeLoopback: pair

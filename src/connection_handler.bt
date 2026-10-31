@@ -1,0 +1,52 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.DelegatingHandler: the Catalina Handler for a connection.
+/// `handleConnection:` sniffs the protocol (InitialHandler) and stores
+/// the protocol handler value (`HTTP1Handler`; HTTP/2 in Phase 6) in
+/// userState; later callbacks delegate to it.
+typed Handler subclass: ConnectionHandler
+
+  handleConnection: sock :: Socket state: st :: Object -> HandlerResult =>
+    opts := st match: [
+      d :: Dictionary -> d;
+      _ -> Error signal: "ConnectionHandler needs handlerOptions"
+    ]
+    config := opts at: #config ifAbsent: [
+      Error signal: "ConnectionHandler needs #config in handlerOptions"
+    ]
+    handler := opts at: #handler ifAbsent: [
+      Error signal: "ConnectionHandler needs #handler in handlerOptions"
+    ]
+    decision := InitialHandler run: sock options: config
+    decision match: [
+      #close -> HandlerResult close: st;
+      {#http1, data} -> HandlerResult
+        continue: (HTTP1Handler
+          config: config
+          handler: handler
+          buffer: data
+          requestsProcessed: 0
+          baseline: (Erlang erlang get_keys)
+          connData: (SocketHelpers connData: sock));
+      _ -> Error signal: "Unknown InitialHandler decision"
+    ]
+
+  handleData: data :: Binary socket: sock :: Socket state: st :: Object -> HandlerResult =>
+    st match: [
+      h :: HTTP1Handler -> h serve: data socket: sock;
+      _ -> HandlerResult close: st
+    ]
+
+  handleUserInfo: msg :: Object -> Object =>
+    self userState match: [
+      h :: HTTP1Handler -> self logUnknown: msg config: h config;
+      _ -> nil
+    ]
+
+  logUnknown: msg :: Object config: config :: BuccaneerConfig -> Nil =>
+    raw := config http1 at: #logUnknownMessages ifAbsent: [false]
+    (raw =:= false or: [raw isNil]) ifTrue: [^nil]
+    Logger warn: ("ConnectionHandler received unknown message: " ++ msg printString) metadata: #{
+      #domain => #(#buccaneer)
+    }

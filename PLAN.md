@@ -321,6 +321,30 @@ example (`examples/hello.bt`) serves requests with only buccaneer and
 catalina; zero type warnings (every class `typed`, Catalina's typing rule);
 every deviation recorded here.
 
+**Status: done (2026-10-31, PR #9, 304 BUnit tests green on TCP and TLS,
+`just ci` / spikes / smoke bench green).** Ported: protocol (43),
+plug (12), telemetry request-level (4), logging request-level (6),
+TLS (2), plus the engine suites (Pipeline, Exchange, HTTP1Socket,
+HTTP1Handler, InitialHandler, config, logger, clock, headers, status);
+`examples/hello.bt` serves (its serving path is suite-covered; executing
+it via `beamtalk run` or the REPL is blocked by BT-4323/BT-4322).
+Deviations from Bandit, all with covering tests:
+- Unknown HTTP versions answer 400, not 505. Errors raised before the
+  version is known use HTTP/1.0 framing and close with no `date` header;
+  mid-request errors keep the negotiated framing, also dateless.
+- Request log lines are OTP `FORMAT ERROR` dumps until BT-4321; the
+  `LogCapture` fixture matches the banner text the dumps preserve.
+- Telemetry keeps `[buccaneer, request, *]` spans separate from
+  Catalina's, linked by `connection_telemetry_span_context` metadata
+  (no `:telemetry` span registry exists; direction stays
+  catalina-independent).
+- `match:` rejects non-leaf `Exception` patterns (BT-4319), so
+  `isKindOf:` chains remain where the input can be a subclass.
+- `ProcessDictionary` is a local spike (BT-4320 proposes the stdlib
+  home); `Reference new` and `Binary>>size` replace `make_ref` and flat
+  `byte_size`.
+- HTTPS selects `SSLTransport` unless `#transport` is set explicitly.
+
 ### Phase 2: beamtalk-http adapter and backend switch (M)
 
 **Scope (in beamtalk-http, on a branch):** a Beamtalk adapter in
@@ -722,6 +746,11 @@ lands; Phase 7 one week; Phase 8 three days; Phase 9 two to three days.
 | `isKindOf:` on a built-in class costs ~500 ns (BT-4172's boundary guards made the spike parse 10× Erlang, was 1.44×) | BT-4221 | Backlog (under BT-4112) | **performance (gate margins)**; throughput still 1.02-2.18× cowboy, bench/README.md § Rerun after BT-4172 |
 | `:: String` type pattern matches invalid-UTF-8 binaries that `isKindOf: String` rejects | BT-4222 | Backlog (under BT-4170) | keeps the boundary guards on `isKindOf:` until fixed |
 | Stdlib gaps worked around in Phase 1: ASCII lowercase, `DateTime` weekday, integer clocks, `Binary` substring search | BT-4193, BT-4192, BT-4076, BT-4190 | Done (merged 2026-10-26) | adopted: `String>>asciiLowercase` replaces `Headers asciiLowercase:`, `DateTime>>weekday` replaces `Clock weekdayOf:`, `Time monotonic:` in tests, `Binary>>includesSubstring:` replaces `binary:match` in `fieldValueValid:` |
+| `match:` on non-leaf `Exception` patterns rejected | BT-4319 | Backlog | `isKindOf:` chains stay; blocks cleaner error dispatch |
+| No stdlib process-dictionary abstraction | BT-4320 | Backlog, Low | local `ProcessDictionary` spike kept until decided |
+| `Logger` messages fail OTP formatting (FORMAT ERROR dumps) | BT-4321 | Backlog, High | request logging tests match preserved banner text meanwhile |
+| Workspace `load_project` rejects packages the build accepts | BT-4322 | Backlog, High | REPL-driven dev blocked; `beamtalk test` meanwhile |
+| `beamtalk run` servers accept but never respond | BT-4323 | Backlog, High | `examples/hello.bt` not executable via `run` meanwhile |
 
 ## References
 

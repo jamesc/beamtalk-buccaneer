@@ -253,3 +253,28 @@ TestCase subclass: BuccaneerConfigTest
           }
       ]
       message: "Invalid #transportOptions in #catalina config"
+
+  testHttpsSelectsSslTransport =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #scheme => #https,
+        #certfile => "c.pem",
+        #keyfile => "k.pem"
+      }
+    self assert: ((config catalina at: #transport) =:= SSLTransport)
+
+  testHttpKeepsTcpTransport =>
+    config := BuccaneerConfig from: #{#handler => self handlerBlock}
+    self assert: ((config catalina at: #transport ifAbsent: [nil]) isNil)
+
+  testExplicitTransportWinsOverScheme =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #scheme => #https,
+        #certfile => "c.pem",
+        #keyfile => "k.pem",
+        #catalina => #{#transport => TCPTransport}
+      }
+    self assert: ((config catalina at: #transport) =:= TCPTransport)

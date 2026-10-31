@@ -18,13 +18,13 @@ Protocol define: HTTPTransport
   /// {method, target, headers, transport}: the request head. Header
   /// names are lowercase: transports normalize at the boundary (HPACK
   /// names already are), and `Headers getHostHeader:` relies on it.
-  readHeaders -> Tuple
+  readHeaders -> Tuple(String, Tuple, HttpHeaders, HTTPTransport)
 
   /// {#ok | #more, data, transport}: the next body part.
-  readData: options :: Dictionary -> Tuple
+  readData: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTPTransport)
 
   /// The response head; answers the next transport.
-  sendHeaders: status :: Integer headers: headers :: List(Tuple) disposition: disposition :: BodyDisposition -> Object
+  sendHeaders: status :: Integer headers: headers :: HttpHeaders disposition: disposition :: BodyDisposition -> Object
 
   /// Response data; answers the next transport.
   sendData: data :: Object end: endRequest :: Boolean -> Object

@@ -1,0 +1,89 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: InitialHandlerTest
+
+  config => BuccaneerConfig from: #{#handler => [:ex | ex]}
+
+  testCleartextSniffsHttp1 =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: "GET / HTTP/1.1\r\n\r\n"
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http1, buf} -> self assert: buf asStringUnchecked equals: "GET";
+      _ -> self assert: false
+    ]
+    Loopback close: pair
+
+  testTimeoutSniffsHttp1Empty =>
+    pair := Loopback pairWithReadTimeout: 100
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http1, buf} -> self assert: buf isEmpty;
+      _ -> self assert: false
+    ]
+    Loopback close: pair
+
+  testTls12WarnsAndCloses =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: (Binary fromBytes: #(22, 3, 3))
+    self assert: (InitialHandler run: (pair at: 1) options: self config) equals: #close
+    Loopback close: pair
+
+  testTls10WarnsAndCloses =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: (Binary fromBytes: #(22, 3, 1))
+    self assert: (InitialHandler run: (pair at: 1) options: self config) equals: #close
+    Loopback close: pair
+
+  testTlsExcludedMinorFallsThrough =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: (Binary fromBytes: #(22, 3, 2))
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http1, buf} -> self assert: buf size equals: 3;
+      _ -> self assert: false
+    ]
+    Loopback close: pair
+
+  testPriPrefaceCloses =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    self assert: (InitialHandler run: (pair at: 1) options: self config) equals: #close
+    Loopback close: pair
+
+  testPriPartialFallsBack =>
+    pair := Loopback pairWithReadTimeout: 100
+    (Erlang gen_tcp) send: (pair at: 2) with: "PRI X"
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http1, buf} -> self assert: buf asStringUnchecked equals: "PRI";
+      _ -> self assert: false
+    ]
+    Loopback close: pair
+
+  testPriGarbageFallsBack =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: "PRIXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http1, buf} -> self assert: buf size equals: 24;
+      _ -> self assert: false
+    ]
+    Loopback close: pair
+
+  testClosedCloses =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) close: (pair at: 2)
+    self assert: (InitialHandler run: (pair at: 1) options: self config) equals: #close
+    (Erlang gen_tcp) close: (pair at: 3)
+
+  testHttp1DisabledCloses =>
+    config := BuccaneerConfig from: #{
+      #handler => [:ex | ex],
+      #http1 => #{#enabled => false}
+    }
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: "GET / HTTP/1.1\r\n\r\n"
+    self assert: (InitialHandler run: (pair at: 1) options: config) equals: #close
+    Loopback close: pair

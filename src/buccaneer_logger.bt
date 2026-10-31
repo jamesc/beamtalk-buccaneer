@@ -16,7 +16,7 @@ typed Object subclass: BuccaneerLogger
   class sealed clientClosureReasons -> List(Symbol) =>
     #(#closed, #enotconn, #einval, #econnaborted, #econnreset)
 
-  class sealed maybeLogProtocolError: error :: Exception stacktrace: stacktrace :: List(StackFrame) options: httpOpts :: Dictionary metadata: meta :: Dictionary -> Nil =>
+  class sealed maybeLogProtocolError: error :: Exception stacktrace: stacktrace :: List(StackFrame) options: httpOpts :: Dictionary(Symbol, Object) metadata: meta :: Dictionary(Symbol, Object) -> Nil =>
     closable := (error isKindOf: TransportError) and: [
       self clientClosureReasons includes: error reason
     ]
@@ -52,11 +52,15 @@ typed Object subclass: BuccaneerLogger
 
   /// Logger metadata: the telemetry metadata plus the domain and the
   /// crash reason.
-  class sealed loggerMetadataFor: kind :: Symbol reason: error :: Object stacktrace: stacktrace :: Object metadata: meta :: Dictionary -> Dictionary =>
-    (#{#domain => #(#buccaneer), #crash_reason => (self
+  class sealed loggerMetadataFor: kind :: Symbol reason: error :: Object stacktrace: stacktrace :: Object metadata: meta :: Dictionary(Symbol, Object) -> Dictionary(Symbol, Object) =>
+    base :: Dictionary(Symbol, Object) := #{
+      #domain => #(#buccaneer),
+      #crash_reason => (self
         crashReason: kind
         reason: error
-        stacktrace: stacktrace)} merge: meta)
+        stacktrace: stacktrace)
+    }
+    base merge: meta
 
   class sealed crashReason: kind :: Symbol reason: error :: Object stacktrace: stacktrace :: Object -> Tuple =>
     kind =:= #throw ifTrue: [^{{#nocatch, error}, stacktrace}]

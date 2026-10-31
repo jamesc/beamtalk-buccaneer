@@ -26,3 +26,9 @@ sealed typed Value subclass: ExchangeState
   /// Bandit's req_body_bytes and resp_body_bytes metrics.
   field: reqBodyBytes :: Integer = 0
   field: respBodyBytes :: Integer = 0
+  /// Request telemetry stamps (native monotonic time, nil until reached).
+  field: reqHeaderEndTime :: Integer | Nil = nil
+  field: reqBodyStartTime :: Integer | Nil = nil
+  field: reqBodyEndTime :: Integer | Nil = nil
+  field: respStartTime :: Integer | Nil = nil
+  field: respEndTime :: Integer | Nil = nil

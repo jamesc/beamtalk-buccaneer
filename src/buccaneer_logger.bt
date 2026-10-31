@@ -1,0 +1,63 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.Logger: what a failed request writes to the log. Transport
+/// errors whose reason is a client closure honour #logClientClosures
+/// (default false); every other protocol error honours #logProtocolErrors
+/// (default #short). Both live in the #http section; anything but
+/// #short, #verbose or false raises, as a typo the user should hear
+/// about (values are checked at each use site).
+typed Object subclass: BuccaneerLogger
+
+  /// Reasons a peer socket surfaces once the client has gone away.
+  /// :closed is the common case; an abortive close (RST) can also
+  /// surface as :enotconn/:einval/:econnaborted/:econnreset depending
+  /// on platform and on how far along the connection was.
+  class sealed clientClosureReasons -> List(Symbol) =>
+    #(#closed, #enotconn, #einval, #econnaborted, #econnreset)
+
+  class sealed maybeLogProtocolError: error :: Exception stacktrace: stacktrace :: List(StackFrame) options: httpOpts :: Dictionary metadata: meta :: Dictionary -> Nil =>
+    closable := (error isKindOf: TransportError) and: [
+      self clientClosureReasons includes: error reason
+    ]
+    key := closable ifTrue: [#logClientClosures] ifFalse: [#logProtocolErrors]
+    default := closable ifTrue: [false] ifFalse: [#short]
+    (httpOpts at: key ifAbsent: [default]) match: [
+      #short -> Logger
+        error: (self banner: error)
+        metadata: (self
+          loggerMetadataFor: #error
+          reason: error
+          stacktrace: stacktrace
+          metadata: meta);
+      #verbose -> Logger
+        error: (self banner: error stacktrace: stacktrace)
+        metadata: (self
+          loggerMetadataFor: #error
+          reason: error
+          stacktrace: stacktrace
+          metadata: meta);
+      _f :: False -> nil;
+      _ -> Error signal: ("Invalid value for option " ++ key asString)
+    ]
+    nil
+
+  /// One line: the class and the message (Bandit's format_banner).
+  class sealed banner: error :: Exception -> String =>
+    "** (" ++ error errorClass asString ++ ") " ++ error message
+
+  /// The banner plus the stacktrace (Bandit's format/3).
+  class sealed banner: error :: Exception stacktrace: stacktrace :: List(StackFrame) -> String =>
+    (self banner: error) ++ "\n" ++ stacktrace printString
+
+  /// Logger metadata: the telemetry metadata plus the domain and the
+  /// crash reason.
+  class sealed loggerMetadataFor: kind :: Symbol reason: error :: Object stacktrace: stacktrace :: Object metadata: meta :: Dictionary -> Dictionary =>
+    (#{#domain => #(#buccaneer), #crash_reason => (self
+        crashReason: kind
+        reason: error
+        stacktrace: stacktrace)} merge: meta)
+
+  class sealed crashReason: kind :: Symbol reason: error :: Object stacktrace: stacktrace :: Object -> Tuple =>
+    kind =:= #throw ifTrue: [^{{#nocatch, error}, stacktrace}]
+    {error, stacktrace}

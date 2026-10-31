@@ -1,0 +1,12 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// What a request handler is: a block, or a Value that answers `call:`.
+/// It runs in the exchange's owner process, so it must not be an Actor:
+/// an actor's `call:` would run in the actor and fail the owner check.
+type ExchangeHandlerLike = Block(Exchange, Object) | ExchangeHandler
+
+/// Handle one request. Send a response (or upgrade) before returning;
+/// the answer is ignored.
+Protocol define: ExchangeHandler
+  call: exchange :: Exchange -> Object

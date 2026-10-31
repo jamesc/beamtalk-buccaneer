@@ -13,6 +13,7 @@ TestCase subclass: ExchangeTest
 
   tearDown =>
     (Ets exists: Clock tableName) ifTrue: [(Ets named: Clock tableName) delete]
+    Erlang erlang erase: HTTP1Socket sentKey
     self
 
   nl => "\r\n"
@@ -42,21 +43,6 @@ TestCase subclass: ExchangeTest
       ++ self nl
       ++ self nl
       ++ body
-
-  /// The response bytes up to the end of the head, then exactly bodyLength more.
-  responseOf: pair body: bodyLength =>
-    sock := pair at: 2
-    head := ""
-    [(head includesSubstring: "\r\n\r\n") not]
-      whileTrue: [
-        head := head
-          concat: ((Erlang gen_tcp)
-            recv: sock
-            with: 1
-            with: 2000) unwrap
-      ]
-    bodyLength =:= 0 ifTrue: [^head asStringUnchecked]
-    (head concat: (Loopback clientRead: pair bytes: bodyLength)) asStringUnchecked
 
   // ===== the request =====
   testRequestAccessors =>
@@ -204,7 +190,7 @@ TestCase subclass: ExchangeTest
       headers: #({"content-type", "text/plain"})
       body: "hello"
     self assert: ex state equals: #sent
-    resp := self responseOf: pair body: 5
+    resp := Loopback responseOf: pair body: 5
     self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
     self assert: (resp includesSubstring: "\r\ncontent-length: 5\r\n")
     self assert: (resp includesSubstring: "\r\ncontent-type: text/plain\r\n")
@@ -221,7 +207,7 @@ TestCase subclass: ExchangeTest
       sendResp: 200
       headers: #()
       body: #("hel", #("lo"))
-    resp := self responseOf: pair body: 5
+    resp := Loopback responseOf: pair body: 5
     self assert: (resp includesSubstring: "\r\ncontent-length: 5\r\n")
     self assert: (resp endsWith: "hello")
     ex finish
@@ -234,7 +220,7 @@ TestCase subclass: ExchangeTest
       sendResp: 200
       headers: #({"date", "yesterday"})
       body: ""
-    resp := self responseOf: pair body: 0
+    resp := Loopback responseOf: pair body: 0
     self assert: (resp includesSubstring: "\r\ndate: yesterday\r\n")
     ex finish
     Loopback close: pair
@@ -250,7 +236,7 @@ TestCase subclass: ExchangeTest
       sendResp: 200
       headers: #()
       body: "hello"
-    resp := self responseOf: pair body: 0
+    resp := Loopback responseOf: pair body: 0
     // Bandit keeps the content-length a GET would carry, and sends no body.
     self assert: (resp includesSubstring: "\r\ncontent-length: 5\r\n")
     self assert: (resp endsWith: "\r\n\r\n")
@@ -271,7 +257,7 @@ TestCase subclass: ExchangeTest
       sendResp: 204
       headers: #({"content-length", "5"})
       body: "hello"
-    resp := self responseOf: pair body: 0
+    resp := Loopback responseOf: pair body: 0
     self assert: (resp startsWith: "HTTP/1.1 204 No Content\r\n")
     self deny: (resp includesSubstring: "content-length")
     ex finish

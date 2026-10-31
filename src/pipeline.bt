@@ -1,0 +1,302 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.Pipeline: one request, shared by this engine's transports
+/// (HTTP/1 now, HTTP/2 in Phase 6): read the head, build the
+/// exchange, call the handler, commit the response, and map every
+/// failure to a status or a close.
+///
+/// Answers `Result ok:` with the next transport, or `Result error:`
+/// with a protocol error (HTTPError/TransportError) once its status
+/// is answered. Anything else the request raises is reported (the
+/// span's exception event, a log line when its status is configured,
+/// a 500 unless answered) and then re-signalled, so the connection
+/// crashes as in Bandit.
+typed Object subclass: Pipeline
+
+  /// Run one request to completion. `transport` is this request's
+  /// transport; `handler` is a block or an ExchangeHandler;
+  /// `connectionSpan` is Catalina's connection span (nil in tests);
+  /// `connData` is {secure?, peerAddress}; `config` is the server's
+  /// BuccaneerConfig.
+  class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+    startTime := BuccaneerTelemetry monotonicTime
+    base := self baseMetadata: connectionSpan handler: config
+    [
+      {method, target, headers, transport2} := transport readHeaders
+      initial := self
+        buildState: transport2
+        method: method
+        target: target
+        headers: headers
+        connData: connData
+      ex := Exchange open: initial
+      meta := base at: #conn put: initial
+      span := BuccaneerTelemetry
+        startSpan: #request
+        measurements: #{#monotonic_time => startTime}
+        metadata: meta
+      self
+        runInner: ex
+        span: span
+        handler: handler
+        transport: transport2
+        metadata: meta
+        options: config
+    ]
+      on: Exception
+      do: [:e :: Exception |
+        // isKindOf:, not match:: type patterns reject non-leaf classes
+        // and when: guards allow only comparisons and arithmetic
+        // (HTTPError has subclasses; ADR 0107 Phase B).
+        (e isKindOf: HTTPError)
+          ifTrue: [
+            self
+              protocolError: e
+              span: (self startOuterSpan: base startTime: startTime)
+              transport: transport
+              metadata: base
+              options: config
+          ]
+          ifFalse: [
+            (e isKindOf: TransportError)
+              ifTrue: [
+                self
+                  protocolError: e
+                  span: (self startOuterSpan: base startTime: startTime)
+                  transport: transport
+                  metadata: base
+                  options: config
+              ]
+              ifFalse: [
+                self
+                  internalError: e
+                  span: (self startOuterSpan: base startTime: startTime)
+                  transport: transport
+                  metadata: base
+                  options: config
+              ]
+          ]
+      ]
+
+  /// A head that never parsed gets a span with no conn.
+  class sealed startOuterSpan: meta :: Dictionary startTime: start :: Integer -> BuccaneerTelemetry =>
+    BuccaneerTelemetry
+      startSpan: #request
+      measurements: #{#monotonic_time => start}
+      metadata: meta
+
+  /// Shared request metadata: the connection span context and the plug.
+  class sealed baseMetadata: connectionSpan :: CatalinaTelemetry | Nil handler: config :: BuccaneerConfig -> Dictionary =>
+    context := connectionSpan match: [
+      s :: CatalinaTelemetry -> s telemetrySpanContext;
+      _ -> nil
+    ]
+    #{
+      #connection_telemetry_span_context => context,
+      #plug => config displayHandler
+    }
+
+  /// Call the handler; its answer is ignored.
+  class sealed callHandler: handler :: ExchangeHandlerLike with: ex :: Exchange -> Object =>
+    (handler isKindOf: Block) ifTrue: [^handler value: ex]
+    (handler respondsTo: #call:) ifFalse: [
+      Error signal: "Invalid request handler"
+    ]
+    handler call: ex
+
+  /// The inner request: call the handler, commit, forget the exchange,
+  /// stop the span. Errors here all know their conn.
+  class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+    [
+      self callHandler: handler with: ex
+      ex commit
+      final := ex load
+      done := ex finish
+      span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
+      Result ok: done
+    ]
+      on: Exception
+      do: [:e :: Exception |
+        (e isKindOf: HTTPError)
+          ifTrue: [
+            self
+              protocolError: e
+              span: span
+              transport: transport
+              metadata: meta
+              options: config
+          ]
+          ifFalse: [
+            (e isKindOf: TransportError)
+              ifTrue: [
+                self
+                  protocolError: e
+                  span: span
+                  transport: transport
+                  metadata: meta
+                  options: config
+              ]
+              ifFalse: [
+                self
+                  internalError: e
+                  span: span
+                  transport: transport
+                  metadata: meta
+                  options: config
+              ]
+          ]
+      ]
+
+  /// A malformed request or a socket failure: stop the span with the
+  /// error, log per the #http section, answer the error status unless
+  /// answered, and ask the handler to close.
+  class sealed protocolError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+    span stopWith: #{} metadata: (meta at: #error put: error message)
+    BuccaneerLogger
+      maybeLogProtocolError: error
+      stacktrace: error stackTrace
+      options: config http
+      metadata: meta
+    transport sendOnError: error
+    Result error: error
+
+  /// Anything else: the span's exception event, a log line when 500 is
+  /// configured, a 500 unless answered — then re-signal, so the
+  /// connection crashes as in Bandit.
+  class sealed internalError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary options: config :: BuccaneerConfig -> Never =>
+    kind := (error isKindOf: ExitError) ifTrue: [
+      #exit
+    ] ifFalse: [(error isKindOf: ThrowError) ifTrue: [#throw] ifFalse: [#error]]
+    span
+      exceptionKind: kind
+      reason: error
+      stacktrace: error stackTrace
+    (self logStatus: 500 options: config)
+      ifTrue: [
+        Logger
+          error: (BuccaneerLogger banner: error stacktrace: error stackTrace)
+          metadata: (BuccaneerLogger
+            loggerMetadataFor: kind
+            reason: error
+            stacktrace: error stackTrace
+            metadata: meta)
+      ]
+    transport sendOnError: error
+    error signal
+
+  /// Whether #logExceptionsWithStatusCodes (default 500-599) covers a
+  /// status: an Integer, a List, or anything answering includes:.
+  class sealed logStatus: status :: Integer options: config :: BuccaneerConfig -> Boolean =>
+    raw := config http at: #logExceptionsWithStatusCodes ifAbsent: [nil]
+    raw isNil ifTrue: [^status between: 500 and: 599]
+    (raw isKindOf: Integer) ifTrue: [^status =:= raw]
+    (raw isKindOf: List) ifTrue: [^raw includes: status]
+    (raw respondsTo: #includes:) ifTrue: [^raw includes: status]
+    Error signal: "Invalid value for option #logExceptionsWithStatusCodes"
+
+  /// The stop measurements for a served request: the stamps and byte
+  /// counts the request reached, as the adapter's metrics.
+  class sealed metricsFrom: st :: ExchangeState -> Dictionary =>
+    out := #{#req_header_end_time => st reqHeaderEndTime}
+    st reqBodyStartTime isNil
+      ifFalse: [
+        out := (out at: #req_body_start_time put: st reqBodyStartTime) at: #req_body_bytes put: st reqBodyBytes
+        st reqBodyEndTime isNil ifFalse: [
+          out := out at: #req_body_end_time put: st reqBodyEndTime
+        ]
+      ]
+    st respStartTime isNil
+      ifFalse: [
+        out := (out at: #resp_start_time put: st respStartTime) at: #resp_body_bytes put: st respBodyBytes
+        st respEndTime isNil ifFalse: [
+          out := out at: #resp_end_time put: st respEndTime
+        ]
+      ]
+    out
+
+  /// The exchange state for a parsed head (Bandit's build_conn!, minus
+  /// the conn).
+  class sealed buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: List(Tuple) connData: connData :: Tuple -> ExchangeState =>
+    scheme := (connData at: 1) =:= true ifTrue: [#https] ifFalse: [#http]
+    hostPort := self
+      hostAndPort: scheme
+      version: transport version
+      target: target
+      headers: headers
+    pathQuery := self pathAndQuery: target
+    ((((((((ExchangeState new withTransport: transport) withMethod: method) withScheme: scheme) withHost: (hostPort at: 1)) withPort: (hostPort at: 2)) withPath: (pathQuery at: 1)) withQuery: (pathQuery at: 2)) withHeaders: headers)
+
+  /// {host, port} from an absolute target, else the Host header
+  /// (Bandit's determine_host_and_port!).
+  class sealed hostAndPort: scheme :: RequestScheme version: ver :: HttpVersion target: target :: Tuple headers: headers :: List(Tuple) -> Tuple =>
+    host := target at: 2
+    port := target at: 3
+    (host isNil and: [port isNil])
+      ifFalse: [
+        ^self
+          absoluteHost: host
+          port: port
+          scheme: scheme
+      ]
+    found := Headers getHostHeader: headers
+    found isError
+      ifTrue: [
+        reason := found error match: [
+          s :: String -> s;
+          _ -> found error printString
+        ]
+        HTTPError signal: "Unable to obtain host and port: " ++ reason
+      ]
+    header := found value
+    header isNil
+      ifTrue: [
+        ver =:= #http10 ifTrue: [^{"", self defaultPortFor: scheme}]
+        HTTPError signal: "Unable to obtain host and port: No host header"
+      ]
+      ifFalse: [
+        {h, p} := Headers parseHostlikeHeader: header
+        ^{h, p ifNil: [self defaultPortFor: scheme]}
+      ]
+
+  /// {host, port} from an absolute target's authority. A non-String
+  /// host is rejected: Bandit passes opaque bytes through, but the
+  /// state's host is a String. Authority ports arrive as strings
+  /// (CONNECT) and are parsed; absolute-form ports arrive parsed.
+  class sealed absoluteHost: host :: Object port: port :: Object scheme: scheme :: RequestScheme -> Tuple =>
+    h := host match: [
+      s :: String -> s;
+      _ -> HTTPError signal: "Unable to obtain host and port: invalid host"
+    ]
+    p := port isNil
+      ifTrue: [self defaultPortFor: scheme]
+      ifFalse: [
+        port match: [
+          n :: Integer -> n;
+          s :: String -> Headers parsePort: s;
+          _ -> HTTPError signal: "Header contains invalid port"
+        ]
+      ]
+    {h, p}
+
+  /// {path, query} from a target, without the fragment.
+  class sealed pathAndQuery: target :: Tuple -> Tuple =>
+    raw := target at: 4
+    raw isNil ifTrue: [^{"", nil}]
+    (raw isKindOf: Symbol) ifTrue: [^{"*", nil}]
+    self splitPath: raw
+
+  /// Split a path into {path, query} on the first "?".
+  class sealed splitPath: path :: Object -> Tuple =>
+    text := path match: [
+      s :: String -> s;
+      _ -> HTTPError signal: "Unsupported request target (RFC9112§3.2)"
+    ]
+    noFragment := (text split: "#") first
+    q := noFragment indexOf: "?"
+    q isNil ifTrue: [^{noFragment, nil}]
+    {(noFragment take: q - 1), (noFragment drop: q)}
+
+  class sealed defaultPortFor: scheme :: RequestScheme -> Integer =>
+    scheme =:= #https ifTrue: [^443]
+    80

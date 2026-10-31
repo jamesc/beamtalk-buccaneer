@@ -118,7 +118,7 @@ typed Value subclass: HTTP1Socket
       ifTrue: [
         reason := result error
         reason =:= #timeout ifTrue: [self disconnectedOrTimeout: sock]
-        TransportError signal: ("Unrecoverable error: " ++ reason printString)
+        TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason
       ]
     data := result value
     self
@@ -400,10 +400,10 @@ typed Value subclass: HTTP1Socket
     sock := self socket
     sock isNil ifTrue: [Error signal: "Send with no socket"]
     result := sock send: payload
+    Erlang erlang put: HTTP1Socket sentKey with: true
     result isError
       ifTrue: [
-        Erlang erlang put: HTTP1Socket sentKey with: true
-        TransportError signal: ("Unrecoverable error: " ++ result error printString)
+        TransportError signal: ("Unrecoverable error: " ++ result error printString) reason: result error
       ]
     self
 
@@ -639,7 +639,7 @@ typed Value subclass: HTTP1Socket
       ]
     reason := result error
     reason =:= #timeout ifTrue: [^self disconnectedOrTimeout: sock]
-    TransportError signal: ("Unrecoverable error: " ++ reason printString)
+    TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason
 
   /// After a timeout or empty read, check whether the peer is still
   /// connected: TransportError for a disconnect, HTTPError408 for a
@@ -649,4 +649,4 @@ typed Value subclass: HTTP1Socket
     probe isOk ifTrue: [HTTPError408 signal: "Body read timeout"]
     reason := probe error
     reason =:= #timeout ifTrue: [HTTPError408 signal: "Read timeout"]
-    TransportError signal: ("Unrecoverable error: " ++ reason printString)
+    TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason

@@ -33,3 +33,12 @@ sealed Object subclass: Loopback
       recv: (pair at: 2)
       with: n
       with: 2000) unwrap
+
+  /// A response head plus `n` body bytes from the raw client side.
+  class sealed responseOf: pair :: Tuple body: n :: Integer -> String =>
+    head := ""
+    [
+      (head includesSubstring: "\r\n\r\n") not
+    ] whileTrue: [head := head concat: (Loopback clientRead: pair bytes: 1)]
+    n =:= 0 ifTrue: [^head asStringUnchecked]
+    (head concat: (Loopback clientRead: pair bytes: n)) asStringUnchecked

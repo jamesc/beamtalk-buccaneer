@@ -3,6 +3,10 @@
 
 TestCase subclass: HTTP1SocketTest
 
+  tearDown =>
+    Erlang erlang erase: HTTP1Socket sentKey
+    self
+
   nl => "\r\n"
 
   socketWith: bytes => HTTP1Socket new withBuffer: bytes

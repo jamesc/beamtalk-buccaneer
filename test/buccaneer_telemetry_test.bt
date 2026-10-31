@@ -1,0 +1,71 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: BuccaneerTelemetryTest
+
+  tableName -> Symbol => #buccaneerTelemetryEvents
+
+  plug -> Symbol => #telemetryTest
+
+  setUp =>
+    (Ets exists: self tableName) ifTrue: [(Ets named: self tableName) delete]
+    TelemetryCollector detach: self tableName
+    Ets new: self tableName type: #set
+    self
+
+  tearDown =>
+    TelemetryCollector detach: self tableName
+    (Ets named: self tableName) delete
+    self
+
+  startSpan =>
+    TelemetryCollector attachAll: self plug table: self tableName
+    BuccaneerTelemetry
+      startSpan: #request
+      measurements: #{#monotonic_time => 100}
+      metadata: #{#plug => self plug}
+
+  stopNamed: suffix =>
+    (TelemetryCollector
+      events: #request
+      named: suffix
+      in: self tableName) first
+
+  testStartStop =>
+    span := self startSpan
+    span stopWith: #{#req_body_bytes => 5} metadata: #{#extra => 1}
+    stop := self stopNamed: #stop
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #req_body_bytes) equals: 5
+    self assert: (measurements at: #duration) equals: (measurements at: #monotonic_time) - 100
+    self assert: (metadata at: #plug) equals: #telemetryTest
+    self assert: (metadata at: #extra) equals: 1
+    self assert: (metadata at: #telemetry_span_context) equals: span telemetrySpanContext
+    start := self stopNamed: #start
+    self assert: ((start at: 2) at: #monotonic_time) equals: 100
+    self assert: ((start at: 3) at: #telemetry_span_context) equals: span telemetrySpanContext
+
+  testExceptionMapsErrorToExit =>
+    span := self startSpan
+    span
+      exceptionKind: #error
+      reason: "boom"
+      stacktrace: #()
+    metadata := (self stopNamed: #exception) at: 3
+    self assert: (metadata at: #kind) equals: #exit
+    self assert: (metadata at: #exception) equals: "boom"
+    self assert: (metadata at: #plug) equals: #telemetryTest
+    self assert: (metadata at: #telemetry_span_context) equals: span telemetrySpanContext
+
+  testExceptionKeepsThrow =>
+    span := self startSpan
+    span
+      exceptionKind: #throw
+      reason: "x"
+      stacktrace: #()
+    metadata := (self stopNamed: #exception) at: 3
+    self assert: (metadata at: #kind) equals: #throw
+
+  testMonotonicTime =>
+    self assert: (BuccaneerTelemetry monotonicTime isKindOf: Integer)

@@ -1,0 +1,77 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+TestCase subclass: BuccaneerLoggerTest
+
+  httpError => [HTTPError signal: "bad thing"] on: HTTPError do: [:e | e]
+
+  transportError: reason =>
+    [
+      TransportError signal: "Unrecoverable error" reason: reason
+    ] on: TransportError do: [:e | e]
+
+  log: error options: opts =>
+    BuccaneerLogger
+      maybeLogProtocolError: error
+      stacktrace: #()
+      options: opts
+      metadata: #{}
+
+  testShortDefault =>
+    self assert: (self log: self httpError options: #{}) equals: nil
+
+  testVerbose =>
+    self assert: (self log: self httpError options: #{
+      #logProtocolErrors => #verbose
+    }) equals: nil
+
+  testDisabled =>
+    self assert: (self log: self httpError options: #{
+      #logProtocolErrors => false
+    }) equals: nil
+
+  testClientClosureSilentByDefault =>
+    self assert: (self log: (self transportError: #closed) options: #{}) equals: nil
+
+  testClientClosureLoggedWhenEnabled =>
+    self
+      assert: (self log: (self transportError: #econnreset) options: #{
+        #logClientClosures => #short
+      })
+      equals: nil
+
+  testNonClosureTransportErrorUsesProtocolSetting =>
+    self assert: (self log: (self transportError: #econnrefused) options: #{}) equals: nil
+
+  testInvalidOptionRaises =>
+    raised := [
+      self log: self httpError options: #{#logProtocolErrors => 42}
+    ] on: Error do: [:e | e]
+    self assert: (raised message startsWith: "Invalid value for option")
+
+  testBanner =>
+    self assert: (BuccaneerLogger banner: self httpError) equals: "** (HTTPError) bad thing"
+
+  testCrashReason =>
+    self
+      assert: (BuccaneerLogger
+        crashReason: #error
+        reason: "x"
+        stacktrace: #())
+      equals: {"x", #()}
+    self
+      assert: (BuccaneerLogger
+        crashReason: #throw
+        reason: "x"
+        stacktrace: #())
+      equals: {{#nocatch, "x"}, #()}
+
+  testLoggerMetadata =>
+    meta := BuccaneerLogger
+      loggerMetadataFor: #error
+      reason: "x"
+      stacktrace: #()
+      metadata: #{#plug => #p}
+    self assert: (meta at: #domain) equals: #(#buccaneer)
+    self assert: (meta at: #plug) equals: #p
+    self assert: (meta at: #crash_reason) equals: {"x", #()}

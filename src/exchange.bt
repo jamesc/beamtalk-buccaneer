@@ -20,7 +20,7 @@ sealed typed Value subclass: Exchange
   /// exactly where this state belongs).
   class sealed open: state :: ExchangeState -> Exchange =>
     ex := Exchange ref: Erlang erlang make_ref owner: Pid current
-    ex store: state
+    ex store: (state withReqHeaderEndTime: BuccaneerTelemetry monotonicTime)
 
   /// The process-dictionary key of this exchange's state.
   key -> Tuple => {#buccaneer_exchange, self.ref}
@@ -101,7 +101,13 @@ sealed typed Value subclass: Exchange
       ] on: HTTPError408 do: [:e | ^Result error: #timeout]
     ] on: TransportError do: [:e | ^Result error: #closed]
     {tag, data, transport} := read
-    self store: ((st withTransport: transport) withReqBodyBytes: st reqBodyBytes + (Erlang erlang byte_size: data))
+    started := st reqBodyStartTime ifNil: [BuccaneerTelemetry monotonicTime]
+    stamped := tag =:= #ok
+      ifTrue: [
+        (st withReqBodyStartTime: started) withReqBodyEndTime: BuccaneerTelemetry monotonicTime
+      ]
+      ifFalse: [st withReqBodyStartTime: started]
+    self store: ((stamped withTransport: transport) withReqBodyBytes: st reqBodyBytes + (Erlang erlang byte_size: data))
     Result ok: (BodyPart data: data done: tag =:= #ok)
 
   /// The rest of the body in one read, or error: #body_too_large when it
@@ -125,6 +131,7 @@ sealed typed Value subclass: Exchange
       ifFalse: [
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
+    st := st withRespStartTime: BuccaneerTelemetry monotonicTime
     length := Erlang erlang iolist_size: body
     withLength := Headers
       addContentLength: hs
@@ -163,7 +170,10 @@ sealed typed Value subclass: Exchange
     transport := (self sendsBody: st) ifTrue: [
       st transport sendData: data end: endRequest
     ] ifFalse: [st transport]
-    (st withTransport: transport) withRespBodyBytes: st respBodyBytes + (Erlang erlang iolist_size: data)
+    stamped := endRequest ifTrue: [
+      st withRespEndTime: BuccaneerTelemetry monotonicTime
+    ] ifFalse: [st]
+    (stamped withTransport: transport) withRespBodyBytes: st respBodyBytes + (Erlang erlang iolist_size: data)
 
   /// Bandit's send_resp_body?.
   sendsBody: st :: ExchangeState -> Boolean =>
@@ -174,7 +184,9 @@ sealed typed Value subclass: Exchange
 
   // === Engine side, after the handler returns ===
 
-  /// The current transport, for the pipeline's sendOnError:.
+  /// The latest transport. The pipeline answers errors on the request's
+  /// original transport (as Bandit's send_on_error does); this is for
+  /// handlers and tests inspecting the exchange mid-request.
   transport -> HTTP1Socket => self load transport
 
   /// Bandit's commit_response!: raises NotSentError when the handler

@@ -11,6 +11,10 @@ type HttpVersion = #http10 | #http11 | #http2
 /// implements. HTTP1Socket and (Phase 6) HTTP2Stream conform
 /// structurally; no implements: declaration is needed.
 Protocol define: HTTPTransport
+  /// The negotiated version (Bandit's version/1): the pipeline needs it
+  /// for the HTTP/1.0 missing-host rule.
+  version -> HttpVersion
+
   /// {method, target, headers, transport}: the request head.
   readHeaders -> Tuple
 

@@ -1,0 +1,91 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.Telemetry: the `[buccaneer, request, *]` span over the stdlib
+/// `Telemetry` facade, so any `telemetry` handler sees it.
+///
+/// A request span opens when the pipeline has read the head (or fails
+/// to) and ends at the response, or at the request's exception event
+/// (which, as in Bandit, is not followed by a stop).
+///
+/// | Event | Measurements | Metadata |
+/// |---|---|---|
+/// | `start` | `#monotonic_time` | `#telemetry_span_context`, `#connection_telemetry_span_context`, `#plug`, `#conn` (absent when the head never parsed) |
+/// | `stop` | `start` plus `#duration`, `#req_body_bytes`, `#resp_body_bytes` and the `*_time` stamps the request reached | `start` plus `#error` when the request failed |
+/// | `exception` | `#monotonic_time` | `start` plus `#kind`, `#exception`, `#stacktrace` |
+///
+/// `#plug` is the server's display handler; `#conn` is the ExchangeState
+/// (Bandit's `Plug.Conn`), initial on `start`, final on `stop`. Times
+/// are native monotonic, bytes are octets.
+sealed typed Value subclass: BuccaneerTelemetry
+  field: spanName :: Symbol = #request
+  field: telemetrySpanContext :: Reference | Nil = nil
+  field: startTime :: Integer = 0
+  field: startMetadata :: Dictionary(Symbol, Object) = #{}
+
+  /// Native monotonic time, as `telemetry` expects.
+  class sealed monotonicTime -> Integer => Erlang erlang monotonic_time
+
+  /// Emit `[buccaneer, span, name]`.
+  class sealed emit: span :: Symbol name: name :: Symbol measurements: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> Nil =>
+    Telemetry
+      execute: ((#(#buccaneer) add: span) add: name)
+      measurements: measurements
+      metadata: metadata
+
+  /// Start a span: emit its `start` event and answer it. `measurements`
+  /// may supply `#monotonic_time`; otherwise it is now.
+  class sealed startSpan: name :: Symbol measurements: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> BuccaneerTelemetry =>
+    timed := (measurements includesKey: #monotonic_time) ifTrue: [
+      measurements
+    ] ifFalse: [measurements at: #monotonic_time put: self monotonicTime]
+    context := Reference new
+    start := metadata at: #telemetry_span_context put: context
+    self
+      emit: name
+      name: #start
+      measurements: timed
+      metadata: start
+    startTime :: Integer := timed at: #monotonic_time
+    BuccaneerTelemetry
+      spanName: name
+      telemetrySpanContext: context
+      startTime: startTime
+      startMetadata: start
+
+  /// Emit `stop` with `#duration`, merging the start metadata under the
+  /// given one. Answers the span, as every event method does. Unlike
+  /// Catalina's spans there is no exception marker to honour: the
+  /// pipeline emits either `stop` or `exception`, never both.
+  stopWith: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> BuccaneerTelemetry =>
+    now :: Integer := (measurements at: #monotonic_time ifAbsent: [
+      nil
+    ]) ifNil: [BuccaneerTelemetry monotonicTime]
+    timed := (measurements at: #monotonic_time put: now) at: #duration put: now - self startTime
+    self
+      untimedEvent: #stop
+      measurements: timed
+      metadata: (self.startMetadata merge: metadata)
+
+  /// Emit `exception` with `#kind`, `#exception` and `#stacktrace`. As
+  /// in Bandit, an `#error` kind is reported as `#exit`.
+  exceptionKind: kind :: Symbol reason: reason :: Object stacktrace: stacktrace :: Object -> BuccaneerTelemetry =>
+    mapped := kind =:= #error ifTrue: [#exit] ifFalse: [kind]
+    metadata := self.startMetadata merge: #{
+      #kind => mapped,
+      #exception => reason,
+      #stacktrace => stacktrace
+    }
+    self
+      untimedEvent: #exception
+      measurements: #{#monotonic_time => BuccaneerTelemetry monotonicTime}
+      metadata: metadata
+
+  /// An event stamped with the span's context.
+  untimedEvent: name :: Symbol measurements: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> BuccaneerTelemetry =>
+    BuccaneerTelemetry
+      emit: self.spanName
+      name: name
+      measurements: measurements
+      metadata: (metadata at: #telemetry_span_context put: self.telemetrySpanContext)
+    self

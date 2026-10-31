@@ -1,0 +1,29 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.SocketHelpers: per-connection facts the pipeline needs, plus
+/// iodata helpers. Catalina sockets are TCP or TLS, so peer addresses
+/// are always {ip, port}; Bandit's :local/:unspec mapping has no case.
+typed Object subclass: SocketHelpers
+
+  /// {secure?, peerAddress} for the pipeline (Bandit's conn_data).
+  /// Raises TransportError when the peer address is unavailable
+  /// (`peername` answers `ok: nil` then; it never errors).
+  class sealed connData: sock :: Socket -> Tuple =>
+    peer := sock peername
+    (peer isError or: [(peer value) isNil])
+      ifTrue: [
+        reason := peer isError ifTrue: [peer error] ifFalse: [#no_peername]
+        TransportError signal: ("Unable to obtain conn_data: " ++ reason printString) reason: reason
+      ]
+    {sock isSecure, (peer value) at: 1}
+
+  /// Whether iodata holds no bytes (Bandit's iodata_empty?).
+  class sealed iodataEmpty: data :: Object -> Boolean =>
+    data match: [
+      b :: Binary -> b isEmpty;
+      l :: List -> l allSatisfy: [:each :: Object |
+        SocketHelpers iodataEmpty: each
+      ];
+      _ -> false
+    ]

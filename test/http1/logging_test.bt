@@ -1,0 +1,149 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http1/logging_test.exs`: the log lines a live
+/// server writes. Each test attaches a fresh file handler, so files
+/// never mix; tokens are unique per test for the same reason. NOTE:
+/// the OTP formatter cannot render Beamtalk's tagged strings yet, so
+/// `logger_std_h` files the events as FORMAT ERROR dumps; these tests
+/// assert the emitted banner text, which the dumps preserve verbatim,
+/// and the short/verbose shape around it (`\n#(` starts a stacktrace).
+TestCase subclass: LoggingTest
+
+  tableName -> Symbol => #loggingTestLog
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  testRaiseLogsShortBanner =>
+    path := LogCapture attach: self tableName
+    srv := (Buccaneer start: #{
+      #port => 0,
+      #handler => [:ex | Error signal: "boom-log-short-1"]
+    }) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.1 500 Internal Server Error\r\n")
+    content := LogCapture await: "boom-log-short-1" in: path
+    LogCapture detach: self tableName
+    self assert: (content includesSubstring: "** (Error) boom-log-short-1")
+    self assert: (content includesSubstring: "Pipeline>>")
+    self assert: (srv stop: 5000) isOk
+
+  testVerboseProtocolError =>
+    path := LogCapture attach: self tableName
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #http => #{#logProtocolErrors => #verbose},
+        #handler => [:ex |
+          raw := (ex readAll: 8000000) value
+          ex
+            sendResp: 200
+            headers: #()
+            body: raw asStringUnchecked
+        ]
+      }) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "POST / HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\nZZZ\r\n0\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.1 400 Bad Request\r\n")
+    content := LogCapture await: "Unable to parse chunk size" in: path
+    LogCapture detach: self tableName
+    self assert: (content includesSubstring: "** (HTTPError) Unable to parse chunk size")
+    self assert: (srv stop: 5000) isOk
+
+  testShortProtocolError =>
+    path := LogCapture attach: self tableName
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]}) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GARBAGE\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request\r\n")
+    content := LogCapture await: "Request line" in: path
+    LogCapture detach: self tableName
+    self assert: (content includesSubstring: "** (HTTPError) Request line HTTP error")
+    self deny: (content includesSubstring: "Pipeline>>")
+    self assert: (srv stop: 5000) isOk
+
+  testProtocolErrorDisabled =>
+    path := LogCapture attach: self tableName
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #http => #{#logProtocolErrors => false},
+        #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]
+      }) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GARBAGE-zz-nolog-4\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request\r\n")
+    Timer sleep: 3500
+    LogCapture detach: self tableName
+    content := (File readAll: path) value
+    self deny: (content includesSubstring: "GARBAGE-zz-nolog-4")
+    self assert: (srv stop: 5000) isOk
+
+  /// A close with an unread body surfaces TransportError in the
+  /// pipeline (the drain notices), so the closure settings decide.
+  /// Quieter than the 3s await: absence must out-wait a real log line.
+  closeMidBody: port =>
+    doomed := self connect: port
+    (Erlang gen_tcp) send: doomed with: "POST /up HTTP/1.1\r\nhost: x\r\ncontent-length: 100\r\n\r\npart"
+    (Erlang gen_tcp) close: doomed
+
+  testClientClosureSilentByDefault =>
+    path := LogCapture attach: self tableName
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]}) unwrap
+    self closeMidBody: (self portOf: srv)
+    Timer sleep: 3500
+    LogCapture detach: self tableName
+    content := (File readAll: path) value
+    self deny: (content includesSubstring: "TransportError")
+    self assert: (srv stop: 5000) isOk
+
+  testClientClosureLoggedWhenEnabled =>
+    path := LogCapture attach: self tableName
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #http => #{#logClientClosures => #short},
+        #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]
+      }) unwrap
+    self closeMidBody: (self portOf: srv)
+    content := LogCapture await: "TransportError" in: path
+    LogCapture detach: self tableName
+    self assert: (content includesSubstring: "** (TransportError)")
+    self assert: (srv stop: 5000) isOk

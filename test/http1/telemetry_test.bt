@@ -1,0 +1,140 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http1/telemetry_test.exs`: the request spans a
+/// live server emits. A served request records start and stop; a
+/// malformed head records stop with the error and no conn; a raising
+/// handler records an exception and no stop. The collector only keeps
+/// events whose metadata names this class's plug, and the table is
+/// rebuilt for every test.
+TestCase subclass: TelemetryTest
+
+  tableName -> Symbol => #telemetryTestEvents
+
+  plug -> Symbol => #telemetryPort
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  setUp =>
+    (Ets exists: self tableName) ifTrue: [(Ets named: self tableName) delete]
+    TelemetryCollector detach: self tableName
+    Ets new: self tableName type: #set
+    TelemetryCollector attachAll: self plug table: self tableName
+    self
+
+  tearDown =>
+    TelemetryCollector detach: self tableName
+    (Ets named: self tableName) delete
+    self
+
+  server: handler =>
+    (Buccaneer start: #{
+      #port => 0,
+      #displayHandler => self plug,
+      #handler => handler
+    }) unwrap
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  stopNamed: suffix =>
+    (TelemetryCollector
+      await: #request
+      named: suffix
+      in: self tableName) ifNil: [#none]
+
+  testStartStop =>
+    srv := self
+      server: [:ex |
+        raw := (ex readAll: 8000000) value
+        ex
+          sendResp: 200
+          headers: #()
+          body: raw asStringUnchecked
+      ]
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "POST /t?q=1 HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhello"
+    resp := Loopback responseOn: client body: 5
+    (Erlang gen_tcp) close: client
+    self assert: (resp endsWith: "hello")
+    stop := self stopNamed: #stop
+    self deny: stop =:= #none
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #req_body_bytes) equals: 5
+    self assert: (measurements at: #resp_body_bytes) equals: 5
+    self deny: (measurements at: #duration) < 0
+    self assert: (metadata at: #plug) equals: self plug
+    self assert: ((metadata at: #conn) method) equals: "POST"
+    self assert: ((metadata at: #conn) path) equals: "/t"
+    self assert: ((metadata at: #conn) query) equals: "q=1"
+    self assert: ((metadata at: #conn) status) equals: 200
+    start := (TelemetryCollector
+      events: #request
+      named: #start
+      in: self tableName) first
+    self assert: ((start at: 3) at: #telemetry_span_context) equals: (metadata at: #telemetry_span_context)
+    self assert: (srv stop: 5000) isOk
+
+  testGetOmitsBodyMeasurements =>
+    srv := self
+      server: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: "hi"
+      ]
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 2
+    (Erlang gen_tcp) close: client
+    self assert: (resp endsWith: "hi")
+    stop := self stopNamed: #stop
+    measurements := stop at: 2
+    self assert: ((measurements at: #req_header_end_time) isKindOf: Integer)
+    self assert: (measurements at: #req_body_bytes ifAbsent: [nil]) isNil
+    self assert: (measurements at: #resp_body_bytes) equals: 2
+    self assert: (srv stop: 5000) isOk
+
+  testProtocolErrorStop =>
+    srv := self
+      server: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: "hi"
+      ]
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GARBAGE\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.0 400 Bad Request\r\n")
+    stop := self stopNamed: #stop
+    metadata := stop at: 3
+    self assert: ((metadata at: #error) printString includesSubstring: "Request line")
+    self assert: (metadata at: #conn ifAbsent: [nil]) isNil
+    self assert: ((stop at: 2) at: #req_header_end_time ifAbsent: [nil]) isNil
+    self assert: (srv stop: 5000) isOk
+
+  testRaiseEmitsException =>
+    srv := self server: [:ex | Error signal: "boom-tele-exc-4"]
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    (Erlang gen_tcp) close: client
+    self assert: (resp startsWith: "HTTP/1.1 500 Internal Server Error\r\n")
+    exc := self stopNamed: #exception
+    self deny: exc =:= #none
+    excMeta := exc at: 3
+    self assert: (excMeta at: #kind) equals: #exit
+    self assert: ((excMeta at: #exception) printString includesSubstring: "boom-tele-exc-4")
+    self assert: (excMeta at: #plug) equals: self plug
+    stops := TelemetryCollector
+      events: #request
+      named: #stop
+      in: self tableName
+    self assert: stops isEmpty
+    self assert: (srv stop: 5000) isOk

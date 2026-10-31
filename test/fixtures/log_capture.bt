@@ -27,10 +27,12 @@ sealed typed Object subclass: LogCapture
     (Erlang logger) remove_handler: name
     nil
 
-  /// The captured output, waiting up to a second for `token`.
+  /// The captured output, waiting up to three seconds for `token`
+  /// (other test classes share the node, so logging under parallel
+  /// load can take a second or more to land).
   class sealed await: token :: String in: path :: String -> String =>
     content := ""
-    20
+    60
       timesRepeat: [
         read := File readAll: path
         content := read isError ifTrue: [""] ifFalse: [read value]

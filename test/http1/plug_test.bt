@@ -1,0 +1,199 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http1/plug_test.exs` (minus `send_file` and
+/// upgrade, which are later phases): the request fields a handler sees.
+/// Each test serves one request on a real server and asserts the echoed
+/// fields over raw TCP.
+TestCase subclass: PlugTest
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  scenario: port request: req body: n =>
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: req
+    resp := Loopback responseOn: client body: n
+    (Erlang gen_tcp) close: client
+    resp asStringUnchecked
+
+  fieldsServer =>
+    (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          q := ex query isNil ifTrue: ["-"] ifFalse: [ex query]
+          ex
+            sendResp: 200
+            headers: #()
+            body: (ex scheme printString
+              ++ "|"
+              ++ ex host
+              ++ "|"
+              ++ ex port printString
+              ++ "|"
+              ++ ex path
+              ++ "|"
+              ++ q)
+        ]}) unwrap
+
+  testSchemeHostPortPathQuery =>
+    srv := self fieldsServer
+    resp := self
+      scenario: (self portOf: srv)
+      request: "POST /s?q=1&r=2 HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n"
+      body: 21
+    self assert: (resp endsWith: "#http|x|80|/s|q=1&r=2")
+    self assert: (srv stop: 5000) isOk
+
+  testQueryNilWhenAbsent =>
+    srv := self fieldsServer
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET /plain HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 19
+    self assert: (resp endsWith: "#http|x|80|/plain|-")
+    self assert: (srv stop: 5000) isOk
+
+  testAbsoluteFormAuthority =>
+    srv := self fieldsServer
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET http://a.example/abs HTTP/1.1\r\nhost: b.example\r\n\r\n"
+      body: 25
+    self assert: (resp endsWith: "#http|a.example|80|/abs|-")
+    self assert: (srv stop: 5000) isOk
+
+  testExplicitPort =>
+    srv := self fieldsServer
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET / HTTP/1.1\r\nhost: x:4000\r\n\r\n"
+      body: 16
+    self assert: (resp endsWith: "#http|x|4000|/|-")
+    self assert: (srv stop: 5000) isOk
+
+  testFragmentStripped =>
+    srv := self fieldsServer
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET /s?q=1#frag HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 17
+    self assert: (resp endsWith: "#http|x|80|/s|q=1")
+    self assert: (srv stop: 5000) isOk
+
+  testHttpVersion =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: ex httpProtocol printString
+        ]}) unwrap
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 7
+    self assert: (resp endsWith: "#http11")
+    self assert: (srv stop: 5000) isOk
+
+  testStateUnsetBeforeResponse =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: ex state printString
+        ]}) unwrap
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 6
+    self assert: (resp endsWith: "#unset")
+    self assert: (srv stop: 5000) isOk
+
+  testReadBodyPart =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          part := (ex readBody: #{}) value
+          ex
+            sendResp: 200
+            headers: #()
+            body: part data asStringUnchecked
+        ]}) unwrap
+    resp := self
+      scenario: (self portOf: srv)
+      request: "POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhello"
+      body: 5
+    self assert: (resp endsWith: "hello")
+    self assert: (srv stop: 5000) isOk
+
+  testReadBodyEmptyGetDone =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          part := (ex readBody: #{}) value
+          ex
+            sendResp: 200
+            headers: #()
+            body: (part done ifTrue: ["done"] ifFalse: ["more"])
+        ]}) unwrap
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 4
+    self assert: (resp endsWith: "done")
+    self assert: (srv stop: 5000) isOk
+
+  testReadAllTooLarge =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          r := ex readAll: 4
+          ex
+            sendResp: 200
+            headers: #()
+            body: (r isError ifTrue: [
+              "err:" ++ r error printString
+            ] ifFalse: ["ok"])
+        ]}) unwrap
+    resp := self
+      scenario: (self portOf: srv)
+      request: "POST / HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\nhello"
+      body: 19
+    self assert: (resp endsWith: "err:#body_too_large")
+    self assert: (srv stop: 5000) isOk
+
+  testSslDataNotSecure =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          r := ex sslData
+          ex
+            sendResp: 200
+            headers: #()
+            body: (r isError ifTrue: [
+              "err:" ++ r error printString
+            ] ifFalse: ["ok"])
+        ]}) unwrap
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 15
+    self assert: (resp endsWith: "err:#not_secure")
+    self assert: (srv stop: 5000) isOk
+
+  testPeerPresent =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: (ex peer isNil ifTrue: ["no-peer"] ifFalse: ["has-peer"])
+        ]}) unwrap
+    resp := self
+      scenario: (self portOf: srv)
+      request: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 8
+    self assert: (resp endsWith: "has-peer")
+    self assert: (srv stop: 5000) isOk

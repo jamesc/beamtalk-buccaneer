@@ -9,6 +9,12 @@ TestCase subclass: BuccaneerTest
       with: port
       with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
 
+  connectResult: port =>
+    (Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})
+
   testStartStop =>
     srv := (Buccaneer
       start: #{#port => 0, #handler => [:ex |
@@ -62,3 +68,26 @@ TestCase subclass: BuccaneerTest
 
   testBoundAddress =>
     self assert: (Buccaneer boundAddress: {{127, 0, 0, 1}, 4000} scheme: #http) equals: "127.0.0.1:4000 (http)"
+
+  testStopClosesListener =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "hi"
+        ]}) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    self assert: (srv stop: 5000) isOk
+    refused := self connectResult: port
+    self assert: refused isError
+
+  testUnknownOptionRaises =>
+    caught := false
+    [Buccaneer start: #{#bogus => 1, #handler => [:ex | ex]}]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: (e message includesSubstring: "Unsupported key(s)")
+      ]
+    self assert: caught

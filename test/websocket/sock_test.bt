@@ -1010,3 +1010,312 @@ TestCase subclass: SockTest
       self assert: self awaitTerm equals: #normal
       self assert: (srv stop: 5000) isOk
     ]
+
+  // ===== handle_info =====
+
+  testHandleInfoOk =>
+    self eachScheme: [:opts :scheme |
+      sock := ((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #record) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      (Erlang erlang) send: pid with: "dump"
+      self assert: ((self textOf: client) includesSubstring: "OK")
+      WebSocketClient close: client
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoPush =>
+    self eachScheme: [:opts :scheme |
+      sock := ((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #record) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "dump"
+      self textOf: client
+      (Erlang erlang) send: pid with: "dump"
+      self assert: ((self textOf: client) includesSubstring: "dump")
+      WebSocketClient close: client
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoText =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #push) withInfoFrames: #({#text, "TEXT"})) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (self textOf: client) equals: "TEXT"
+      WebSocketClient close: client
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoBinary =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #push) withInfoFrames: #({#binary, "BINARY"})) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
+      WebSocketClient close: client
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoPing =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #push) withInfoFrames: #({#ping, "PING"})) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING")
+      WebSocketClient close: client
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoPong =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"})) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
+      WebSocketClient close: client
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoList =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"}, {#text, "TEXT"})) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
+      self assert: (self textOf: client) equals: "TEXT"
+      WebSocketClient close: client
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoClose =>
+    self eachScheme: [:opts :scheme |
+      sock := ((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoAbnormalClose =>
+    self eachScheme: [:opts :scheme |
+      log := LogCapture attach: #sockAbnormal
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stopError) withInfoCode: 1011) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: {#error, #abnormal}
+      self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoCloseWithCode =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withInfoCode: 5555) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoCloseWithCodeAndMessages =>
+    self eachScheme: [:opts :scheme |
+      sock := ((((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withInfoCode: 5555) withInfoFrames: #({#text, "first"}, {#text, "second"})) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (self textOf: client) equals: "first"
+      self assert: (self textOf: client) equals: "second"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoCloseWithRestart =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withInfoCode: 1012) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoCloseWithDisconnected =>
+    self eachScheme: [:opts :scheme |
+      sock := ((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoCloseWithCodeAndNilDetail =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withInfoCode: 5555) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoCloseWithCodeAndDetail =>
+    self eachScheme: [:opts :scheme |
+      sock := ((((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM") withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]
+
+  testHandleInfoCloseWithCodeAndDetailAndMessages =>
+    self eachScheme: [:opts :scheme |
+      sock := (((((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM") withInfoFrames: #({#text, "first"}, {#text, "second"})) withTable: self termTable)
+      srv := self
+        serverWith: sock
+        options: opts
+        upgrade: #{}
+      client := self clientFor: scheme port: (self portOf: srv)
+      self shake: client
+      WebSocketClient sendText: client data: "whoami"
+      self assert: (self textOf: client) equals: "pid"
+      pid := self pidOfTest
+      (Erlang erlang) send: pid with: "OK"
+      self assert: (self textOf: client) equals: "first"
+      self assert: (self textOf: client) equals: "second"
+      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+      self assert: (self awaitClosed: client) equals: true
+      self assert: self awaitTerm equals: #normal
+      self assert: (srv stop: 5000) isOk
+    ]

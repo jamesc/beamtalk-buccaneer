@@ -1,0 +1,128 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http1/protocol_test.exs` "upgrade handling" (6)
+/// and the `http1/plug_test.exs` "upgrade handling" (1): invalid
+/// upgrade requests over raw TCP answer 400 and log loudly, a valid
+/// one reaches 101, a disabled websocket engine 500s, and a handler
+/// failure 500s. Bandit's disabled case fell through to a test-plug
+/// 200 because its raise was synchronous in the plug; ours raises in
+/// the pipeline after the handler returns, so it takes the standard
+/// 500 path instead (recorded deviation). There is no unsupported
+/// adapter kind in this engine; the handler-error test covers that
+/// path class.
+TestCase subclass: HTTP1UpgradeTest
+  termTable => #http1UpgradeTerms
+
+  setUp =>
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    Ets new: self termTable type: #set
+    self
+
+  tearDown =>
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  /// The response head only: error responses carry no body the test
+  /// needs, and reading one would race the close.
+  headOf: client =>
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not] whileTrue: [
+      head := head concat: (((Erlang gen_tcp)
+        recv: client
+        with: 1
+        with: 2000) unwrap)
+    ]
+    head
+
+  upgradeServer =>
+    (Buccaneer start: #{#port => 0} handler: [:ex |
+      ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
+    ]) unwrap
+
+  /// One invalid upgrade: 400 on the wire, the reason in the log.
+  invalidUpgrade: request :: String log: expected :: String =>
+    log := LogCapture attach: #http1Upgrade
+    srv := self upgradeServer
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: request
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "400 Bad Request") equals: true
+    self assert: ((LogCapture await: expected in: log) includesSubstring: expected) equals: true
+    self assert: (srv stop: 5000) isOk
+
+  testNonGetUpgrade400s =>
+    self
+      invalidUpgrade: "POST /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+      log: "HTTP method POST unsupported"
+
+  testBadUpgradeHeader400s =>
+    self
+      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: NOPE\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+      log: "'upgrade' header must contain 'websocket'"
+
+  testBadConnectionHeader400s =>
+    self
+      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: NOPE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+      log: "'connection' header must contain 'upgrade'"
+
+  testMissingKey400s =>
+    self
+      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-version: 13\r\n\r\n"
+      log: "'sec-websocket-key' header is absent"
+
+  testBadVersion400s =>
+    self
+      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 99\r\n\r\n"
+      log: "'sec-websocket-version' header must equal '13'"
+
+  testValidUpgrade101s =>
+    srv := self upgradeServer
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp)
+      send: client
+      with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "101 Switching Protocols") equals: true
+    self assert: (srv stop: 5000) isOk
+
+  testDisabledWebsocket500s =>
+    log := LogCapture attach: #http1Upgrade
+    srv := (Buccaneer
+      start: #{#port => 0, #websocket => #{#enabled => false}}
+      handler: [:ex |
+        ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
+      ]) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp)
+      send: client
+      with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "500") equals: true
+    self assert: ((LogCapture await: "upgrade to websocket not supported" in: log) includesSubstring: "upgrade to websocket not supported") equals: true
+    self assert: (srv stop: 5000) isOk
+
+  testHandlerError500s =>
+    log := LogCapture attach: #http1Upgrade
+    srv := (Buccaneer start: #{#port => 0} handler: [:ex |
+      Error signal: "boom"
+    ]) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp)
+      send: client
+      with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "500") equals: true
+    self assert: ((LogCapture await: "boom" in: log) includesSubstring: "boom") equals: true
+    self assert: (srv stop: 5000) isOk

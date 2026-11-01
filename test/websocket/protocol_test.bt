@@ -700,3 +700,26 @@ TestCase subclass: ProtocolTest
     self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
     self assert: (self awaitClosed: client) equals: true
     self assert: (srv stop: 5000) isOk
+
+  pidOfTest => (Ets named: self termTable) at: #pid ifAbsent: [nil]
+
+  testCloseReplyTimeout =>
+    sock := ((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable) withStopOn: "normal")
+    srv := self
+      serverWith: sock
+      config: #{}
+      upgrade: #{#timeout => 100}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    pid := self pidOfTest
+    WebSocketClient sendText: client data: "normal"
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    Timer sleep: 10
+    self assert: (self isAlive: pid) equals: true
+    Timer sleep: 250
+    self deny: (self isAlive: pid)
+    self assert: (WebSocketClient closedForReading: client) equals: true
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk

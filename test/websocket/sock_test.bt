@@ -1319,3 +1319,101 @@ TestCase subclass: SockTest
       self assert: self awaitTerm equals: #normal
       self assert: (srv stop: 5000) isOk
     ]
+
+  // ===== terminate =====
+
+  testTerminateOptional =>
+    log := LogCapture attach: #sockTerminate
+    sock := MinimalSock new withStopOnNormal: true
+    srv := self
+      serverWith: sock
+      options: #{#port => 0}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "normal"
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    self assert: (self awaitClosed: client) equals: true
+    Timer sleep: 100
+    content := File readAll: log
+    self assert: (content isError or: [(content value includesSubstring: "UndefinedFunctionError") not]) equals: true
+    self assert: (srv stop: 5000) isOk
+
+  testTerminateNormal =>
+    sock := ((TestSock new withStopOn: "normal") withTable: self termTable)
+    srv := self
+      serverWith: sock
+      options: #{#port => 0}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "normal"
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: self awaitTerm equals: #normal
+    self assert: (srv stop: 5000) isOk
+
+  testTerminateError =>
+    log := LogCapture attach: #sockTerminate
+    sock := (((TestSock new withStopOn: "boom") withStopReason: #boom) withTable: self termTable)
+    srv := self
+      serverWith: sock
+      options: #{#port => 0}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "boom"
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: self awaitTerm equals: {#error, #boom}
+    self assert: ((LogCapture await: "(stop) #boom" in: log) includesSubstring: "(stop) #boom")
+    self assert: (srv stop: 5000) isOk
+
+  testTerminateShutdown =>
+    sock := (TestSock new withTable: self termTable)
+    srv := self
+      serverWith: sock
+      options: #{#port => 0}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    self assert: (srv stop: 5000) isOk
+    self assert: self awaitTerm equals: #shutdown
+
+  testTerminateRemote =>
+    sock := (TestSock new withTable: self termTable)
+    srv := self
+      serverWith: sock
+      options: #{#port => 0}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendClose: client code: 1000
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: self awaitTerm equals: #remote
+    self assert: (srv stop: 5000) isOk
+
+  testTerminateProtocolError =>
+    sock := (TestSock new withTable: self termTable)
+    srv := self
+      serverWith: sock
+      options: #{#port => 0}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient close: client
+    self assert: self awaitTerm equals: {#error, #closed}
+    self assert: (srv stop: 5000) isOk
+
+  testTerminateTimeout =>
+    sock := (TestSock new withTable: self termTable)
+    srv := self
+      serverWith: sock
+      options: #{#port => 0}
+      upgrade: #{#timeout => 100}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    Timer sleep: 500
+    self assert: self awaitTerm equals: #timeout
+    self assert: (srv stop: 5000) isOk

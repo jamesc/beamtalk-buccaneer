@@ -25,11 +25,6 @@ TestCase subclass: SockTest
   /// scheme itself.
   eachScheme: block =>
     {#http, #https} do: [:scheme :: Symbol |
-      // Fresh per-scheme iteration: the websock records terminate in
-      // this shared table, and a previous iteration's reason must not
-      // leak into the next one.
-      (Ets named: self termTable) removeKey: #terminate
-      (Ets named: self termTable) removeKey: #pid
       opts := scheme =:= #https ifTrue: [
         #{
           #port => 0,
@@ -42,6 +37,10 @@ TestCase subclass: SockTest
     ]
 
   serverWith: sock options: opts upgrade: uopts =>
+    // Fencing: a previous server's terminate reason must not leak
+    // into this one's reads.
+    (Ets named: self termTable) removeKey: #terminate
+    (Ets named: self termTable) removeKey: #pid
     (Buccaneer start: opts handler: [:ex |
       ex upgradeToWebSocket: sock options: uopts
     ]) unwrap
@@ -1441,7 +1440,7 @@ TestCase subclass: SockTest
 
   testTelemetryStart =>
     self teleBegin
-    sock := TestSock new
+    sock := (TestSock new withTable: self termTable)
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1464,7 +1463,7 @@ TestCase subclass: SockTest
 
   testTelemetryMetrics =>
     self teleBegin
-    sock := TestSock new
+    sock := (TestSock new withTable: self termTable)
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1505,7 +1504,7 @@ TestCase subclass: SockTest
 
   testTelemetryClientDisconnect =>
     self teleBegin
-    sock := TestSock new
+    sock := (TestSock new withTable: self termTable)
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1544,7 +1543,7 @@ TestCase subclass: SockTest
 
   testTelemetryServerShutdown =>
     self teleBegin
-    sock := TestSock new
+    sock := (TestSock new withTable: self termTable)
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1586,7 +1585,7 @@ TestCase subclass: SockTest
 
   testTelemetryTimeout =>
     self teleBegin
-    sock := TestSock new
+    sock := (TestSock new withTable: self termTable)
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}

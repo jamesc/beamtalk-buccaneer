@@ -236,3 +236,45 @@ sealed typed Object subclass: WebSocketClient
 
   class sealed sendClose: client :: Tuple code: code :: Integer -> Object =>
     self sendFrame: client flags: 8 opcode: 8 data: (Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255))
+
+  /// Send bytes with no framing at all, for packet-splitting tests.
+  class sealed sendEachByte: client :: Tuple data: data :: Binary -> Nil =>
+    (data toBytes) do: [:b :: Integer |
+      (self send: client bytes: (Binary fromBytes: #(b))) unwrap
+    ]
+    nil
+
+  /// One-shot raw deflate (no context), stripping the RFC7692 trailer.
+  class sealed deflateRaw: data :: Binary -> Binary =>
+    stream := (Erlang zlib) open
+    (Erlang zlib)
+      deflateInit: stream
+      level: #default
+      method: #deflated
+      windowbits: -15
+      memlevel: 8
+      strategy: #default
+    out := Binary fromIolist: ((Erlang zlib) deflate: stream with: data with: #sync)
+    (Erlang zlib) close: stream
+    size := out size
+    (size >= 4 and: [
+      (out part: size - 4 size: 4) =:= (Binary fromBytes: #(0, 0, 255, 255))
+    ]) ifTrue: [^out part: 0 size: size - 4]
+    out
+
+  /// One-shot raw inflate, appending the RFC7692 trailer first.
+  class sealed inflateRaw: data :: Binary -> Binary =>
+    stream := (Erlang zlib) open
+    (Erlang zlib) inflateInit: stream with: -15
+    full := data concat: (Binary fromBytes: #(0, 0, 255, 255))
+    out := Binary fromIolist: ((Erlang zlib) inflate: stream with: full)
+    (Erlang zlib) close: stream
+    out
+
+  /// A compressed text frame (FIN + RSV1).
+  class sealed sendDeflatedText: client :: Tuple data: data :: Binary -> Object =>
+    self sendFrame: client flags: 12 opcode: 1 data: (self deflateRaw: data)
+
+  /// A compressed binary frame (FIN + RSV1).
+  class sealed sendDeflatedBinary: client :: Tuple data: data :: Binary -> Object =>
+    self sendFrame: client flags: 12 opcode: 2 data: (self deflateRaw: data)

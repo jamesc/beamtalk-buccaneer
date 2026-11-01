@@ -10,7 +10,7 @@ sealed typed Value subclass: MinimalSock
 
   init -> WebSocketResult => WebSocketResult ok: self
 
-  handleIn: message :: Tuple -> WebSocketResult =>
+  handleIn: message :: Tuple(Symbol, Binary) -> WebSocketResult =>
     message match: [
       {#text, data} -> (self stopOnNormal and: [data asStringUnchecked =:= "normal"]) ifTrue: [
         ^WebSocketResult stop: self code: 1000

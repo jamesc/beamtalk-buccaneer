@@ -62,7 +62,9 @@ TestCase subclass: UpgradeTest
     self assert: (srv stop: 5000) isOk
 
   testUpgradeIncludesPlugHeaders =>
-    sock := TestSock new
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    Ets new: self termTable type: #set
+    sock := (TestSock new withTable: self termTable)
     srv := (Buccaneer start: #{#port => 0} handler: [:ex |
       headed := ex putRespHeader: "x-plug-set-header" value: "itsaheader"
       headed upgradeToWebSocket: sock options: #{}
@@ -76,7 +78,9 @@ TestCase subclass: UpgradeTest
 
   testUpgradeEmitsHttpTelemetry =>
     self teleBegin
-    sock := TestSock new
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    Ets new: self termTable type: #set
+    sock := (TestSock new withTable: self termTable)
     srv := (Buccaneer start: #{#port => 0, #displayHandler => self telePlug} handler: [:ex |
       ex upgradeToWebSocket: sock options: #{}
     ]) unwrap

@@ -51,16 +51,22 @@ sealed typed Value subclass: WebSocketConnection
         ]
         conn handleContinuation: (conn websockState handleIn: {#text, t data}) socket: sock
       ] ifFalse: [
-        {(conn withFragmentChunks: #()) withFragmentFrame: t, #continue}
+        conn beginFragment: t data: t data
       ];
       b :: BinaryFrame -> b fin ifTrue: [
         b compressed ifTrue: [^conn doInflate: b socket: sock]
         conn handleContinuation: (conn websockState handleIn: {#binary, b data}) socket: sock
       ] ifFalse: [
-        {(conn withFragmentChunks: #()) withFragmentFrame: b, #continue}
+        conn beginFragment: b data: b data
       ];
       _ -> conn handleControlFrame: frame socket: sock
     ]
+
+  /// Start reassembly: the opening frame plus its payload, so the
+  /// chunk, frame and size move together (a half-built fragment
+  /// state silently drops the opening payload).
+  beginFragment: frame :: Object data: data :: Binary -> Tuple(WebSocketConnection, Object) =>
+    {((self withFragmentChunks: #(data)) withFragmentFrame: frame) withFragmentSize: data size, #continue}
 
   handleFragment: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     conn := self withMetrics: (self recvMetrics: frame)
@@ -126,7 +132,7 @@ sealed typed Value subclass: WebSocketConnection
       WebSocketSocket sendFrame: sock type: #pong data: data compressed: false
     ]
     (conn websockState respondsTo: #handleControl:) ifFalse: [^{conn, #continue}]
-    conn handleContinuation: (conn websockState handleControl: {data, opcode}) socket: sock
+    conn handleContinuation: (conn websockState handleControl: {opcode, data}) socket: sock
 
   /// Fragment reassembly guard (Bandit's oversize_message?/2).
   oversizeMessage: size :: Integer -> Boolean =>

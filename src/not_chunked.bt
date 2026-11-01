@@ -1,0 +1,6 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Raised by `chunk:` before `sendChunked:` (docs/engine-interface.md § 4).
+/// The message starts with "not_chunked:".
+typed Error subclass: NotChunked

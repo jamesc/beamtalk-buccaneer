@@ -98,8 +98,25 @@ sealed typed Value subclass: Exchange
   /// #readLength per socket read (1_000_000), waiting #readTimeout ms
   /// per read (15_000). A timeout answers error: #timeout and a socket
   /// failure error: #closed; a malformed body raises HTTPError (a 400).
+  /// Send `100 Continue` first if the client asked and nothing was sent
+  /// (Bandit's maybe_send_continue): only before the first body read.
+  maybeSendContinueOn: st :: ExchangeState -> ExchangeState =>
+    st expectContinue ifFalse: [^st]
+    st status notNil ifTrue: [
+      ^(st withStatus: st status) withExpectContinue: false
+    ]
+    dated := #(Clock dateHeader)
+    [
+      transport := st transport
+        sendHeaders: 100
+        headers: dated
+        disposition: #inform
+      ^((st withTransport: transport) withStatus: 100) withExpectContinue: false
+    ] on: TransportError do: [:e | ^st withExpectContinue: false]
+
   readBody: options :: Dictionary(Symbol, Object) -> Result(BodyPart, Object) =>
-    st := self load
+    st := self maybeSendContinueOn: self load
+    self store: st
     read := [
       [
         st transport readData: options
@@ -156,20 +173,150 @@ sealed typed Value subclass: Exchange
       end: true
     self store: (sent withRespState: #sent)
 
+  /// Start a chunked response (Bandit's send_chunked). When the caller
+  /// sets content-length, the body streams length-delimited instead of
+  /// chunk-framed. No body goes out for HEAD, 204 or 304.
+  sendChunked: status :: Integer headers: hs :: HttpHeaders -> Exchange =>
+    st := self load
+    st respState =:= #unset
+      ifFalse: [
+        AlreadySent signal: "already_sent: a response was already sent for this request"
+      ]
+    st := st withRespStartTime: BuccaneerTelemetry monotonicTime
+    headed := self
+      sendHeadersOn: st
+      status: status
+      headers: hs
+      disposition: #chunkEncoded
+    (self sendsBody: headed) ifTrue: [
+      self store: (headed withRespState: #chunked)
+    ] ifFalse: [self store: (headed withRespState: #sent)]
+
+  /// One chunk (Bandit's chunk/2). An empty chunk ends the response.
+  /// Answers Result ok: nil, or error: #closed when the client has gone.
+  chunk: data :: Object -> Result(Nil, Object) =>
+    st := self load
+    st respState =:= #chunked ifFalse: [
+      NotChunked signal: "not_chunked: chunk: needs sendChunked: first"
+    ]
+    (SocketHelpers iodataEmpty: data)
+      ifTrue: [
+        closed := [
+          st transport sendData: data end: true
+        ] on: TransportError do: [:e :: Exception | ^Result error: e reason]
+        stamped := (st withTransport: closed) withRespEndTime: BuccaneerTelemetry monotonicTime
+        self store: (stamped withRespState: #sent)
+        ^Result ok: nil
+      ]
+    sent := [
+      [
+        st transport sendData: data end: false
+      ] on: TransportError do: [:e :: Exception | ^Result error: e reason]
+    ] on: Error do: [:e :: Exception | ^Result error: e message]
+    stamped := (st withTransport: sent) withRespBodyBytes: st respBodyBytes + (Erlang erlang iolist_size: data)
+    self store: stamped
+    Result ok: nil
+
+  /// A file response (Bandit's send_file). Length is bytes or #all.
+  sendFile: status :: Integer headers: hs :: HttpHeaders path: path :: String offset: offset :: Integer length: length :: Object -> Exchange =>
+    offset < 0 ifTrue: [Error signal: "Offset cannot be negative"]
+    (length isKindOf: Integer) ifTrue: [
+      length <= 0 ifTrue: [Error signal: "Length cannot be zero or negative"]
+    ]
+    st := self load
+    st respState =:= #unset
+      ifFalse: [
+        AlreadySent signal: "already_sent: a response was already sent for this request"
+      ]
+    st := st withRespStartTime: BuccaneerTelemetry monotonicTime
+    info := ((Erlang file) read_file_info: path with: #(#raw, {#time, #universal})) unwrap
+    size := info at: 2
+    (info at: 3) =:= #regular ifFalse: [
+      Error signal: ("Cannot read file " ++ path ++ ": not a regular file")
+    ]
+    total := length =:= #all ifTrue: [size - offset] ifFalse: [length]
+    (total >= 0 and: [offset + total <= size])
+      ifFalse: [
+        Error
+          signal: ("Cannot read "
+            ++ total printString
+            ++ " bytes starting at "
+            ++ offset printString
+            ++ " as "
+            ++ path
+            ++ " is only "
+            ++ size printString
+            ++ " octets in length")
+      ]
+    withLength := Headers
+      addContentLength: hs
+      length: total
+      status: status
+      method: st method
+    headed := self
+      sendHeadersOn: st
+      status: status
+      headers: withLength
+      disposition: #raw
+    (self sendsBody: headed) ifFalse: [
+      ^self store: (headed withRespState: #sent)
+    ]
+    sent := headed transport
+      sendfile: path
+      offset: offset
+      length: total
+    stamped := ((headed withTransport: sent) withRespBodyBytes: total) withRespEndTime: BuccaneerTelemetry monotonicTime
+    self store: (stamped withRespState: #sent)
+
+  /// A 1xx response (Bandit's inform/3). Refused on HTTP/1.0.
+  inform: status :: Integer headers: hs :: HttpHeaders -> Result(Nil, Object) =>
+    st := self load
+    st transport version =:= #http10 ifTrue: [^Result error: #not_supported]
+    headed := self
+      sendHeadersOn: st
+      status: status
+      headers: hs
+      disposition: #inform
+    kept := status =:= 100 ifTrue: [
+      headed withExpectContinue: false
+    ] ifFalse: [headed]
+    self store: kept
+    Result ok: nil
+
+  /// Per RFC9110§10.1.1, a client that asked for 100 Continue and never
+  /// got one may never send the body: close rather than drain it.
+  closeForUnhonoredExpect: hs :: HttpHeaders status: status :: Integer state: st :: ExchangeState -> HttpHeaders =>
+    st expectContinue ifFalse: [^hs]
+    (status between: 100 and: 199) ifTrue: [^hs]
+    st transport version =:= #http11 ifFalse: [^hs]
+    (Headers getHeader: hs name: "connection") notNil ifTrue: [^hs]
+    hs addFirst: {"connection", "close"}
+
   /// Bandit's send_headers: a date header unless the caller set one, the
   /// status recorded, and no body for HEAD, 204 or 304.
   sendHeadersOn: st :: ExchangeState status: status :: Integer headers: hs :: HttpHeaders disposition: disposition :: BodyDisposition -> ExchangeState =>
     dated := (Headers getHeader: hs name: "date") isNil ifTrue: [
       hs addFirst: Clock dateHeader
     ] ifFalse: [hs]
-    statused := st withStatus: status
+    closed := self
+      closeForUnhonoredExpect: dated
+      status: status
+      state: st
+    keep := status =:= 100 ifTrue: [
+      false
+    ] ifFalse: [
+      (status between: 100 and: 199) ifTrue: [
+        st expectContinue
+      ] ifFalse: [false]
+    ]
+    statused := (st withStatus: status) withExpectContinue: keep
     actual := (self sendsBody: statused) ifTrue: [
       disposition
     ] ifFalse: [#noBody]
     statused
       withTransport: (statused transport
         sendHeaders: status
-        headers: dated
+        headers: closed
         disposition: actual)
 
   /// Bandit's send_data: the body counted even when not sent.
@@ -204,8 +351,21 @@ sealed typed Value subclass: Exchange
     self state match: [
       #unset -> NotSentError signal: "a response was neither set nor sent from the connection";
       #sent -> self;
+      #chunked -> self closeChunked;
       _ -> Error signal: "commit: unhandled response state"
     ]
+
+  /// Bandit's commit for a chunked response: the closing empty chunk.
+  /// Errors are ignored, as Bandit does.
+  closeChunked -> Exchange =>
+    st := self load
+    [
+      [
+        closed := st transport sendData: "" end: true
+        stamped := (st withTransport: closed) withRespEndTime: BuccaneerTelemetry monotonicTime
+        self store: (stamped withRespState: #sent)
+      ] on: TransportError do: [:e :: Exception | self]
+    ] on: Error do: [:e :: Exception | self]
 
   /// Forget the state without draining (the pipeline's error paths;
   /// idempotent, unlike finish).

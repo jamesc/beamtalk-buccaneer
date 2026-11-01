@@ -1,0 +1,90 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Phase 3 bounded-memory streaming: 1 GiB upload and download in chunks.
+/// The handlers never hold more than one chunk; the totals prove every
+/// byte went through.
+TestCase subclass: BoundedStreamTest
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  chunkSize -> Integer => 1048576
+
+  chunkCount -> Integer => 1024
+
+  gib -> Integer => 1073741824
+
+  testUploadOneGibStreamsInBoundedMemory =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          total := 0
+          done := false
+          [done]
+            whileFalse: [
+              part := (ex readBody: #{#length => 8000000}) unwrap
+              total := total + part data size
+              done := part done
+            ]
+          ex
+            sendResp: 200
+            headers: #()
+            body: total printString
+        ]}) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: 1073741824\r\n\r\n"
+    i := 0
+    piece := "a" repeat: self chunkSize
+    [i < self chunkCount]
+      whileTrue: [
+        ((Erlang gen_tcp) send: client with: piece) unwrap
+        i := i + 1
+      ]
+    resp := Loopback responseOn: client body: 10
+    self assert: ((resp asStringUnchecked) endsWith: "1073741824")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testDownloadOneGibStreamsInBoundedMemory =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex sendChunked: 200 headers: #({"content-length", "1073741824"})
+          i := 0
+          piece := "a" repeat: self chunkSize
+          [i < self chunkCount]
+            whileTrue: [
+              (ex chunk: piece) unwrap
+              i := i + 1
+            ]
+        ]}) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /download HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang gen_tcp)
+            recv: client
+            with: 1
+            with: 5000) unwrap)
+      ]
+    self assert: ((head asStringUnchecked) includesSubstring: "content-length: 1073741824")
+    total := 0
+    i := 0
+    [i < self chunkCount]
+      whileTrue: [
+        got := ((Erlang gen_tcp)
+          recv: client
+          with: self chunkSize
+          with: 5000) unwrap
+        total := total + got size
+        i := i + 1
+      ]
+    self assert: total equals: self gib
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk

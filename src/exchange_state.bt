@@ -20,6 +20,8 @@ sealed typed Value subclass: ExchangeState
   field: headers :: HttpHeaders = #()
   /// The last status sent, informational included (Bandit's status).
   field: status :: Integer | Nil = nil
+  /// Whether the client asked for `100-continue` and is still waiting.
+  field: expectContinue :: Boolean = false
   field: respState :: ExchangeRespState = #unset
   /// Bandit's req_body_bytes and resp_body_bytes metrics.
   field: reqBodyBytes :: Integer = 0

@@ -214,7 +214,23 @@ typed Object subclass: Pipeline
       target: target
       headers: headers
     pathQuery := self pathAndQuery: target
-    ((((((((ExchangeState new withTransport: transport) withMethod: method) withScheme: scheme) withHost: (hostPort at: 1)) withPort: (hostPort at: 2)) withPath: (pathQuery at: 1)) withQuery: (pathQuery at: 2)) withHeaders: headers)
+    s0 := ExchangeState new withTransport: transport
+    s1 := s0 withMethod: method
+    s2 := s1 withScheme: scheme
+    s3 := s2 withHost: (hostPort at: 1)
+    s4 := s3 withPort: (hostPort at: 2)
+    s5 := s4 withPath: (pathQuery at: 1)
+    s6 := s5 withQuery: (pathQuery at: 2)
+    s7 := s6 withHeaders: headers
+    s7 withExpectContinue: (self expectsContinue: headers version: transport version)
+
+  /// Whether the client waits for `100 Continue` (Bandit's expect_continue?).
+  class sealed expectsContinue: headers :: HttpHeaders version: ver :: HttpVersion -> Boolean =>
+    (ver =:= #http11 or: [ver =:= #http2]) ifFalse: [^false]
+    expect := Headers getHeader: headers name: "expect"
+    expect isNil ifTrue: [^false]
+    (expect isKindOf: String) ifFalse: [^false]
+    expect asciiLowercase =:= "100-continue"
 
   /// {host, port} from an absolute target, else the Host header
   /// (Bandit's determine_host_and_port!).

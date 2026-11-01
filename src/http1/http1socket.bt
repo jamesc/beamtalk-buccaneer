@@ -317,8 +317,12 @@ typed Value subclass: HTTP1Socket
     ]
     respLine := "{self versionString} {status} {Status reasonPhrase: status}\r\n"
     kept := self handleKeepalive: status headers: headers
-    finalHeaders := kept at: 1
+    unframed := kept at: 1
     socket := kept at: 2
+    // RFC9112§6.1: no Transfer-Encoding on HTTP/1.0 responses at all.
+    finalHeaders := socket version =:= #http10 ifTrue: [
+      unframed reject: [:h | (h at: 1) =:= "transfer-encoding"]
+    ] ifFalse: [unframed]
     hasContentLength := (Headers getHeader: finalHeaders name: "content-length") notNil
     disposition match: [
       #raw -> (socket withWriteState: #writing) withSendBuffer: #(respLine, self encodeHeaders: finalHeaders);
@@ -328,8 +332,16 @@ typed Value subclass: HTTP1Socket
           socket withWriteState: #chunkStreaming
         ]
         ifFalse: [
-          socket send: #(respLine, self encodeHeaders: (finalHeaders addFirst: {"transfer-encoding", "chunked"}))
-          socket withWriteState: #chunking
+          socket version =:= #http10
+            ifTrue: [
+              // HTTP/1.0 has no chunked coding: close-delimit instead.
+              socket send: #(respLine, self encodeHeaders: (self closeHeaders: finalHeaders))
+              (socket withWriteState: #chunkStreaming) withKeepalive: false
+            ]
+            ifFalse: [
+              socket send: #(respLine, self encodeHeaders: (finalHeaders addFirst: {"transfer-encoding", "chunked"}))
+              socket withWriteState: #chunking
+            ]
         ];
       #noBody -> (socket send: #(respLine, self encodeHeaders: finalHeaders)) withWriteState: #sent;
       #inform -> (socket send: #(respLine, self encodeHeaders: finalHeaders)) withWriteState: #unsent
@@ -409,6 +421,27 @@ typed Value subclass: HTTP1Socket
         TransportError signal: ("Unrecoverable error: " ++ result error printString) reason: result error
       ]
     self
+
+  /// A file response (Bandit's sendfile): flush the buffered head, then
+  /// the kernel (or a pread loop over TLS) sends the bytes.
+  sendfile: path :: String offset: offset :: Integer length: length :: Integer -> HTTP1Socket =>
+    self writeState =:= #writing
+      ifFalse: [
+        Error signal: "Cannot send file in write state " ++ self writeState printString
+      ]
+    self send: self sendBuffer
+    cleared := self withSendBuffer: #()
+    sock := cleared socket
+    sock isNil ifTrue: [Error signal: "Send with no socket"]
+    result := sock
+      sendfile: path
+      offset: offset
+      length: length
+    result isError
+      ifTrue: [
+        TransportError signal: ("Unrecoverable error: " ++ result error printString) reason: result error
+      ]
+    cleared withWriteState: #sent
 
   /// Drain the rest of the request body so the next keepalive request
   /// starts clean (Bandit's ensure_completed). Read up to readData:'s

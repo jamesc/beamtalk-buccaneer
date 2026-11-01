@@ -120,7 +120,7 @@ sealed typed Value subclass: WebSocketConnection
   /// Answer a ping with a pong, then the optional handleControl:.
   handlePing: data :: Binary socket: sock :: Socket opcode: opcode :: Symbol -> Tuple(WebSocketConnection, Object) =>
     conn := opcode =:= #ping ifTrue: [
-      self withMetrics: (self sendMetrics: #ping data: data)
+      self withMetrics: (self sendMetrics: #pong data: data)
     ] ifFalse: [self]
     opcode =:= #ping ifTrue: [
       WebSocketSocket sendFrame: sock type: #pong data: data compressed: false

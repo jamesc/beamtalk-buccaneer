@@ -92,6 +92,25 @@ TestCase subclass: SockTest
 
   pidOfTest => (Ets named: self termTable) at: #pid ifAbsent: [nil]
 
+  telePlug -> Symbol => #sockTelemetry
+
+  teleTable -> Symbol => #sockTelemetryEvents
+
+  teleBegin =>
+    (Ets exists: self teleTable) ifTrue: [(Ets named: self teleTable) delete]
+    TelemetryCollector detach: self teleTable
+    Ets new: self teleTable type: #set
+    TelemetryCollector attachWebsocket: self telePlug table: self teleTable
+    nil
+
+  teleEnd =>
+    TelemetryCollector detach: self teleTable
+    (Ets named: self teleTable) delete
+    nil
+
+  teleEvent: span :: Symbol named: suffix :: Symbol =>
+    TelemetryCollector await: span named: suffix in: self teleTable
+
   // ===== init =====
 
   testInitOk =>
@@ -1417,3 +1436,170 @@ TestCase subclass: SockTest
     Timer sleep: 500
     self assert: self awaitTerm equals: #timeout
     self assert: (srv stop: 5000) isOk
+
+  // ===== telemetry =====
+
+  testTelemetryStart =>
+    self teleBegin
+    sock := TestSock new
+    srv := self
+      serverWith: sock
+      options: #{#port => 0, #displayHandler => self telePlug}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    start := self teleEvent: #websocket named: #start
+    self deny: start =:= nil
+    measurements := start at: 2
+    metadata := start at: 3
+    self assert: (measurements at: #monotonic_time) notNil
+    self assert: (measurements at: #compress) equals: false
+    self assert: (metadata at: #plug) equals: self telePlug
+    self assert: (metadata at: #websock) equals: sock
+    self assert: (metadata at: #telemetry_span_context) notNil
+    self assert: (metadata at: #connection_telemetry_span_context) notNil
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+    self teleEnd
+
+  testTelemetryMetrics =>
+    self teleBegin
+    sock := TestSock new
+    srv := self
+      serverWith: sock
+      options: #{#port => 0, #displayHandler => self telePlug}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "1234"
+    WebSocketClient sendBinary: client data: "12345"
+    WebSocketClient sendPing: client data: "123456"
+    WebSocketClient sendPong: client data: "1234567"
+    WebSocketClient sendClose: client code: 1000
+    stop := self teleEvent: #websocket named: #stop
+    self deny: stop =:= nil
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #monotonic_time) notNil
+    self deny: (measurements at: #duration) < 0
+    self assert: (measurements at: #recv_text_frame_count) equals: 1
+    self assert: (measurements at: #recv_text_frame_bytes) equals: 4
+    self assert: (measurements at: #recv_binary_frame_count) equals: 1
+    self assert: (measurements at: #recv_binary_frame_bytes) equals: 5
+    self assert: (measurements at: #recv_ping_frame_count) equals: 1
+    self assert: (measurements at: #recv_ping_frame_bytes) equals: 6
+    self assert: (measurements at: #recv_pong_frame_count) equals: 1
+    self assert: (measurements at: #recv_pong_frame_bytes) equals: 7
+    self assert: (measurements at: #recv_connection_close_frame_count) equals: 1
+    self assert: (measurements at: #recv_connection_close_frame_bytes) equals: 0
+    self assert: (measurements at: #send_text_frame_count) equals: 1
+    self assert: (measurements at: #send_text_frame_bytes) equals: 4
+    self assert: (measurements at: #send_binary_frame_count) equals: 1
+    self assert: (measurements at: #send_binary_frame_bytes) equals: 5
+    self assert: (measurements at: #send_pong_frame_count) equals: 1
+    self assert: (measurements at: #send_pong_frame_bytes) equals: 6
+    self assert: (metadata at: #plug) equals: self telePlug
+    self assert: (metadata at: #websock) equals: sock
+    self assert: (srv stop: 5000) isOk
+    self teleEnd
+
+  testTelemetryClientDisconnect =>
+    self teleBegin
+    sock := TestSock new
+    srv := self
+      serverWith: sock
+      options: #{#port => 0, #displayHandler => self telePlug}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendClose: client code: 1000
+    stop := self teleEvent: #websocket named: #stop
+    self deny: stop =:= nil
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #recv_connection_close_frame_count) equals: 1
+    self assert: (measurements at: #recv_connection_close_frame_bytes) equals: 0
+    self assert: (metadata at: #plug) equals: self telePlug
+    self assert: (metadata at: #websock) equals: sock
+    self assert: (srv stop: 5000) isOk
+    self teleEnd
+
+  testTelemetryServerDisconnect =>
+    self teleBegin
+    sock := (TestSock new withStopOn: "close") withTable: self termTable
+    srv := self
+      serverWith: sock
+      options: #{#port => 0, #displayHandler => self telePlug}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "close"
+    stop := self teleEvent: #websocket named: #stop
+    self deny: stop =:= nil
+    measurements := stop at: 2
+    self assert: (measurements at: #recv_text_frame_count) equals: 1
+    self assert: (measurements at: #recv_text_frame_bytes) equals: 5
+    self assert: (srv stop: 5000) isOk
+    self teleEnd
+
+  testTelemetryServerShutdown =>
+    self teleBegin
+    sock := TestSock new
+    srv := self
+      serverWith: sock
+      options: #{#port => 0, #displayHandler => self telePlug}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    self assert: (srv stop: 5000) isOk
+    stop := self teleEvent: #websocket named: #stop
+    self deny: stop =:= nil
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #monotonic_time) notNil
+    self deny: (measurements at: #duration) < 0
+    self assert: (metadata at: #plug) equals: self telePlug
+    self teleEnd
+
+  testTelemetryAbnormalDisconnect =>
+    self teleBegin
+    log := LogCapture attach: #sockTelemetryLog
+    sock := (((TestSock new withStopOn2: "abnormal_close") withStopReason2: #nope) withTable: self termTable)
+    srv := self
+      serverWith: sock
+      options: #{#port => 0, #displayHandler => self telePlug}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "abnormal_close"
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+    stop := self teleEvent: #websocket named: #stop
+    self deny: stop =:= nil
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #recv_text_frame_count) equals: 1
+    self assert: (measurements at: #recv_text_frame_bytes) equals: 14
+    self assert: (metadata at: #error) equals: #nope
+    self assert: ((LogCapture await: "(stop) #nope" in: log) includesSubstring: "(stop) #nope")
+    self assert: (srv stop: 5000) isOk
+    self teleEnd
+
+  testTelemetryTimeout =>
+    self teleBegin
+    sock := TestSock new
+    srv := self
+      serverWith: sock
+      options: #{#port => 0, #displayHandler => self telePlug}
+      upgrade: #{#timeout => 100}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    Timer sleep: 300
+    stop := self teleEvent: #websocket named: #stop
+    self deny: stop =:= nil
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #monotonic_time) notNil
+    self deny: (measurements at: #duration) < 0
+    self assert: (metadata at: #error) equals: #timeout
+    self assert: (srv stop: 5000) isOk
+    self teleEnd

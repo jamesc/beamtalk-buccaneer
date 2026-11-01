@@ -39,6 +39,9 @@ sealed typed Value subclass: TestSock
   field: stopOn :: String | Nil = nil
   field: stopReason :: Object = #normal
   field: stopCode :: Integer = 1000
+  field: stopOn2 :: String | Nil = nil
+  field: stopReason2 :: Object = #normal
+  field: stopCode2 :: Integer = 1000
 
   /// One scripted answer. #stopError carries reason: and code:.
   answer: kind :: Symbol frames: frames :: List code: code :: Integer detail: detail :: String reason: reason :: Object -> WebSocketResult =>
@@ -59,21 +62,25 @@ sealed typed Value subclass: TestSock
       detail: self initDetail
       reason: self initReason
 
-  /// A content stop for the terminate tests (Bandit's inline
-  /// TerminateWebSock matching "normal"/"boom"), checked before the
-  /// configured answer.
-  stopNow -> WebSocketResult =>
-    self stopReason =:= #normal ifTrue: [
-      ^WebSocketResult stop: self code: self stopCode
-    ]
-    WebSocketResult stopError: self stopReason state: self code: 1011
+  /// Content stops for the terminate and telemetry tests (Bandit's
+  /// inline websocks matching "normal"/"boom" and "close"/
+  /// "abnormal_close"), checked before the configured answer.
+  stopFor: text :: String -> Tuple | Nil =>
+    text =:= self stopOn ifTrue: [^{self stopReason, self stopCode}]
+    (self stopOn2 notNil and: [text =:= self stopOn2]) ifTrue: [^{self stopReason2, self stopCode2}]
+    nil
+
+  doStopWith: spec :: Tuple -> WebSocketResult =>
+    {reason, code} := spec
+    reason =:= #normal ifTrue: [^WebSocketResult stop: self code: code]
+    WebSocketResult stopError: reason state: self code: 1011
 
   handleIn: message :: Tuple -> WebSocketResult =>
-    hit := message match: [
-      {#text, data} -> (self stopOn notNil and: [(data asStringUnchecked) =:= self stopOn]);
-      _ -> false
+    stop := message match: [
+      {#text, data} -> self stopFor: (data asStringUnchecked);
+      _ -> nil
     ]
-    hit ifTrue: [^self stopNow]
+    stop notNil ifTrue: [^self doStopWith: stop]
     self inAnswer match: [
       #echo -> WebSocketResult push: message state: self;
       #record -> self record: message;

@@ -147,6 +147,9 @@ typed Object subclass: Pipeline
   /// raises an HTTPError, which the surrounding handler turns into a
   /// 400 exactly like a malformed request.
   class sealed upgrade: ex :: Exchange span: span :: BuccaneerTelemetry transport: _transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
+    (config websocket at: #enabled ifAbsent: [true]) ifFalse: [
+      Error signal: "upgrade to websocket not supported by Buccaneer"
+    ]
     st := ex load
     result := Handshake run: ex config: config options: st websocketOptions
     result isError ifTrue: [
@@ -159,7 +162,10 @@ typed Object subclass: Pipeline
     ex forget
     wsSpan := BuccaneerTelemetry
       startSpan: #websocket
-      measurements: #{#monotonic_time => BuccaneerTelemetry monotonicTime}
+      measurements: #{
+        #monotonic_time => BuccaneerTelemetry monotonicTime,
+        #compress => compress notNil
+      }
       metadata: (meta at: #websock put: st websock)
     ws := config websocket
     connection := WebSocketConnection
@@ -172,6 +178,7 @@ typed Object subclass: Pipeline
       fragmentSize: 0
       validateTextFrames: (ws at: #validateTextFrames ifAbsent: [true])
       maxFragmentedMessageSize: (ws at: #maxFragmentedMessageSize ifAbsent: [8000000])
+      logErrors: ((ws at: #logProtocolErrors ifAbsent: [true]) =:= false ifTrue: [false] ifFalse: [true])
       span: wsSpan
       metrics: Dictionary new
     protocol := WebSocketProtocol

@@ -18,6 +18,9 @@ sealed typed Value subclass: WebSocketConnection
   field: fragmentSize :: Integer = 0
   field: validateTextFrames :: Boolean = true
   field: maxFragmentedMessageSize :: Integer = 8000000
+  /// Whether protocol-error stops are logged (Bandit's
+  /// log_protocol_errors, silenced per test).
+  field: logErrors :: Boolean = true
   field: span :: BuccaneerTelemetry | Nil = nil
   field: metrics :: Dictionary = Dictionary new
 
@@ -267,7 +270,9 @@ sealed typed Value subclass: WebSocketConnection
     ]
     WebSocketSocket close: sock code: code
     PermessageDeflate close: self compress
-    Logger error: ("(stop) " ++ reason printString) metadata: #{#domain => #(#buccaneer)}
+    self logErrors ifTrue: [
+      Logger error: ("(stop) " ++ reason printString) metadata: #{#domain => #(#buccaneer)}
+    ]
     self stopSpan: reason
     {(((self withConnState: #closed) withCompress: nil) withMetrics: Dictionary new), {#error, reason}}
 

@@ -51,7 +51,7 @@ sealed typed Value subclass: FrameExtractor
     buffered := self header size - headerLength
     payload := self header part: headerLength size: buffered
     (((((self withHeader: (self header part: 0 size: headerLength))
-      withChunks: (buffered =:= 0 ifTrue: [#()] ifFalse: [{payload}]))
+      withChunks: (buffered =:= 0 ifTrue: [#()] ifFalse: [#(payload)]))
       withPayloadLength: buffered)
       withRequiredLength: requiredLength)
       withHeaderLength: headerLength)

@@ -27,15 +27,23 @@ typed Object subclass: Handshake
     (server =:= true) and: [upgrade =:= true]
 
   class sealed negotiate: ex :: Exchange config: config :: BuccaneerConfig upgradeOpts: upgradeOpts :: Dictionary -> Tuple =>
+    serverDeflate := config websocket at: #deflateOptions ifAbsent: [#{}]
     deflateOpts := #{
-      #level => (upgradeOpts at: #level ifAbsent: [#default]),
-      #memLevel => (upgradeOpts at: #memLevel ifAbsent: [8]),
-      #strategy => (upgradeOpts at: #strategy ifAbsent: [#default]),
+      #level => (self deflateOpt: upgradeOpts server: serverDeflate name: #level default: #default),
+      #memLevel => (self deflateOpt: upgradeOpts server: serverDeflate name: #memLevel default: 8),
+      #strategy => (self deflateOpt: upgradeOpts server: serverDeflate name: #strategy default: #default),
       #maxInflateRatio => (upgradeOpts at: #maxInflateRatio ifAbsent: [
         config websocket at: #maxInflateRatio ifAbsent: [25]
       ])
     }
     PermessageDeflate negotiate: (self requestedExtensions: ex) options: deflateOpts
+
+  /// A per-upgrade deflate option, falling back to the server's
+  /// #deflateOptions section and then the default.
+  class sealed deflateOpt: upgradeOpts :: Dictionary server: serverDeflate :: Object name: key :: Symbol default: value :: Object -> Object =>
+    (upgradeOpts at: key ifAbsent: [nil]) notNil ifTrue: [^upgradeOpts at: key]
+    (serverDeflate isKindOf: Dictionary) ifFalse: [^value]
+    serverDeflate at: key ifAbsent: [value]
 
   /// Every offered extension as {name, params}, params as {name, value}
   /// with bare names carrying true (Bandit's requested_extensions).
@@ -80,6 +88,10 @@ typed Object subclass: Handshake
     )
     compress isNil ifFalse: [
       headers := headers add: {"sec-websocket-extensions", (self extensionHeader: params)}
+    ]
+    headers := headers add: {"cache-control", "max-age=0, private, must-revalidate"}
+    (ex load) respHeaders do: [:h :: Tuple |
+      headers := headers add: h
     ]
     ex inform: 101 headers: headers
 

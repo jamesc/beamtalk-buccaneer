@@ -44,8 +44,8 @@ sealed typed Value subclass: TestSock
       #ignore -> WebSocketResult ok: self;
       #push -> WebSocketResult push: frames state: self;
       #reply -> WebSocketResult reply: #ok frames: frames state: self;
-      #stop -> WebSocketResult stop: self code: code detail: detail;
-      _ -> WebSocketResult stopError: reason state: self code: code
+      #stop -> WebSocketResult stop: self code: code detail: detail frames: frames;
+      _ -> WebSocketResult stopError: reason state: self code: code frames: frames
     ]
 
   init -> WebSocketResult =>
@@ -98,7 +98,13 @@ sealed typed Value subclass: TestSock
   /// Log the message; a "dump" text frame pushes the whole log.
   record: message :: Object -> WebSocketResult =>
     message match: [
-      {#text, "dump"} -> WebSocketResult push: {#text, self log printString} state: self;
+      {#text, data} -> (data asStringUnchecked =:= "dump") ifTrue: [
+        ^WebSocketResult
+          push: {#text, self log printString}
+          state: (self withLog: (self log addFirst: message))
+      ] ifFalse: [
+        WebSocketResult ok: (self withLog: (self log addFirst: message))
+      ];
       _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
     ]
 

@@ -1,0 +1,7 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A WebSocket ping frame (Bandit opcode 0x9). Never fragmented,
+/// never compressed; payloads over 125 bytes are a protocol error.
+sealed typed Value subclass: PingFrame
+  field: data :: Binary = ""

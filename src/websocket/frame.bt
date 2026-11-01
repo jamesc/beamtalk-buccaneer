@@ -1,0 +1,159 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.WebSocket.Frame: frame header scanning, deserialization and
+/// serialization. Client frames must be masked; an unmasked client frame
+/// is a protocol error, and short reads answer #more so the extractor can
+/// feed more data.
+typed Object subclass: Frame
+
+  /// Scan `buffer` for one frame header. Answers #more when the header
+  /// is incomplete, `Result error:` on an unmasked frame or an oversize
+  /// one, or `Result ok:` {headerLength, payloadLength} on success.
+  class sealed headerAndPayloadLength: buffer :: Binary maxFrameSize: max :: Integer -> Object =>
+    buffer match: [
+      <<_fin:1, _compressed:1, _rsv:2, _opcode:4, 1:1, 127:7, length:64, _mask:4/binary, _rest/binary>> ->
+        self validate: 14 payload: length maxFrameSize: max;
+      <<_fin:1, _compressed:1, _rsv:2, _opcode:4, 1:1, 126:7, length:16, _mask:4/binary, _rest/binary>> ->
+        self validate: 8 payload: length maxFrameSize: max;
+      <<_fin:1, _compressed:1, _rsv:2, _opcode:4, 1:1, length:7, _mask:4/binary, _rest/binary>> when: [length <= 125] ->
+        self validate: 6 payload: length maxFrameSize: max;
+      <<_f:1, _c:1, _r:2, _o:4, 0:1, _len:7, _rest/binary>> ->
+        Result error: #client_frame_without_mask;
+      _ -> #more
+    ]
+
+  /// Bandit's validate_max_frame_size: 0 means unlimited.
+  class sealed validate: headerLength :: Integer payload: length :: Integer maxFrameSize: max :: Integer -> Object =>
+    ((max =:= 0) or: [headerLength + length <= max]) ifTrue: [
+      ^Result ok: {headerLength, length}
+    ]
+    Result error: #max_frame_size_exceeded
+
+  /// Parse one exact frame (header plus payload, as split by the
+  /// extractor). Answers `Result ok:` with a frame value or
+  /// `Result error:` with the reason.
+  class sealed deserialize: buffer :: Binary -> Result(Object, Object) =>
+    buffer match: [
+      <<fin:1, compressed:1, rsv:2, opcode:4, masked:1, 127:7, length:64, mask:4/binary, payload:length/binary, rest/binary>> ->
+        self toFrame: fin compressed: compressed rsv: rsv opcode: opcode masked: masked mask: mask payload: payload rest: rest;
+      <<fin:1, compressed:1, rsv:2, opcode:4, masked:1, 126:7, length:16, mask:4/binary, payload:length/binary, rest/binary>> ->
+        self toFrame: fin compressed: compressed rsv: rsv opcode: opcode masked: masked mask: mask payload: payload rest: rest;
+      <<fin:1, compressed:1, rsv:2, opcode:4, masked:1, length:7, mask:4/binary, payload:length/binary, rest/binary>> ->
+        self toFrame: fin compressed: compressed rsv: rsv opcode: opcode masked: masked mask: mask payload: payload rest: rest;
+      _ -> Result error: #deserialization_failed
+    ]
+
+  /// One shared tail for the three length forms: exact framing, the
+  /// mask check, RSV then opcode dispatch over the unmasked payload.
+  class sealed toFrame: fin :: Integer compressed: compressed :: Integer rsv: rsv :: Integer opcode: opcode :: Integer masked: masked :: Integer mask: mask :: Binary payload: payload :: Binary rest: rest :: Binary -> Result(Object, Object) =>
+    (rest size =:= 0) ifFalse: [^Result error: #deserialization_failed]
+    masked =:= 1 ifFalse: [^Result error: #client_frame_without_mask]
+    rsv =:= 0 ifFalse: [^Result error: ("Received unsupported RSV flags " ++ rsv printString)]
+    data := WebSocketOps unmask: payload with: mask
+    self dispatch: opcode fin: fin compressed: compressed data: data
+
+  /// Opcode dispatch over the unmasked payload.
+  class sealed dispatch: opcode :: Integer fin: fin :: Integer compressed: compressed :: Integer data: data :: Binary -> Result(Object, Object) =>
+    finBit := fin =:= 1
+    opcode match: [
+      0 -> (compressed =:= 1) ifTrue: [
+        Result error: "Cannot have a compressed continuation frame (RFC7692§6.1)"
+      ] ifFalse: [
+        Result ok: ((ContinuationFrame new withFin: finBit) withData: data)
+      ];
+      1 -> Result ok: (((TextFrame new withFin: finBit) withCompressed: compressed =:= 1) withData: data);
+      2 -> Result ok: (((BinaryFrame new withFin: finBit) withCompressed: compressed =:= 1) withData: data);
+      8 -> self closeFrame: finBit compressed: compressed data: data;
+      9 -> self pingFrame: finBit compressed: compressed data: data;
+      10 -> self pongFrame: finBit compressed: compressed data: data;
+      _ -> Result error: ("unknown opcode " ++ opcode printString)
+    ]
+
+  class sealed closeFrame: fin :: Boolean compressed: compressed :: Integer data: data :: Binary -> Result(Object, Object) =>
+    compressed =:= 1 ifTrue: [
+      ^Result error: "Cannot have a compressed connection close frame (RFC7692§6.1)"
+    ]
+    fin ifFalse: [^Result error: "Cannot have a fragmented connection close frame (RFC6455§5.5)"]
+    data match: [
+      <<>> -> Result ok: ConnectionCloseFrame new;
+      <<code:16>> -> Result ok: (ConnectionCloseFrame new withCode: code);
+      <<code:16, reason/binary>> ->
+        ((reason size <= 123) and: [(reason asString) isOk]) ifTrue: [
+          Result ok: ((ConnectionCloseFrame new withCode: code) withReason: reason)
+        ] ifFalse: [
+          (reason asString) isOk ifTrue: [
+            Result error: "Invalid connection close payload (RFC6455§5.5)"
+          ] ifFalse: [
+            Result error: "Received non UTF-8 connection close frame (RFC6455§5.5.1)"
+          ]
+        ];
+      _ -> Result error: "Invalid connection close payload (RFC6455§5.5)"
+    ]
+
+  class sealed pingFrame: fin :: Boolean compressed: compressed :: Integer data: data :: Binary -> Result(Object, Object) =>
+    compressed =:= 1 ifTrue: [
+      ^Result error: "Cannot have a compressed ping frame (RFC7692§6.1)"
+    ]
+    fin ifFalse: [^Result error: "Cannot have a fragmented ping frame (RFC6455§5.5.2)"]
+    data size <= 125 ifTrue: [^Result ok: (PingFrame new withData: data)]
+    Result error: "Invalid ping payload (RFC6455§5.5.2)"
+
+  class sealed pongFrame: fin :: Boolean compressed: compressed :: Integer data: data :: Binary -> Result(Object, Object) =>
+    compressed =:= 1 ifTrue: [
+      ^Result error: "Cannot have a compressed pong frame (RFC7692§6.1)"
+    ]
+    fin ifFalse: [^Result error: "Cannot have a fragmented pong frame (RFC6455§5.5.3)"]
+    data size <= 125 ifTrue: [^Result ok: (PongFrame new withData: data)]
+    Result error: "Invalid pong payload (RFC6455§5.5.3)"
+
+  /// Serialize one frame to wire bytes. Server frames are never masked
+  /// (Bandit sets the mask bit to 0).
+  class sealed serialize: frame :: Object -> Binary =>
+    frame match: [
+      t :: TextFrame -> self wire: 1 fin: t fin compressed: t compressed payload: t data;
+      b :: BinaryFrame -> self wire: 2 fin: b fin compressed: b compressed payload: b data;
+      c :: ContinuationFrame -> self wire: 0 fin: c fin compressed: false payload: c data;
+      p :: PingFrame -> self wire: 9 fin: true compressed: false payload: p data;
+      p :: PongFrame -> self wire: 10 fin: true compressed: false payload: p data;
+      c :: ConnectionCloseFrame -> self
+        wire: 8
+        fin: true
+        compressed: false
+        payload: (self closePayload: c);
+      _ -> Error signal: "Frame cannot serialize this value"
+    ]
+
+  class sealed closePayload: frame :: ConnectionCloseFrame -> Binary =>
+    frame code match: [
+      code :: Integer -> self closePayload: code reason: frame reason;
+      _ -> ""
+    ]
+
+  class sealed closePayload: code :: Integer reason: reason :: Binary -> Binary =>
+    prefix := Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255)
+    reason size =:= 0 ifTrue: [^prefix]
+    prefix concat: reason
+
+  /// One header plus payload: FIN/RSV/opcode byte, length byte(s), data.
+  class sealed wire: opcode :: Integer fin: fin :: Boolean compressed: compressed :: Boolean payload: data :: Binary -> Binary =>
+    first := (fin ifTrue: [128] ifFalse: [0]) + (compressed ifTrue: [64] ifFalse: [0]) + opcode
+    length := (Erlang erlang) iolist_size: data
+    length <= 125 ifTrue: [^(Binary fromBytes: #(first, length)) concat: data]
+    length <= 65535 ifTrue: [^((Binary fromBytes: #(first, 126)) concat: (self bytes16: length)) concat: data]
+    ((Binary fromBytes: #(first, 127)) concat: (self bytes64: length)) concat: data
+
+  class sealed bytes16: n :: Integer -> Binary =>
+    Binary fromBytes: #((n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  class sealed bytes64: n :: Integer -> Binary =>
+    Binary fromBytes: #(
+      (n bitShift: -56) bitAnd: 255,
+      (n bitShift: -48) bitAnd: 255,
+      (n bitShift: -40) bitAnd: 255,
+      (n bitShift: -32) bitAnd: 255,
+      (n bitShift: -24) bitAnd: 255,
+      (n bitShift: -16) bitAnd: 255,
+      (n bitShift: -8) bitAnd: 255,
+      n bitAnd: 255
+    )

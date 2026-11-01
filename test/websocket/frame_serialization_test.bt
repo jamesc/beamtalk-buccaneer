@@ -1,0 +1,133 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `websocket/frame_serialization_test.exs`: every
+/// frame type at every length encoding. `Frame serialize:` answers one
+/// Binary (header plus payload); the length byte forms are asserted
+/// byte-for-byte.
+TestCase subclass: FrameSerializationTest
+
+  payload: n :: Integer -> Binary =>
+    "a" repeat: n
+
+  /// Serialized header for the length: short, 16-bit or 64-bit.
+  lengthBytes: n :: Integer -> Binary =>
+    n <= 125 ifTrue: [^Binary fromBytes: #(n)]
+    n <= 65535 ifTrue: [^(Binary fromBytes: #(126)) concat: (self bytes16: n)]
+    (Binary fromBytes: #(127)) concat: (self bytes64: n)
+
+  bytes16: n :: Integer -> Binary =>
+    Binary fromBytes: #((n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  bytes64: n :: Integer -> Binary =>
+    Binary fromBytes: #(
+      (n bitShift: -56) bitAnd: 255,
+      (n bitShift: -48) bitAnd: 255,
+      (n bitShift: -40) bitAnd: 255,
+      (n bitShift: -32) bitAnd: 255,
+      (n bitShift: -24) bitAnd: 255,
+      (n bitShift: -16) bitAnd: 255,
+      (n bitShift: -8) bitAnd: 255,
+      n bitAnd: 255)
+
+  testBinary125 =>
+    frame := (BinaryFrame new withFin: true) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(130)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testBinary126 =>
+    frame := (BinaryFrame new withFin: true) withData: (self payload: 126)
+    expected := ((Binary fromBytes: #(130)) concat: (self lengthBytes: 126)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testBinary127 =>
+    frame := (BinaryFrame new withFin: true) withData: (self payload: 127)
+    expected := ((Binary fromBytes: #(130)) concat: (self lengthBytes: 127)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testBinary16000 =>
+    frame := (BinaryFrame new withFin: true) withData: (self payload: 16000)
+    expected := ((Binary fromBytes: #(130)) concat: (self lengthBytes: 16000)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testBinary1000000 =>
+    frame := (BinaryFrame new withFin: true) withData: (self payload: 1000000)
+    expected := ((Binary fromBytes: #(130)) concat: (self lengthBytes: 1000000)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testContinuationFin =>
+    frame := (ContinuationFrame new withFin: true) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(128)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testContinuationNoFin =>
+    frame := (ContinuationFrame new withFin: false) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(0)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testTextNoFinNoCompress =>
+    frame := (TextFrame new withFin: false) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(1)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testTextFin =>
+    frame := (TextFrame new withFin: true) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(129)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testTextCompressed =>
+    frame := ((TextFrame new withFin: false) withCompressed: true) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(65)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testBinaryNoFinNoCompress =>
+    frame := (BinaryFrame new withFin: false) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(2)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testBinaryFin =>
+    frame := (BinaryFrame new withFin: true) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(130)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testBinaryCompressed =>
+    frame := ((BinaryFrame new withFin: false) withCompressed: true) withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(66)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testCloseCodeAndReason =>
+    frame := ((ConnectionCloseFrame new withCode: 1000) withReason: (self payload: 123))
+    expected := ((Binary fromBytes: #(136)) concat: (self lengthBytes: 125)) concat: (
+      (Binary fromBytes: #(3, 232)) concat: frame reason)
+    self assert: (Frame serialize: frame) equals: expected
+
+  testCloseCodeOnly =>
+    frame := ConnectionCloseFrame new withCode: 1000
+    expected := ((Binary fromBytes: #(136)) concat: (self lengthBytes: 2)) concat: (
+      Binary fromBytes: #(3, 232))
+    self assert: (Frame serialize: frame) equals: expected
+
+  testCloseNoCode =>
+    frame := ConnectionCloseFrame new
+    expected := (Binary fromBytes: #(136)) concat: (self lengthBytes: 0)
+    self assert: (Frame serialize: frame) equals: expected
+
+  testPingWithData =>
+    frame := PingFrame new withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(137)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testPingWithoutData =>
+    frame := PingFrame new
+    expected := (Binary fromBytes: #(137)) concat: (self lengthBytes: 0)
+    self assert: (Frame serialize: frame) equals: expected
+
+  testPongWithData =>
+    frame := PongFrame new withData: (self payload: 125)
+    expected := ((Binary fromBytes: #(138)) concat: (self lengthBytes: 125)) concat: frame data
+    self assert: (Frame serialize: frame) equals: expected
+
+  testPongWithoutData =>
+    frame := PongFrame new
+    expected := (Binary fromBytes: #(138)) concat: (self lengthBytes: 0)
+    self assert: (Frame serialize: frame) equals: expected

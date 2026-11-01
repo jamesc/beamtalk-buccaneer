@@ -1,0 +1,19 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.PrimitiveOps.WebSocket: client payload masking (RFC6455§5.3).
+/// Masking is an involution, so one function unmasks too. The 4 mask
+/// bytes cycle over the payload: `binary:copy/2` repeats them to at
+/// least the payload length, then a single `crypto:exor/2` xors the
+/// common part.
+typed Object subclass: WebSocketOps
+
+  class sealed unmask: payload :: Binary with: mask :: Binary -> Binary =>
+    self mask: payload with: mask
+
+  class sealed mask: payload :: Binary with: mask :: Binary -> Binary =>
+    size := payload size
+    count := (size + 3) div: 4
+    expanded := (Erlang binary) copy: mask with: count
+    key := expanded part: 0 size: size
+    (Erlang crypto) exor: payload with: key

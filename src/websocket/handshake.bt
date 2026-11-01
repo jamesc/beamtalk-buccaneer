@@ -1,0 +1,94 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.WebSocket.Handshake: validate the upgrade request, negotiate
+/// permessage-deflate, and send the 101 Switching Protocols response.
+/// Answers `Result ok:` with {compress, params} (compress nil when no
+/// extension was negotiated), or `Result error:` with the reason.
+typed Object subclass: Handshake
+
+  class sealed run: ex :: Exchange config: config :: BuccaneerConfig options: upgradeOpts :: Dictionary -> Result(Object, String) =>
+    validation := UpgradeValidation validate: ex
+    validation isError ifTrue: [^Result error: validation error]
+    compress := self serverCompress: config upgradeOpts: upgradeOpts
+    negotiated := compress ifTrue: [
+      self negotiate: ex config: config upgradeOpts: upgradeOpts
+    ] ifFalse: [{nil, #()}]
+    {instance, params} := negotiated
+    self sendHandshake: ex compress: instance params: params
+    Result ok: negotiated
+
+  /// Compression needs both the server flag and the upgrade flag
+  /// (Bandit: connection `compress` and per-upgrade `compress`, the
+  /// latter defaulting to true).
+  class sealed serverCompress: config :: BuccaneerConfig upgradeOpts: upgradeOpts :: Dictionary -> Boolean =>
+    server := config websocket at: #compress ifAbsent: [false]
+    upgrade := upgradeOpts at: #compress ifAbsent: [true]
+    (server =:= true) and: [upgrade =:= true]
+
+  class sealed negotiate: ex :: Exchange config: config :: BuccaneerConfig upgradeOpts: upgradeOpts :: Dictionary -> Tuple =>
+    deflateOpts := #{
+      #level => (upgradeOpts at: #level ifAbsent: [#default]),
+      #memLevel => (upgradeOpts at: #memLevel ifAbsent: [8]),
+      #strategy => (upgradeOpts at: #strategy ifAbsent: [#default]),
+      #maxInflateRatio => (upgradeOpts at: #maxInflateRatio ifAbsent: [
+        config websocket at: #maxInflateRatio ifAbsent: [25]
+      ])
+    }
+    PermessageDeflate negotiate: (self requestedExtensions: ex) options: deflateOpts
+
+  /// Every offered extension as {name, params}, params as {name, value}
+  /// with bare names carrying true (Bandit's requested_extensions).
+  class sealed requestedExtensions: ex :: Exchange -> List =>
+    offered := #()
+    ex headers do: [:h |
+      (h at: 1) =:= "sec-websocket-extensions" ifTrue: [
+        ((Headers stringOrOpaque: (h at: 2)) match: [
+          s :: String -> Headers splitList: s;
+          _ -> #()
+        ]) do: [:item | offered := offered add: (self extension: item)]
+      ]
+    ]
+    offered
+
+  class sealed extension: item :: String -> Tuple =>
+    parts := item split: ";"
+    name := (parts at: 1) trim
+    params := #()
+    2 to: parts size do: [:i |
+      trimmed := (parts at: i) trim
+      pieces := trimmed split: "="
+      pieces size =:= 2 ifTrue: [
+        params := params add: {(pieces at: 1) trim, (pieces at: 2) trim}
+      ] ifFalse: [
+        params := params add: {trimmed, true}
+      ]
+    ]
+    {name, params}
+
+  class sealed sendHandshake: ex :: Exchange compress: compress :: Object params: params :: List -> Result(Nil, Object) =>
+    key := Headers getHeader: ex headers name: "sec-websocket-key"
+    keyString := (Headers stringOrOpaque: key) match: [
+      s :: String -> s;
+      _ -> ""
+    ]
+    digest := (Erlang crypto) hash: #sha with: (keyString ++ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    headers := #(
+      {"upgrade", "websocket"},
+      {"connection", "Upgrade"},
+      {"sec-websocket-accept", digest asBase64}
+    )
+    compress isNil ifFalse: [
+      headers := headers add: {"sec-websocket-extensions", (self extensionHeader: params)}
+    ]
+    ex inform: 101 headers: headers
+
+  /// The negotiated extension header: "permessage-deflate" plus the
+  /// accepted params (`Extensions` in Bandit's send_handshake).
+  class sealed extensionHeader: params :: List -> String =>
+    out := "permessage-deflate"
+    params do: [:p :: Tuple |
+      {name, value} := p
+      value =:= true ifTrue: [out := out ++ ";" ++ name] ifFalse: [out := out ++ ";" ++ name ++ "=" ++ value printString]
+    ]
+    out

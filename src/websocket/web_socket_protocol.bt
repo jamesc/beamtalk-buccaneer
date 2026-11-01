@@ -1,0 +1,99 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.WebSocket.Handler as a Value: the protocol value
+/// ConnectionHandler delegates to after an upgrade. Holds the frame
+/// extractor and the WebSocketConnection, runs the WebSock lifecycle,
+/// and answers Catalina HandlerResults. The read timeout is armed
+/// persistently when the upgrade options carry #timeout.
+sealed typed Value subclass: WebSocketProtocol
+  field: config :: BuccaneerConfig
+  field: connection :: WebSocketConnection = WebSocketConnection new
+  field: extractor :: FrameExtractor = FrameExtractor new
+  field: buffer :: Binary = ""
+  field: started :: Boolean = false
+  field: timeoutMs :: Integer | Nil = nil
+
+  /// Serve received bytes: run init once, then push and pop frames
+  /// until the bytes run out (Bandit's handle_data/pop_frame).
+  serve: data :: Binary socket: sock :: Socket -> HandlerResult =>
+    full := self buffer concat: data
+    base := self withBuffer: ""
+    running := base started ifTrue: [base] ifFalse: [base start: sock]
+    running connection connState =:= #open ifFalse: [^HandlerResult close: running]
+    running pop: (running extractor pushData: full) socket: sock
+
+  /// Run the WebSock init callback. Answers the started protocol; a
+  /// terminal init outcome already tore the connection down.
+  start: sock :: Socket -> WebSocketProtocol =>
+    {conn, _outcome} := self connection init: sock
+    (self withConnection: conn) withStarted: true
+
+  /// Pop frames until the extractor needs more data.
+  pop: ext :: FrameExtractor socket: sock :: Socket -> HandlerResult =>
+    {ext2, popped} := ext popFrame
+    base := self withExtractor: ext2
+    popped match: [
+      #more -> base keepReading;
+      r :: Result -> r isError ifTrue: [
+        base failed: {#deserializing, r error} socket: sock
+      ] ifFalse: [
+        base frame: r value socket: sock
+      ]
+    ]
+
+  /// One parsed frame: continue popping, or close on a terminal outcome
+  /// (the close handshake already went out inside the connection).
+  frame: frame :: Object socket: sock :: Socket -> HandlerResult =>
+    {conn, outcome} := self connection handleFrame: frame socket: sock
+    updated := self withConnection: conn
+    outcome match: [
+      #continue -> updated pop: updated extractor socket: sock;
+      _ -> HandlerResult close: updated
+    ]
+
+  /// The extractor hit bad bytes: map to the close code and close
+  /// (the close handshake already went out inside the connection).
+  failed: reason :: Object socket: sock :: Socket -> HandlerResult =>
+    {conn, _} := self connection handleError: reason socket: sock
+    HandlerResult close: (self withConnection: conn)
+
+  /// Keep reading with the timeout re-armed (Bandit's persistent timeout).
+  keepReading -> HandlerResult =>
+    self timeoutMs match: [
+      ms :: Integer -> HandlerResult continue: self persistentTimeout: ms;
+      _ -> HandlerResult continue: self
+    ]
+
+  /// Re-arm after the upgrade when no bytes are buffered yet.
+  rearm: sock :: Socket -> HandlerResult =>
+    self serve: "" socket: sock
+
+  /// Whether the connection already tore down.
+  closed -> Boolean =>
+    (self connection connState =:= #open) not
+
+  /// A message to the connection process (Bandit's handle_info).
+  handleInfo: msg :: Object socket: sock :: Socket -> WebSocketProtocol =>
+    {conn, _} := self connection handleInfo: msg socket: sock
+    self withConnection: conn
+
+  /// The peer closed (Bandit's handle_close).
+  handleClose: sock :: Socket -> WebSocketProtocol =>
+    {conn, _} := self connection handleClose: sock
+    self withConnection: conn
+
+  /// The server is shutting down (Bandit's handle_shutdown).
+  handleShutdown: sock :: Socket -> WebSocketProtocol =>
+    {conn, _} := self connection handleShutdown: sock
+    self withConnection: conn
+
+  /// A socket error or raised error (Bandit's handle_error).
+  handleError: reason :: Object socket: sock :: Socket -> WebSocketProtocol =>
+    {conn, _} := self connection handleError: reason socket: sock
+    self withConnection: conn
+
+  /// The read timeout expired (Bandit's handle_timeout).
+  handleTimeout: sock :: Socket -> WebSocketProtocol =>
+    {conn, _} := self connection handleTimeout: sock
+    self withConnection: conn

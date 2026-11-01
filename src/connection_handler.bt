@@ -35,12 +35,48 @@ typed Handler subclass: ConnectionHandler
   handleData: data :: Binary socket: sock :: Socket state: st :: Object -> HandlerResult =>
     st match: [
       h :: HTTP1Handler -> h serve: data socket: sock;
+      p :: WebSocketProtocol -> p serve: data socket: sock;
       _ -> HandlerResult close: st
     ]
 
+  /// A message for the connection: a WebSocket protocol handles it in
+  /// place (running the WebSock handle_info:); anything else is logged
+  /// for HTTP/1 handlers and ignored otherwise. A torn-down protocol
+  /// closes the socket, since handleUserInfo: answers are ignored.
   handleUserInfo: msg :: Object -> Object =>
     self userState match: [
       h :: HTTP1Handler -> self logUnknown: msg config: h config;
+      p :: WebSocketProtocol -> self userInfo: msg protocol: p;
+      _ -> nil
+    ]
+
+  userInfo: msg :: Object protocol: p :: WebSocketProtocol -> Object =>
+    updated := p handleInfo: msg socket: self socket
+    self.userState := updated
+    updated closed ifTrue: [self closeLocally]
+    nil
+
+  handleClose: sock :: Socket state: st :: Object -> Object =>
+    st match: [
+      p :: WebSocketProtocol -> self.userState := (p handleClose: sock);
+      _ -> nil
+    ]
+
+  handleShutdown: sock :: Socket state: st :: Object -> Object =>
+    st match: [
+      p :: WebSocketProtocol -> self.userState := (p handleShutdown: sock);
+      _ -> nil
+    ]
+
+  handleError: reason :: Object socket: sock :: Socket state: st :: Object -> Object =>
+    st match: [
+      p :: WebSocketProtocol -> self.userState := (p handleError: reason socket: sock);
+      _ -> nil
+    ]
+
+  handleTimeout: sock :: Socket state: st :: Object -> Object =>
+    st match: [
+      p :: WebSocketProtocol -> self.userState := (p handleTimeout: sock);
       _ -> nil
     ]
 

@@ -290,6 +290,18 @@ sealed typed Value subclass: Exchange
     self store: headed
     Result ok: nil
 
+  /// Ask to switch this request to WebSocket (Plug.Conn.upgrade_adapter
+  /// with :websocket). Records the WebSock handler and options; the
+  /// pipeline validates the request, sends 101 and hands the connection
+  /// over after the handler returns, as Plug's model. Answers the
+  /// exchange. Raises AlreadySent unless nothing was sent yet.
+  upgradeToWebSocket: websock :: Object options: opts :: Dictionary -> Exchange =>
+    st := self load
+    st respState =:= #unset ifFalse: [
+      AlreadySent signal: "already_sent: a response was already sent for this request"
+    ]
+    self store: ((((st withWebsock: websock) withWebsockState: websock) withWebsocketOptions: opts) withRespState: #upgraded)
+
   /// Per RFC9110§10.1.1, a client that asked for 100 Continue and never
   /// got one may never send the body: close rather than drain it.
   closeForUnhonoredExpect: hs :: HttpHeaders status: status :: Integer state: st :: ExchangeState -> HttpHeaders =>

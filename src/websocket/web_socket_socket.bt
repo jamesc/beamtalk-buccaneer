@@ -1,0 +1,24 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.WebSocket.Socket over Catalina: send one frame, or close the
+/// connection with a close frame and a write shutdown. Sends never mask
+/// (server to client); errors are answered, never raised, so close
+/// paths can ignore a dead peer.
+typed Object subclass: WebSocketSocket
+
+  /// Send one outgoing frame. `type` is #text | #binary | #ping | #pong.
+  class sealed sendFrame: socket :: Socket type: type :: Symbol data: data :: Binary compressed: compressed :: Boolean -> Result(Nil, Object) =>
+    frame := type match: [
+      #text -> ((TextFrame new withFin: true) withCompressed: compressed) withData: data;
+      #binary -> ((BinaryFrame new withFin: true) withCompressed: compressed) withData: data;
+      #ping -> PingFrame new withData: data;
+      _ -> PongFrame new withData: data
+    ]
+    socket send: (Frame serialize: frame)
+
+  /// Send the close frame, then shut the socket down for writing.
+  class sealed close: socket :: Socket code: code :: Integer -> Result(Nil, Object) =>
+    frame := ConnectionCloseFrame new withCode: code
+    (socket send: (Frame serialize: frame)) isError ifTrue: [^Result error: #closed]
+    socket shutdown: #write

@@ -1,0 +1,43 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.WebSocket.UpgradeValidation: RFC6455§4.2 request checks.
+/// Answers `Result ok: nil`, or `Result error:` with the reason.
+typed Object subclass: UpgradeValidation
+
+  class sealed validate: ex :: Exchange -> Result(Nil, String) =>
+    ex httpProtocol =:= #http11 ifFalse: [
+      ^Result error: ("HTTP version " ++ ex httpProtocol printString ++ " unsupported")
+    ]
+    self validateHttp1: ex
+
+  class sealed validateHttp1: ex :: Exchange -> Result(Nil, String) =>
+    ex method =:= "GET" ifFalse: [
+      ^Result error: ("HTTP method " ++ ex method ++ " unsupported")
+    ]
+    (Headers getHeader: ex headers name: "host") isNil ifTrue: [
+      ^Result error: "'host' header is absent"
+    ]
+    (Headers headerContainsToken: ex headers name: "connection" token: "upgrade") ifFalse: [
+      ^Result error: ("'connection' header must contain 'upgrade', got " ++ (self values: ex name: "connection") printString)
+    ]
+    (Headers headerContainsToken: ex headers name: "upgrade" token: "websocket") ifFalse: [
+      ^Result error: ("'upgrade' header must contain 'websocket', got " ++ (self values: ex name: "upgrade") printString)
+    ]
+    (Headers getHeader: ex headers name: "sec-websocket-key") isNil ifTrue: [
+      ^Result error: "'sec-websocket-key' header is absent"
+    ]
+    versions := (self values: ex name: "sec-websocket-version") collect: [:v :: Object |
+      (Headers stringOrOpaque: v) match: [
+        s :: String -> s asciiLowercase;
+        _ -> ""
+      ]
+    ]
+    versions =:= #("13") ifFalse: [
+      ^Result error: ("'sec-websocket-version' header must equal '13', got " ++ versions printString)
+    ]
+    Result ok: nil
+
+  /// Every raw value held for a header name, for error messages.
+  class sealed values: ex :: Exchange name: name :: String -> List =>
+    ex headers select: [:h :: Tuple | (h at: 1) =:= name] collect: [:h :: Tuple | h at: 2]

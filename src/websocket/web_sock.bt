@@ -1,0 +1,21 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit's WebSock behaviour as a Beamtalk Protocol: the engine-level
+/// handler for one WebSocket connection. The implementor is a Value
+/// that is its own state: every callback answers a WebSocketResult
+/// carrying the next state.
+///
+/// Required: handleIn: (a data frame: {#text, String} or {#binary,
+/// Binary}) and handleInfo: (any other message to the connection
+/// process). The rest is optional, detected with respondsTo::
+///
+/// init -> WebSocketResult (default: WebSocketResult ok: self)
+/// handleControl: {#ping, data} | {#pong, data} -> WebSocketResult
+/// terminate: reason -> Object (#normal, #remote, #shutdown, #timeout
+/// or {#error, reason})
+Protocol define: WebSock
+  /// A data frame: {#text, String} or {#binary, Binary}.
+  handleIn: message :: Tuple -> WebSocketResult
+  /// Any other message to the connection process.
+  handleInfo: message :: Object -> WebSocketResult

@@ -378,7 +378,13 @@ TestCase subclass: ProtocolTest
     self assert: (srv stop: 5000) isOk
 
   testMaxInflateRatio =>
-    payload := self bytesOf: ("ab" repeat: 150)
+    // A payload inflating ~10:1, large enough that inflation spans
+    // several safeInflate rounds but within the default ratio of 25
+    // (Bandit protocol_test, "respects max_inflate_ratio").
+    block := Binary fromIolist: ((1 to: 6000) collect: [:i |
+      Binary fromBytes: #(((i bitShift: -24) bitAnd: 255), ((i bitShift: -16) bitAnd: 255), ((i bitShift: -8) bitAnd: 255), (i bitAnd: 255))
+    ])
+    payload := Binary fromIolist: #(block, block, block, block, block, block)
     deflated := WebSocketClient deflateRaw: payload
     srv := self
       serverWith: self echoSock

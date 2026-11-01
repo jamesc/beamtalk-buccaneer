@@ -54,3 +54,32 @@ jobs:
       - name: Spike bench smoke
         run: just spike-bench --rows smoke
         continue-on-error: true
+
+  # Phase 4: Autobahn Testsuite fuzzingclient against the echo server.
+  # Non-blocking until green (BT-4084), then promote by dropping
+  # continue-on-error. Needs docker (present on ubuntu-latest) and the
+  # AUTOBAHN=1 gate in test/websocket/autobahn_test.bt.
+  autobahn:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+
+      - name: Install Beamtalk
+        run: |
+          curl -fsSL https://beamtalk.dev/install.sh | sudo sh -s -- --edge --prefix /usr/local
+          beamtalk --version
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: Build
+        run: just build
+
+      - name: Autobahn Testsuite
+        run: just autobahn

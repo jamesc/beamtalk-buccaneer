@@ -1608,3 +1608,26 @@ TestCase subclass: SockTest
     self assert: (metadata at: #error) equals: #timeout
     self assert: (srv stop: 5000) isOk
     self teleEnd
+
+  testOneProcessPerConnection =>
+    self eachScheme: [:opts :scheme |
+      srv := self
+        serverWith: (self pidSock)
+        options: opts
+        upgrade: #{}
+      pids := #()
+      2 timesRepeat: [
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pids := pids add: self pidOfTest
+        (Ets named: self termTable) removeKey: #pid
+        WebSocketClient close: client
+        self assert: (self awaitClosed: client) equals: true
+      ]
+      self assert: pids size equals: 2
+      self deny: (pids at: 1) =:= (pids at: 2)
+      self deny: (pids at: 1) =:= Pid current
+      self assert: (srv stop: 5000) isOk
+    ]

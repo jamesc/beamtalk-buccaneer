@@ -1,0 +1,86 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Autobahn Testsuite (fuzzingclient) against an echo server with
+/// compression and a 20MB frame ceiling, mirroring Bandit's
+/// `autobahn_test.exs`. Needs docker and `AUTOBAHN=1`; without the
+/// variable the test passes immediately so plain `beamtalk test`
+/// stays fast. `AUTOBAHN_CASES` optionally limits the cases (as
+/// "1.2.3,2.*"); the suite is non-blocking in CI until green.
+TestCase subclass: AutobahnTest
+
+  testFuzzingClient =>
+    (self enabled) ifFalse: [^self]
+    self checkDocker
+    dir := "/tmp/buccaneer-autobahn"
+    (Erlang os) cmd: ("rm -rf " ++ dir ++ "; mkdir -p " ++ dir ++ "/reports")
+    sock := TestSock new withInAnswer: #echo
+    srv := (Buccaneer start: #{
+      #port => 0,
+      #websocket => #{#compress => true, #maxFrameSize => 20000000}
+    } handler: [:ex | ex upgradeToWebSocket: sock options: #{}]) unwrap
+    port := self portOf: srv
+    (File writeAll: (dir ++ "/fuzzingclient.json") contents: (self specJson)) unwrap
+    out := (Erlang os) cmd: (self dockerCmd: dir port: port)
+    self assert: (out includesSubstring: "EXIT:0") equals: true
+    failures := self failuresIn: dir
+    self assert: (srv stop: 5000) isOk
+    self assert: failures equals: #()
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  /// Run only with AUTOBAHN=1.
+  enabled -> Boolean =>
+    v := (Erlang os) getenv: "AUTOBAHN"
+    (v =:= false or: [v isNil]) ifTrue: [^false]
+    v =:= "1"
+
+  /// Fail fast with a clear message when docker is missing.
+  checkDocker =>
+    out := (Erlang os) cmd: "docker --version"
+    (out includesSubstring: "Docker version") ifFalse: [
+      self fail: "autobahn needs docker (AUTOBAHN=1 was set)"
+    ]
+
+  /// The fuzzingclient spec: every case unless AUTOBAHN_CASES limits
+  /// them. Built by hand: the keys are not valid Beamtalk symbols.
+  specJson -> String =>
+    v := (Erlang os) getenv: "AUTOBAHN_CASES"
+    cases := (v =:= false or: [
+      v isNil
+    ]) ifTrue: [#("*")] ifFalse: [v split: ","]
+    quoted := (cases collect: [:c | """" ++ c ++ """"]) join: ", "
+    "\{""outdir"": ""./reports"", ""cases"": ["
+      ++ quoted
+      ++ "], ""exclude-cases"": [], ""exclude-agent-cases"": \{}}"
+
+  dockerCmd: dir :: String port: port :: Integer -> String =>
+    "docker run --rm -v "
+      ++ dir
+      ++ "/fuzzingclient.json:/fuzzingclient.json"
+      ++ " -v "
+      ++ dir
+      ++ "/reports:/reports"
+      ++ " --add-host=host.docker.internal:host-gateway"
+      ++ " --name fuzzingclient crossbario/autobahn-testsuite"
+      ++ " wstest --mode fuzzingclient -w ws://host.docker.internal:"
+      ++ port asString
+      ++ "; echo EXIT:$?"
+
+  /// Cases whose behavior pair is not (OK|NON-STRICT|INFORMATIONAL,
+  /// OK|INFORMATIONAL).
+  failuresIn: dir :: String -> List =>
+    index := (File readAll: (dir ++ "/reports/index.json")) unwrap
+    report := (Json parse: index) unwrap
+    cases := report at: "UnknownServer" ifAbsent: [
+      self fail: "no UnknownServer in autobahn index.json"
+    ]
+    failures := #()
+    (cases keys)
+      do: [:k |
+        entry := cases at: k
+        ok := #("OK", "NON-STRICT", "INFORMATIONAL") includes: (entry at: "behavior")
+        okClose := #("OK", "INFORMATIONAL") includes: (entry at: "behaviorClose")
+        (ok and: [okClose]) ifFalse: [failures := failures add: k]
+      ]
+    failures

@@ -7,7 +7,7 @@
 /// starts a real server and speaks raw TCP, asserting the exact wire
 /// behavior. Error responses use HTTP/1.0 framing and close, with no
 /// body, as the version is unknown or the request unusable.
-TestCase subclass: ProtocolTest
+TestCase subclass: HTTP1ProtocolTest
 
   connect: port =>
     ((Erlang gen_tcp)

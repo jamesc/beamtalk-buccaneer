@@ -277,10 +277,13 @@ sealed typed Value subclass: Exchange
 
   /// A 1xx response (Bandit's inform/3). Refused on HTTP/1.0, and a
   /// Result error (never a raise) once the final response went out: a 1xx
-  /// must precede it.
+  /// must precede it. An in-progress upgrade (#upgraded) is not final:
+  /// the 101 itself goes out through here after upgradeToWebSocket:.
   inform: status :: Integer headers: hs :: HttpHeaders -> Result(Nil, Object) =>
     st := self load
-    st respState =:= #unset ifFalse: [^Result error: #already_sent]
+    (st respState =:= #unset or: [st respState =:= #upgraded]) ifFalse: [
+      ^Result error: #already_sent
+    ]
     st transport version =:= #http10 ifTrue: [^Result error: #not_supported]
     headed := self
       sendHeadersOn: st

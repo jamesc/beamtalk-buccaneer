@@ -23,25 +23,19 @@ sealed typed Value subclass: PermessageDeflate
   class sealed validParams -> List(String) =>
     #("server_no_context_takeover", "client_no_context_takeover", "server_max_window_bits", "client_max_window_bits", "max_inflate_ratio")
 
-  /// Negotiate the first permessage-deflate offer in `extensions`
-  /// ({name, params} pairs). Answers {instance|nil, resolved} where
+  /// Negotiate the first acceptable permessage-deflate offer in
+  /// `extensions` ({name, params} pairs), trying each offer in turn
+  /// (Bandit's find_value). Answers {instance|nil, resolved} where
   /// resolved is the accepted parameter list for the response header.
   class sealed negotiate: extensions :: List options: opts :: Dictionary -> Tuple(Object, List) =>
-    {found, offer} := self firstOffer: extensions
-    offer match: [
-      params :: List -> (found and: [params isEmpty not]) ifTrue: [
-        self negotiateParams: params options: opts
-      ] ifFalse: [{nil, #()}];
-      _ -> {nil, #()}
-    ]
-
-  /// The first "permessage-deflate" offer as {found, params}.
-  class sealed firstOffer: extensions :: List -> Tuple =>
     extensions do: [:each :: Tuple |
       {name, params} := each
-      name =:= "permessage-deflate" ifTrue: [^{true, params}]
+      (name =:= "permessage-deflate" and: [params isKindOf: List]) ifTrue: [
+        result := self negotiateParams: params options: opts
+        (result at: 1) notNil ifTrue: [^result]
+      ]
     ]
-    {false, #()}
+    {nil, #()}
 
   class sealed negotiateParams: params :: List options: opts :: Dictionary -> Tuple(Object, List) =>
     normalized := params collect: [:p :: Tuple | self normalize: p]
@@ -68,12 +62,18 @@ sealed typed Value subclass: PermessageDeflate
   class sealed parseBits: value :: Object -> Object =>
     value match: [
       n :: Integer -> value;
-      s :: String -> (Headers parseInteger: s) match: [
-        {n, ""} -> n;
-        _ -> value
-      ];
+      s :: String -> self intOr: value string: s;
       _ -> value
     ]
+
+  /// A cleanly parsed integer for a numeric offer, else the fallback
+  /// (callers then reject the offer through valid:).
+  class sealed intOr: fallback :: Object string: s :: String -> Object =>
+    parsed := Headers parseInteger: s
+    parsed isError ifTrue: [^fallback]
+    parts := parsed unwrap
+    (parts at: 2) =:= "" ifTrue: [^(parts at: 1)]
+    fallback
 
   /// No unknown params, no repeats, and every value in range (Bandit
   /// checks the four deflate params; a ratio, when offered, must be a
@@ -103,10 +103,13 @@ sealed typed Value subclass: PermessageDeflate
     value isNil ifTrue: [^nil]
     value match: [
       n :: Integer -> n > 0 ifTrue: [^n] ifFalse: [^nil];
-      s :: String -> (Headers parseInteger: s) match: [
-        {n, ""} -> n > 0 ifTrue: [^n] ifFalse: [^nil];
-        _ -> nil
-      ];
+      s :: String -> self positiveIntOrNil: s;
+      _ -> nil
+    ]
+
+  class sealed positiveIntOrNil: s :: String -> Integer | Nil =>
+    (self intOr: nil string: s) match: [
+      n :: Integer -> n > 0 ifTrue: [^n] ifFalse: [^nil];
       _ -> nil
     ]
 

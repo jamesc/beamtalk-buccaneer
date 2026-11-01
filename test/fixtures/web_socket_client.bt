@@ -30,7 +30,7 @@ sealed typed Object subclass: WebSocketClient
       (Erlang ssl) send: socket with: data
     ]
     raw match: [
-      _ :: Symbol -> Result ok: nil;
+      s :: Symbol -> Result ok: nil;
       r :: Result -> r
     ]
 
@@ -54,9 +54,19 @@ sealed typed Object subclass: WebSocketClient
     status := self readLine: client
     {status, self readHeaders: client}
 
-  /// The handshake offering permessage-deflate.
+  /// The handshake offering permessage-deflate on /compress.
   class sealed handshakeDeflate: client :: Tuple -> Tuple =>
-    self send: client bytes: ("GET / HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nsec-websocket-extensions: permessage-deflate\r\n\r\n")
+    self
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate")
+      headers: #()
+
+  class sealed handshake: client :: Tuple path: path :: String extensions: extensions :: List headers: extra :: List -> Tuple =>
+    request := "GET " ++ path ++ " HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n"
+    extensions do: [:ext :: String | request := request ++ "sec-websocket-extensions: " ++ ext ++ "\r\n"]
+    extra do: [:line :: String | request := request ++ line ++ "\r\n"]
+    self send: client bytes: (request ++ "\r\n")
     status := self readLine: client
     {status, self readHeaders: client}
 
@@ -105,10 +115,15 @@ sealed typed Object subclass: WebSocketClient
       _ -> Error signal: "short length"
     ]
 
+  class sealed uint64: a :: Integer b: b :: Integer c: c :: Integer d: d :: Integer e: e :: Integer f: f :: Integer g: g :: Integer h: h :: Integer -> Integer =>
+    hi := ((a bitShift: 56) + (b bitShift: 48)) + (c bitShift: 40)
+    mid := (hi + (d bitShift: 32)) + (e bitShift: 24)
+    (mid + (f bitShift: 16)) + ((g bitShift: 8) + h)
+
   class sealed uint64: bytes :: Binary -> Integer =>
     bytes match: [
       <<a:8, b:8, c:8, d:8, e:8, f:8, g:8, h:8>> ->
-        ((((((((a bitShift: 56) + (b bitShift: 48)) + (c bitShift: 40)) + (d bitShift: 32)) + (e bitShift: 24)) + (f bitShift: 16)) + (g bitShift: 8)) + h;
+        self uint64: a b: b c: c d: d e: e f: f g: g h: h;
       _ -> Error signal: "short length"
     ]
 
@@ -171,7 +186,7 @@ sealed typed Object subclass: WebSocketClient
       (Erlang ssl) recv: socket with: 0 with: 500
     ]
     outcome match: [
-      _ :: Binary -> false;
+      data :: Binary -> false;
       _ -> true
     ]
 

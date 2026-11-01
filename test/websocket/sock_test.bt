@@ -92,10 +92,10 @@ TestCase subclass: SockTest
   pidOfTest => (Ets named: self termTable) at: #pid ifAbsent: [nil]
 
   /// A tabled websock; tests add only their interesting fields.
-  testSock => (self testSock)
+  testSock => (TestSock new withTable: self termTable)
 
   /// A tabled websock that records its connection pid on "whoami".
-  pidSock => ((self testSock withInAnswer: #pid) withPidTable: self termTable)
+  pidSock => (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
 
   telePlug -> Symbol => #sockTelemetry
 

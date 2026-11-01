@@ -281,9 +281,9 @@ sealed typed Value subclass: Exchange
   /// the 101 itself goes out through here after upgradeToWebSocket:.
   inform: status :: Integer headers: hs :: HttpHeaders -> Result(Nil, Object) =>
     st := self load
-    (st respState =:= #unset or: [st respState =:= #upgraded]) ifFalse: [
-      ^Result error: #already_sent
-    ]
+    (st respState =:= #unset or: [
+      st respState =:= #upgraded
+    ]) ifFalse: [^Result error: #already_sent]
     st transport version =:= #http10 ifTrue: [^Result error: #not_supported]
     headed := self
       sendHeadersOn: st
@@ -300,9 +300,10 @@ sealed typed Value subclass: Exchange
   /// exchange. Raises AlreadySent unless nothing was sent yet.
   upgradeToWebSocket: websock :: Object options: opts :: Dictionary -> Exchange =>
     st := self load
-    st respState =:= #unset ifFalse: [
-      AlreadySent signal: "already_sent: a response was already sent for this request"
-    ]
+    st respState =:= #unset
+      ifFalse: [
+        AlreadySent signal: "already_sent: a response was already sent for this request"
+      ]
     self store: ((((st withWebsock: websock) withWebsockState: websock) withWebsocketOptions: opts) withRespState: #upgraded)
 
   /// Queue a response header (Plug.Conn.put_resp_header), sent with the
@@ -310,9 +311,10 @@ sealed typed Value subclass: Exchange
   /// Raises AlreadySent once the response went out.
   putRespHeader: name :: String value: value :: String -> Exchange =>
     st := self load
-    (st respState =:= #sent or: [st respState =:= #chunked]) ifTrue: [
-      AlreadySent signal: "already_sent: a response was already sent for this request"
-    ]
+    (st respState =:= #sent or: [st respState =:= #chunked])
+      ifTrue: [
+        AlreadySent signal: "already_sent: a response was already sent for this request"
+      ]
     self store: (st withRespHeaders: (st respHeaders add: {name, value}))
 
   /// Per RFC9110§10.1.1, a client that asked for 100 Continue and never

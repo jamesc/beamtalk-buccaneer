@@ -21,11 +21,12 @@ TestCase subclass: UpgradeTest
     self assert: status equals: "HTTP/1.1 101 Switching Protocols"
 
   awaitTerm =>
-    40 timesRepeat: [
-      term := (Ets named: self termTable) at: #terminate ifAbsent: [nil]
-      term notNil ifTrue: [^term]
-      Timer sleep: 50
-    ]
+    40
+      timesRepeat: [
+        term := (Ets named: self termTable) at: #terminate ifAbsent: [nil]
+        term notNil ifTrue: [^term]
+        Timer sleep: 50
+      ]
     nil
 
   teleBegin =>
@@ -50,7 +51,9 @@ TestCase subclass: UpgradeTest
     (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
     Ets new: self termTable type: #set
     sock := (TestSock new withTable: self termTable)
-    srv := (Buccaneer start: #{#port => 0} handler: [:ex |
+    srv := (Buccaneer start: #{
+      #port => 0
+    } handler: [:ex |
       ex upgradeToWebSocket: sock options: #{#timeout => 250}
     ]) unwrap
     client := WebSocketClient connect: (self portOf: srv)
@@ -65,10 +68,12 @@ TestCase subclass: UpgradeTest
     (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
     Ets new: self termTable type: #set
     sock := (TestSock new withTable: self termTable)
-    srv := (Buccaneer start: #{#port => 0} handler: [:ex |
-      headed := ex putRespHeader: "x-plug-set-header" value: "itsaheader"
-      headed upgradeToWebSocket: sock options: #{}
-    ]) unwrap
+    srv := (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        headed := ex putRespHeader: "x-plug-set-header" value: "itsaheader"
+        headed upgradeToWebSocket: sock options: #{}
+      ]) unwrap
     client := WebSocketClient connect: (self portOf: srv)
     {status, headers} := WebSocketClient handshake: client
     self assert: status equals: "HTTP/1.1 101 Switching Protocols"
@@ -81,12 +86,16 @@ TestCase subclass: UpgradeTest
     (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
     Ets new: self termTable type: #set
     sock := (TestSock new withTable: self termTable)
-    srv := (Buccaneer start: #{#port => 0, #displayHandler => self telePlug} handler: [:ex |
-      ex upgradeToWebSocket: sock options: #{}
-    ]) unwrap
+    srv := (Buccaneer start: #{
+      #port => 0,
+      #displayHandler => self telePlug
+    } handler: [:ex | ex upgradeToWebSocket: sock options: #{}]) unwrap
     client := WebSocketClient connect: (self portOf: srv)
     self shake: client
-    stop := TelemetryCollector await: #request named: #stop in: self reqTable
+    stop := TelemetryCollector
+      await: #request
+      named: #stop
+      in: self reqTable
     self deny: stop =:= nil
     measurements := stop at: 2
     metadata := stop at: 3

@@ -26,9 +26,7 @@ sealed typed Object subclass: WebSocketClient
     {transport, socket} := client
     raw := transport =:= #genTcp ifTrue: [
       (Erlang gen_tcp) send: socket with: data
-    ] ifFalse: [
-      (Erlang ssl) send: socket with: data
-    ]
+    ] ifFalse: [(Erlang ssl) send: socket with: data]
     raw match: [
       s :: Symbol -> Result ok: nil;
       r :: Result -> r
@@ -36,16 +34,21 @@ sealed typed Object subclass: WebSocketClient
 
   class sealed recv: client :: Tuple bytes: n :: Integer -> Binary =>
     {transport, socket} := client
-    transport =:= #genTcp ifTrue: [
-      ^(((Erlang gen_tcp) recv: socket with: n with: 5000) unwrap)
-    ]
-    (((Erlang ssl) recv: socket with: n with: 5000) unwrap)
+    transport =:= #genTcp
+      ifTrue: [
+        ^(((Erlang gen_tcp)
+          recv: socket
+          with: n
+          with: 5000) unwrap)
+      ]
+    (((Erlang ssl)
+      recv: socket
+      with: n
+      with: 5000) unwrap)
 
   class sealed close: client :: Tuple -> Object =>
     {transport, socket} := client
-    transport =:= #genTcp ifTrue: [
-      ^(Erlang gen_tcp) close: socket
-    ]
+    transport =:= #genTcp ifTrue: [^(Erlang gen_tcp) close: socket]
     (Erlang ssl) close: socket
 
   /// Send the handshake request and answer {statusLine, headers}.
@@ -63,8 +66,13 @@ sealed typed Object subclass: WebSocketClient
       headers: #()
 
   class sealed handshake: client :: Tuple path: path :: String extensions: extensions :: List headers: extra :: List -> Tuple =>
-    request := "GET " ++ path ++ " HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n"
-    extensions do: [:ext :: String | request := request ++ "sec-websocket-extensions: " ++ ext ++ "\r\n"]
+    request := "GET "
+      ++ path
+      ++ " HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n"
+    extensions
+      do: [:ext :: String |
+        request := request ++ "sec-websocket-extensions: " ++ ext ++ "\r\n"
+      ]
     extra do: [:line :: String | request := request ++ line ++ "\r\n"]
     self send: client bytes: (request ++ "\r\n")
     status := self readLine: client
@@ -93,18 +101,34 @@ sealed typed Object subclass: WebSocketClient
   class sealed recvFrame: client :: Tuple -> Tuple =>
     header := self recv: client bytes: 2
     header match: [
-      <<first:8, second:8>> -> self frame: client first: first second: second;
+      <<first:8, second:8>> -> self
+        frame: client
+        first: first
+        second: second;
       _ -> Error signal: "short frame header"
     ]
 
   class sealed frame: client :: Tuple first: first :: Integer second: second :: Integer -> Tuple =>
-    (second bitAnd: 128) =:= 0 ifFalse: [
-      Error signal: "masked server frame"
-    ]
+    (second bitAnd: 128) =:= 0 ifFalse: [Error signal: "masked server frame"]
     length := second bitAnd: 127
-    length =:= 126 ifTrue: [^self sizedFrame: client first: first size: (self uint16: (self recv: client bytes: 2))]
-    length =:= 127 ifTrue: [^self sizedFrame: client first: first size: (self uint64: (self recv: client bytes: 8))]
-    self sizedFrame: client first: first size: length
+    length =:= 126
+      ifTrue: [
+        ^self
+          sizedFrame: client
+          first: first
+          size: (self uint16: (self recv: client bytes: 2))
+      ]
+    length =:= 127
+      ifTrue: [
+        ^self
+          sizedFrame: client
+          first: first
+          size: (self uint64: (self recv: client bytes: 8))
+      ]
+    self
+      sizedFrame: client
+      first: first
+      size: length
 
   class sealed sizedFrame: client :: Tuple first: first :: Integer size: n :: Integer -> Tuple =>
     {(first bitShift: -4) bitAnd: 15, first bitAnd: 15, (self recv: client bytes: n)}
@@ -122,69 +146,99 @@ sealed typed Object subclass: WebSocketClient
 
   class sealed uint64: bytes :: Binary -> Integer =>
     bytes match: [
-      <<a:8, b:8, c:8, d:8, e:8, f:8, g:8, h:8>> ->
-        self uint64: a b: b c: c d: d e: e f: f g: g h: h;
+      <<a:8, b:8, c:8, d:8, e:8, f:8, g:8, h:8>> -> self
+        uint64: a
+        b: b
+        c: c
+        d: d
+        e: e
+        f: f
+        g: g
+        h: h;
       _ -> Error signal: "short length"
     ]
 
   /// Receive helpers asserting the flags nibble and opcode.
   class sealed recvText: client :: Tuple -> Binary =>
     {flags, opcode, data} := self recvFrame: client
-    (flags =:= 8 and: [opcode =:= 1]) ifFalse: [
-      Error signal: ("expected text frame, got " ++ flags printString ++ "/" ++ opcode printString)
-    ]
+    (flags =:= 8 and: [opcode =:= 1])
+      ifFalse: [
+        Error signal: ("expected text frame, got " ++ flags printString ++ "/" ++ opcode printString)
+      ]
     data
 
   /// A text frame with the compressed bit set (0xC in the flags).
   class sealed recvDeflatedText: client :: Tuple -> Binary =>
     {flags, opcode, data} := self recvFrame: client
-    (flags =:= 12 and: [opcode =:= 1]) ifFalse: [
-      Error signal: ("expected deflated text frame, got " ++ flags printString ++ "/" ++ opcode printString)
-    ]
+    (flags =:= 12 and: [opcode =:= 1])
+      ifFalse: [
+        Error
+          signal: ("expected deflated text frame, got "
+            ++ flags printString
+            ++ "/"
+            ++ opcode printString)
+      ]
     data
 
   class sealed recvBinary: client :: Tuple -> Binary =>
     {flags, opcode, data} := self recvFrame: client
-    (flags =:= 8 and: [opcode =:= 2]) ifFalse: [
-      Error signal: ("expected binary frame, got " ++ flags printString ++ "/" ++ opcode printString)
-    ]
+    (flags =:= 8 and: [opcode =:= 2])
+      ifFalse: [
+        Error signal: ("expected binary frame, got " ++ flags printString ++ "/" ++ opcode printString)
+      ]
     data
 
   class sealed recvDeflatedBinary: client :: Tuple -> Binary =>
     {flags, opcode, data} := self recvFrame: client
-    (flags =:= 12 and: [opcode =:= 2]) ifFalse: [
-      Error signal: ("expected deflated binary frame, got " ++ flags printString ++ "/" ++ opcode printString)
-    ]
+    (flags =:= 12 and: [opcode =:= 2])
+      ifFalse: [
+        Error
+          signal: ("expected deflated binary frame, got "
+            ++ flags printString
+            ++ "/"
+            ++ opcode printString)
+      ]
     data
 
   class sealed recvClose: client :: Tuple -> Binary =>
     {flags, opcode, data} := self recvFrame: client
-    (flags =:= 8 and: [opcode =:= 8]) ifFalse: [
-      Error signal: ("expected close frame, got " ++ flags printString ++ "/" ++ opcode printString)
-    ]
+    (flags =:= 8 and: [opcode =:= 8])
+      ifFalse: [
+        Error signal: ("expected close frame, got " ++ flags printString ++ "/" ++ opcode printString)
+      ]
     data
 
   class sealed recvPing: client :: Tuple -> Binary =>
     {flags, opcode, data} := self recvFrame: client
-    (flags =:= 8 and: [opcode =:= 9]) ifFalse: [
-      Error signal: ("expected ping frame, got " ++ flags printString ++ "/" ++ opcode printString)
-    ]
+    (flags =:= 8 and: [opcode =:= 9])
+      ifFalse: [
+        Error signal: ("expected ping frame, got " ++ flags printString ++ "/" ++ opcode printString)
+      ]
     data
 
   class sealed recvPong: client :: Tuple -> Binary =>
     {flags, opcode, data} := self recvFrame: client
-    (flags =:= 8 and: [opcode =:= 10]) ifFalse: [
-      Error signal: ("expected pong frame, got " ++ flags printString ++ "/" ++ opcode printString)
-    ]
+    (flags =:= 8 and: [opcode =:= 10])
+      ifFalse: [
+        Error signal: ("expected pong frame, got " ++ flags printString ++ "/" ++ opcode printString)
+      ]
     data
 
   class sealed closedForReading: client :: Tuple -> Boolean =>
     {transport, socket} := client
-    outcome := transport =:= #genTcp ifTrue: [
-      (Erlang gen_tcp) recv: socket with: 0 with: 500
-    ] ifFalse: [
-      (Erlang ssl) recv: socket with: 0 with: 500
-    ]
+    outcome := transport =:= #genTcp
+      ifTrue: [
+        (Erlang gen_tcp)
+          recv: socket
+          with: 0
+          with: 500
+      ]
+      ifFalse: [
+        (Erlang ssl)
+          recv: socket
+          with: 0
+          with: 500
+      ]
     outcome match: [
       data :: Binary -> false;
       _ -> true
@@ -209,33 +263,49 @@ sealed typed Object subclass: WebSocketClient
     Binary fromBytes: #((n bitShift: -8) bitAnd: 255, n bitAnd: 255)
 
   class sealed bytes64: n :: Integer -> Binary =>
-    Binary fromBytes: #(
-      (n bitShift: -56) bitAnd: 255,
-      (n bitShift: -48) bitAnd: 255,
-      (n bitShift: -40) bitAnd: 255,
-      (n bitShift: -32) bitAnd: 255,
-      (n bitShift: -24) bitAnd: 255,
-      (n bitShift: -16) bitAnd: 255,
-      (n bitShift: -8) bitAnd: 255,
-      n bitAnd: 255)
+    Binary fromBytes: #((n bitShift: -56) bitAnd: 255, (n bitShift: -48) bitAnd: 255, (n bitShift: -40) bitAnd: 255, (n bitShift: -32) bitAnd: 255, (n bitShift: -24) bitAnd: 255, (n bitShift: -16) bitAnd: 255, (n bitShift: -8) bitAnd: 255, n bitAnd: 255)
 
   class sealed sendText: client :: Tuple data: data :: Binary -> Object =>
-    self sendFrame: client flags: 8 opcode: 1 data: data
+    self
+      sendFrame: client
+      flags: 8
+      opcode: 1
+      data: data
 
   class sealed sendBinary: client :: Tuple data: data :: Binary -> Object =>
-    self sendFrame: client flags: 8 opcode: 2 data: data
+    self
+      sendFrame: client
+      flags: 8
+      opcode: 2
+      data: data
 
   class sealed sendContinuation: client :: Tuple data: data :: Binary fin: fin :: Boolean -> Object =>
-    self sendFrame: client flags: (fin ifTrue: [8] ifFalse: [0]) opcode: 0 data: data
+    self
+      sendFrame: client
+      flags: (fin ifTrue: [8] ifFalse: [0])
+      opcode: 0
+      data: data
 
   class sealed sendPing: client :: Tuple data: data :: Binary -> Object =>
-    self sendFrame: client flags: 8 opcode: 9 data: data
+    self
+      sendFrame: client
+      flags: 8
+      opcode: 9
+      data: data
 
   class sealed sendPong: client :: Tuple data: data :: Binary -> Object =>
-    self sendFrame: client flags: 8 opcode: 10 data: data
+    self
+      sendFrame: client
+      flags: 8
+      opcode: 10
+      data: data
 
   class sealed sendClose: client :: Tuple code: code :: Integer -> Object =>
-    self sendFrame: client flags: 8 opcode: 8 data: (Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255))
+    self
+      sendFrame: client
+      flags: 8
+      opcode: 8
+      data: (Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255))
 
   /// Send bytes with no framing at all, for packet-splitting tests.
   class sealed sendEachByte: client :: Tuple data: data :: Binary -> Nil =>
@@ -254,7 +324,11 @@ sealed typed Object subclass: WebSocketClient
       windowbits: -15
       memlevel: 8
       strategy: #default
-    out := Binary fromIolist: ((Erlang zlib) deflate: stream with: data with: #sync)
+    out := Binary
+      fromIolist: ((Erlang zlib)
+        deflate: stream
+        with: data
+        with: #sync)
     (Erlang zlib) close: stream
     size := out size
     (size >= 4 and: [
@@ -273,8 +347,16 @@ sealed typed Object subclass: WebSocketClient
 
   /// A compressed text frame (FIN + RSV1).
   class sealed sendDeflatedText: client :: Tuple data: data :: Binary -> Object =>
-    self sendFrame: client flags: 12 opcode: 1 data: (self deflateRaw: data)
+    self
+      sendFrame: client
+      flags: 12
+      opcode: 1
+      data: (self deflateRaw: data)
 
   /// A compressed binary frame (FIN + RSV1).
   class sealed sendDeflatedBinary: client :: Tuple data: data :: Binary -> Object =>
-    self sendFrame: client flags: 12 opcode: 2 data: (self deflateRaw: data)
+    self
+      sendFrame: client
+      flags: 12
+      opcode: 2
+      data: (self deflateRaw: data)

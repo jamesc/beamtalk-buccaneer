@@ -15,7 +15,10 @@ sealed typed Object subclass: TelemetryCollector
   /// Record the events whose metadata names `plug` in the table `name`
   /// (whose name is also the handler id).
   class sealed attachAll: plug :: Object table: name :: Symbol -> Nil =>
-    self attach: plug table: name events: self events
+    self
+      attach: plug
+      table: name
+      events: self events
 
   /// Record the websocket span events whose metadata names `plug`.
   class sealed attachWebsocket: plug :: Object table: name :: Symbol -> Nil =>

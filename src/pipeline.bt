@@ -104,9 +104,15 @@ typed Object subclass: Pipeline
   class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     [
       self callHandler: handler with: ex
-      ex state =:= #upgraded ifTrue: [
-        ^self upgrade: ex span: span transport: transport metadata: meta options: config
-      ]
+      ex state =:= #upgraded
+        ifTrue: [
+          ^self
+            upgrade: ex
+            span: span
+            transport: transport
+            metadata: meta
+            options: config
+        ]
       ex commit
       final := ex load
       done := ex finish
@@ -147,14 +153,17 @@ typed Object subclass: Pipeline
   /// raises an HTTPError, which the surrounding handler turns into a
   /// 400 exactly like a malformed request.
   class sealed upgrade: ex :: Exchange span: span :: BuccaneerTelemetry transport: _transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
-    (config websocket at: #enabled ifAbsent: [true]) ifFalse: [
+    (config websocket at: #enabled ifAbsent: [
+      true
+    ]) ifFalse: [
       Error signal: "upgrade to websocket not supported by Buccaneer"
     ]
     st := ex load
-    result := Handshake run: ex config: config options: st websocketOptions
-    result isError ifTrue: [
-      HTTPError signal: result error reason: 400
-    ]
+    result := Handshake
+      run: ex
+      config: config
+      options: st websocketOptions
+    result isError ifTrue: [HTTPError signal: result error reason: 400]
     {compress, _params} := result value
     final := ex load
     span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
@@ -177,14 +186,20 @@ typed Object subclass: Pipeline
       fragmentChunks: #()
       fragmentSize: 0
       validateTextFrames: (ws at: #validateTextFrames ifAbsent: [true])
-      maxFragmentedMessageSize: (ws at: #maxFragmentedMessageSize ifAbsent: [8000000])
-      logErrors: ((ws at: #logProtocolErrors ifAbsent: [true]) =:= false ifTrue: [false] ifFalse: [true])
+      maxFragmentedMessageSize: (ws at: #maxFragmentedMessageSize ifAbsent: [
+        8000000
+      ])
+      logErrors: ((ws at: #logProtocolErrors ifAbsent: [
+        true
+      ]) =:= false ifTrue: [false] ifFalse: [true])
       span: wsSpan
       metrics: Dictionary new
     protocol := WebSocketProtocol
       config: config
       connection: connection
-      extractor: (FrameExtractor new withMaxFrameSize: (ws at: #maxFrameSize ifAbsent: [8000000]))
+      extractor: (FrameExtractor new withMaxFrameSize: (ws at: #maxFrameSize ifAbsent: [
+        8000000
+      ]))
       buffer: buffer
       started: false
       timeoutMs: (st websocketOptions at: #timeout ifAbsent: [nil])

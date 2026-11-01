@@ -8,11 +8,17 @@
 TestCase subclass: HandshakeTest
 
   server: compress :: Boolean =>
-    opts := compress ifTrue: [#{#port => 0, #websocket => #{#compress => true}}] ifFalse: [#{#port => 0}]
-    (Buccaneer start: opts handler: [:ex |
-      upgradeOpts := (ex path =:= "/compress") ifTrue: [#{}] ifFalse: [#{#compress => false}]
-      ex upgradeToWebSocket: TestSock new options: upgradeOpts
-    ]) unwrap
+    opts := compress ifTrue: [
+      #{#port => 0, #websocket => #{#compress => true}}
+    ] ifFalse: [#{#port => 0}]
+    (Buccaneer
+      start: opts
+      handler: [:ex |
+        upgradeOpts := (ex path =:= "/compress") ifTrue: [
+          #{}
+        ] ifFalse: [#{#compress => false}]
+        ex upgradeToWebSocket: TestSock new options: upgradeOpts
+      ]) unwrap
 
   portOf: srv => (srv listenerInfo unwrap) at: 2
 

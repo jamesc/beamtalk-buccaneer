@@ -20,7 +20,9 @@ sealed typed Value subclass: WebSocketProtocol
     full := self buffer concat: data
     base := self withBuffer: ""
     running := base started ifTrue: [base] ifFalse: [base start: sock]
-    running connection connState =:= #open ifFalse: [^HandlerResult close: running]
+    running connection connState =:= #open ifFalse: [
+      ^HandlerResult close: running
+    ]
     running pop: (running extractor pushData: full) socket: sock
 
   /// Run the WebSock init callback. Answers the started protocol; a
@@ -37,9 +39,7 @@ sealed typed Value subclass: WebSocketProtocol
       #more -> base keepReading;
       r :: Result -> r isError ifTrue: [
         base failed: {#deserializing, r error} socket: sock
-      ] ifFalse: [
-        base frame: r value socket: sock
-      ]
+      ] ifFalse: [base frame: r value socket: sock]
     ]
 
   /// One parsed frame: continue popping, or close on a terminal outcome
@@ -66,12 +66,10 @@ sealed typed Value subclass: WebSocketProtocol
     ]
 
   /// Re-arm after the upgrade when no bytes are buffered yet.
-  rearm: sock :: Socket -> HandlerResult =>
-    self serve: "" socket: sock
+  rearm: sock :: Socket -> HandlerResult => self serve: "" socket: sock
 
   /// Whether the connection already tore down.
-  closed -> Boolean =>
-    (self connection connState =:= #open) not
+  closed -> Boolean => (self connection connState =:= #open) not
 
   /// A message to the connection process (Bandit's handle_info).
   handleInfo: msg :: Object socket: sock :: Socket -> WebSocketProtocol =>

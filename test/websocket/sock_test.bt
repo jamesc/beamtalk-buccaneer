@@ -24,17 +24,20 @@ TestCase subclass: SockTest
   /// Run the block once per scheme with base server options and the
   /// scheme itself.
   eachScheme: block =>
-    {#http, #https} do: [:scheme :: Symbol |
-      opts := scheme =:= #https ifTrue: [
-        #{
-          #port => 0,
-          #scheme => #https,
-          #certfile => "test/fixtures/cert.pem",
-          #keyfile => "test/fixtures/key.pem"
-        }
-      ] ifFalse: [#{#port => 0}]
-      block value: opts value: scheme
-    ]
+    {#http, #https}
+      do: [:scheme :: Symbol |
+        opts := scheme =:= #https
+          ifTrue: [
+            #{
+              #port => 0,
+              #scheme => #https,
+              #certfile => "test/fixtures/cert.pem",
+              #keyfile => "test/fixtures/key.pem"
+            }
+          ]
+          ifFalse: [#{#port => 0}]
+        block value: opts value: scheme
+      ]
 
   serverWith: sock options: opts upgrade: uopts =>
     // Fencing: a previous server's terminate reason must not leak
@@ -61,7 +64,8 @@ TestCase subclass: SockTest
   deflatedTextOf: client :: Tuple -> String =>
     (WebSocketClient recvDeflatedText: client) asStringUnchecked
 
-  closeBytes: code :: Integer => Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255)
+  closeBytes: code :: Integer =>
+    Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255)
 
   closeBytes: code :: Integer detail: detail :: String =>
     Binary fromIolist: #((self closeBytes: code), detail)
@@ -69,24 +73,28 @@ TestCase subclass: SockTest
   /// The terminate reason recorded by the websock, waiting up to two
   /// seconds for the connection process to get there.
   awaitTerm =>
-    40 timesRepeat: [
-      term := (Ets named: self termTable) at: #terminate ifAbsent: [nil]
-      term notNil ifTrue: [^term]
-      Timer sleep: 50
-    ]
+    40
+      timesRepeat: [
+        term := (Ets named: self termTable) at: #terminate ifAbsent: [nil]
+        term notNil ifTrue: [^term]
+        Timer sleep: 50
+      ]
     nil
 
   noTerm =>
     Timer sleep: 100
-    self assert: ((Ets named: self termTable) at: #terminate ifAbsent: [nil]) equals: nil
+    self assert: ((Ets named: self termTable) at: #terminate ifAbsent: [
+      nil
+    ]) equals: nil
 
   /// Poll until the server closed the socket (its close runs through
   /// process shutdown, so a single recv races it under parallel load).
   awaitClosed: client =>
-    6 timesRepeat: [
-      (WebSocketClient closedForReading: client) ifTrue: [^true]
-      Timer sleep: 50
-    ]
+    6
+      timesRepeat: [
+        (WebSocketClient closedForReading: client) ifTrue: [^true]
+        Timer sleep: 50
+      ]
     false
 
   pidOfTest => (Ets named: self termTable) at: #pid ifAbsent: [nil]
@@ -95,7 +103,8 @@ TestCase subclass: SockTest
   testSock => (TestSock new withTable: self termTable)
 
   /// A tabled websock that records its connection pid on "whoami".
-  pidSock => (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
+  pidSock =>
+    (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
 
   telePlug -> Symbol => #sockTelemetry
 
@@ -114,1238 +123,1308 @@ TestCase subclass: SockTest
     nil
 
   teleEvent: span :: Symbol named: suffix :: Symbol =>
-    TelemetryCollector await: span named: suffix in: self teleTable
+    TelemetryCollector
+      await: span
+      named: suffix
+      in: self teleTable
 
   // ===== init =====
-
   testInitOk =>
-    self eachScheme: [:opts :scheme |
-      sock := (self testSock withInAnswer: #record)
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      WebSocketClient sendText: client data: "dump"
-      self assert: ((self textOf: client) includesSubstring: "OK")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock withInAnswer: #record)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        WebSocketClient sendText: client data: "dump"
+        self assert: ((self textOf: client) includesSubstring: "OK")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitPush =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withInitAnswer: #push) withInitFrames: #({#text, "init"})) withInAnswer: #record))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (self textOf: client) equals: "init"
-      WebSocketClient sendText: client data: "OK"
-      WebSocketClient sendText: client data: "dump"
-      self assert: ((self textOf: client) includesSubstring: "OK")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withInitAnswer: #push) withInitFrames: #({#text, "init"})) withInAnswer: #record))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (self textOf: client) equals: "init"
+        WebSocketClient sendText: client data: "OK"
+        WebSocketClient sendText: client data: "dump"
+        self assert: ((self textOf: client) includesSubstring: "OK")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitReply =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withInitAnswer: #reply) withInitFrames: #({#text, "init"})) withInAnswer: #record))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (self textOf: client) equals: "init"
-      WebSocketClient sendText: client data: "OK"
-      WebSocketClient sendText: client data: "dump"
-      self assert: ((self textOf: client) includesSubstring: "OK")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withInitAnswer: #reply) withInitFrames: #({#text, "init"})) withInAnswer: #record))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (self textOf: client) equals: "init"
+        WebSocketClient sendText: client data: "OK"
+        WebSocketClient sendText: client data: "dump"
+        self assert: ((self textOf: client) includesSubstring: "OK")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitText =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitBinary =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#binary, "BINARY"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#binary, "BINARY"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitPing =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#ping, "PING"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#ping, "PING"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitPong =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitList =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitClose =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withInitAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withInitAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitAbnormalClose =>
-    self eachScheme: [:opts :scheme |
-      log := LogCapture attach: #sockAbnormal
-      sock := (((self testSock withInitAnswer: #stopError) withInitCode: 1011))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: {#error, #abnormal}
-      self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        log := LogCapture attach: #sockAbnormal
+        sock := (((self testSock withInitAnswer: #stopError) withInitCode: 1011))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: {#error, #abnormal}
+        self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitCloseWithCode =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitCloseWithCodeAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitCloseWithRestart =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #stop) withInitCode: 1012))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #stop) withInitCode: 1012))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitCloseWithDisconnected =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withInitAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withInitAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitCloseWithCodeAndNilDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitCloseWithCodeAndDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM"))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM"))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testInitCloseWithCodeAndDetailAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := (((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM") withInitFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM") withInitFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   // ===== handle_in =====
-
   testHandleInEchoText =>
-    self eachScheme: [:opts :scheme |
-      sock := (self testSock)
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (self textOf: client) equals: "OK"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (self textOf: client) equals: "OK"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInEchoBinary =>
-    self eachScheme: [:opts :scheme |
-      sock := (self testSock)
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendBinary: client data: "OK"
-      self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "OK"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendBinary: client data: "OK"
+        self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "OK"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInOk =>
-    self eachScheme: [:opts :scheme |
-      sock := (self testSock withInAnswer: #record)
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self noTerm
-      WebSocketClient sendText: client data: "dump"
-      self assert: ((self textOf: client) includesSubstring: "OK")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock withInAnswer: #record)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self noTerm
+        WebSocketClient sendText: client data: "dump"
+        self assert: ((self textOf: client) includesSubstring: "OK")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInPushState =>
-    self eachScheme: [:opts :scheme |
-      sock := (self testSock withInAnswer: #record)
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "dump"
-      self textOf: client
-      WebSocketClient sendText: client data: "dump"
-      self assert: ((self textOf: client) includesSubstring: "dump")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock withInAnswer: #record)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "dump"
+        self textOf: client
+        WebSocketClient sendText: client data: "dump"
+        self assert: ((self textOf: client) includesSubstring: "dump")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInReplyState =>
-    self eachScheme: [:opts :scheme |
-      sock := (self testSock withInAnswer: #record)
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "dump"
-      self textOf: client
-      WebSocketClient sendText: client data: "dump"
-      self assert: ((self textOf: client) includesSubstring: "dump")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock withInAnswer: #record)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "dump"
+        self textOf: client
+        WebSocketClient sendText: client data: "dump"
+        self assert: ((self textOf: client) includesSubstring: "dump")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInText =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #push) withInFrames: #({#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #push) withInFrames: #({#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInBinary =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #push) withInFrames: #({#binary, "BINARY"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #push) withInFrames: #({#binary, "BINARY"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInPing =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #push) withInFrames: #({#ping, "PING"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #push) withInFrames: #({#ping, "PING"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInPong =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInList =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG"
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInClose =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withInAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withInAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInAbnormalClose =>
-    self eachScheme: [:opts :scheme |
-      log := LogCapture attach: #sockAbnormal
-      sock := (((self testSock withInAnswer: #stopError) withInCode: 1011))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: {#error, #abnormal}
-      self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        log := LogCapture attach: #sockAbnormal
+        sock := (((self testSock withInAnswer: #stopError) withInCode: 1011))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: {#error, #abnormal}
+        self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInCloseWithCode =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #stop) withInCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #stop) withInCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInCloseWithCodeAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withInAnswer: #stop) withInCode: 5555) withInFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withInAnswer: #stop) withInCode: 5555) withInFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInCloseWithRestart =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #stop) withInCode: 1012))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #stop) withInCode: 1012))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInCloseWithDisconnected =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withInAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withInAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInCloseWithCodeAndNilDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withInAnswer: #stop) withInCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withInAnswer: #stop) withInCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInCloseWithCodeAndDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM"))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM"))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInCloseWithCodeAndDetailAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := (((((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM") withInFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "OK"
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM") withInFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   // ===== handle_control =====
-
   testHandleControlOptional =>
-    self eachScheme: [:opts :scheme |
-      sock := MinimalSock new
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
-      WebSocketClient sendText: client data: "OK"
-      self assert: (self textOf: client) equals: "OK"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := MinimalSock new
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
+        WebSocketClient sendText: client data: "OK"
+        self assert: (self textOf: client) equals: "OK"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlEchoPing =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withControlAnswer: #echo))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "OK"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withControlAnswer: #echo))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "OK"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlEchoPong =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withControlAnswer: #echo))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPong: client data: "OK"
-      self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withControlAnswer: #echo))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPong: client data: "OK"
+        self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlOk =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withControlAnswer: #record))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      WebSocketClient sendPing: client data: "dump"
-      WebSocketClient recvPong: client
-      self assert: (((WebSocketClient recvPing: client) asStringUnchecked) includesSubstring: "OK")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withControlAnswer: #record))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        WebSocketClient sendPing: client data: "dump"
+        WebSocketClient recvPong: client
+        self assert: (((WebSocketClient recvPing: client) asStringUnchecked) includesSubstring: "OK")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlPush =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withControlAnswer: #record))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "dump"
-      WebSocketClient recvPong: client
-      WebSocketClient recvPing: client
-      WebSocketClient sendPing: client data: "dump"
-      WebSocketClient recvPong: client
-      self assert: (((WebSocketClient recvPing: client) asStringUnchecked) includesSubstring: "dump")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withControlAnswer: #record))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "dump"
+        WebSocketClient recvPong: client
+        WebSocketClient recvPing: client
+        WebSocketClient sendPing: client data: "dump"
+        WebSocketClient recvPong: client
+        self assert: (((WebSocketClient recvPing: client) asStringUnchecked) includesSubstring: "dump")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlReply =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #reply) withControlFrames: #({#ping, "dump"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "dump"
-      WebSocketClient recvPong: client
-      WebSocketClient recvPing: client
-      WebSocketClient sendPing: client data: "dump"
-      WebSocketClient recvPong: client
-      self assert: (((WebSocketClient recvPing: client) asStringUnchecked) includesSubstring: "dump")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #reply) withControlFrames: #({#ping, "dump"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "dump"
+        WebSocketClient recvPong: client
+        WebSocketClient recvPing: client
+        WebSocketClient sendPing: client data: "dump"
+        WebSocketClient recvPong: client
+        self assert: (((WebSocketClient recvPing: client) asStringUnchecked) includesSubstring: "dump")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlText =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlBinary =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#binary, "BINARY"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#binary, "BINARY"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlPing =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#ping, "PING"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#ping, "PING"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlPong =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlList =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlClose =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withControlAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withControlAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlAbnormalClose =>
-    self eachScheme: [:opts :scheme |
-      log := LogCapture attach: #sockAbnormal
-      sock := (((self testSock withControlAnswer: #stopError) withControlCode: 1011))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: {#error, #abnormal}
-      self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        log := LogCapture attach: #sockAbnormal
+        sock := (((self testSock withControlAnswer: #stopError) withControlCode: 1011))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: {#error, #abnormal}
+        self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlCloseWithCode =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlCloseWithCodeAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlCloseWithRestart =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #stop) withControlCode: 1012))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #stop) withControlCode: 1012))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlCloseWithDisconnected =>
-    self eachScheme: [:opts :scheme |
-      sock := ((self testSock withControlAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((self testSock withControlAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlCloseWithCodeAndNilDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlCloseWithCodeAndDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM"))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM"))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleControlCloseWithCodeAndDetailAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := (((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM") withControlFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendPing: client data: "OK"
-      WebSocketClient recvPong: client
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM") withControlFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendPing: client data: "OK"
+        WebSocketClient recvPong: client
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   // ===== handle_info =====
-
   testHandleInfoOk =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self pidSock) withInfoAnswer: #record))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      (Erlang erlang) send: pid with: "dump"
-      self assert: ((self textOf: client) includesSubstring: "OK")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self pidSock) withInfoAnswer: #record))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        (Erlang erlang) send: pid with: "dump"
+        self assert: ((self textOf: client) includesSubstring: "OK")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoPush =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self pidSock) withInfoAnswer: #record))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "dump"
-      self textOf: client
-      (Erlang erlang) send: pid with: "dump"
-      self assert: ((self textOf: client) includesSubstring: "dump")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self pidSock) withInfoAnswer: #record))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "dump"
+        self textOf: client
+        (Erlang erlang) send: pid with: "dump"
+        self assert: ((self textOf: client) includesSubstring: "dump")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoText =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoBinary =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#binary, "BINARY"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#binary, "BINARY"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: ((WebSocketClient recvBinary: client) asStringUnchecked) equals: "BINARY"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoPing =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#ping, "PING"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#ping, "PING"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (((WebSocketClient recvPing: client) asStringUnchecked) equals: "PING")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoPong =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoList =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
-      self assert: (self textOf: client) equals: "TEXT"
-      WebSocketClient close: client
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (((WebSocketClient recvPong: client) asStringUnchecked) equals: "PONG")
+        self assert: (self textOf: client) equals: "TEXT"
+        WebSocketClient close: client
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoClose =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self pidSock) withInfoAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self pidSock) withInfoAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoAbnormalClose =>
-    self eachScheme: [:opts :scheme |
-      log := LogCapture attach: #sockAbnormal
-      sock := ((((self pidSock) withInfoAnswer: #stopError) withInfoCode: 1011))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: {#error, #abnormal}
-      self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        log := LogCapture attach: #sockAbnormal
+        sock := ((((self pidSock) withInfoAnswer: #stopError) withInfoCode: 1011))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: {#error, #abnormal}
+        self assert: ((LogCapture await: "(stop) #abnormal" in: log) includesSubstring: "(stop) #abnormal")
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoCloseWithCode =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoCloseWithCodeAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := (((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoCloseWithRestart =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 1012))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 1012))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1012)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoCloseWithDisconnected =>
-    self eachScheme: [:opts :scheme |
-      sock := (((self pidSock) withInfoAnswer: #stop))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self pidSock) withInfoAnswer: #stop))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoCloseWithCodeAndNilDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoCloseWithCodeAndDetail =>
-    self eachScheme: [:opts :scheme |
-      sock := (((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM"))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM"))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   testHandleInfoCloseWithCodeAndDetailAndMessages =>
-    self eachScheme: [:opts :scheme |
-      sock := ((((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM") withInfoFrames: #({#text, "first"}, {#text, "second"})))
-      srv := self
-        serverWith: sock
-        options: opts
-        upgrade: #{}
-      client := self clientFor: scheme port: (self portOf: srv)
-      self shake: client
-      WebSocketClient sendText: client data: "whoami"
-      self assert: (self textOf: client) equals: "pid"
-      pid := self pidOfTest
-      (Erlang erlang) send: pid with: "OK"
-      self assert: (self textOf: client) equals: "first"
-      self assert: (self textOf: client) equals: "second"
-      self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
-      self assert: (self awaitClosed: client) equals: true
-      self assert: self awaitTerm equals: #normal
-      self assert: (srv stop: 5000) isOk
-    ]
+    self
+      eachScheme: [:opts :scheme |
+        sock := ((((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM") withInfoFrames: #({#text, "first"}, {#text, "second"})))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        pid := self pidOfTest
+        (Erlang erlang) send: pid with: "OK"
+        self assert: (self textOf: client) equals: "first"
+        self assert: (self textOf: client) equals: "second"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 5555 detail: "BOOM")
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]
 
   // ===== terminate =====
-
   testTerminateOptional =>
     log := LogCapture attach: #sockTerminate
     sock := MinimalSock new withStopOnNormal: true
@@ -1360,7 +1439,11 @@ TestCase subclass: SockTest
     self assert: (self awaitClosed: client) equals: true
     Timer sleep: 100
     content := File readAll: log
-    self assert: (content isError or: [(content value includesSubstring: "UndefinedFunctionError") not]) equals: true
+    self
+      assert: (content isError or: [
+        (content value includesSubstring: "UndefinedFunctionError") not
+      ])
+      equals: true
     self assert: (srv stop: 5000) isOk
 
   testTerminateNormal =>
@@ -1443,7 +1526,6 @@ TestCase subclass: SockTest
     self assert: (srv stop: 5000) isOk
 
   // ===== telemetry =====
-
   testTelemetryStart =>
     self teleBegin
     sock := (self testSock)
@@ -1610,24 +1692,26 @@ TestCase subclass: SockTest
     self teleEnd
 
   testOneProcessPerConnection =>
-    self eachScheme: [:opts :scheme |
-      srv := self
-        serverWith: (self pidSock)
-        options: opts
-        upgrade: #{}
-      pids := #()
-      2 timesRepeat: [
-        client := self clientFor: scheme port: (self portOf: srv)
-        self shake: client
-        WebSocketClient sendText: client data: "whoami"
-        self assert: (self textOf: client) equals: "pid"
-        pids := pids add: self pidOfTest
-        (Ets named: self termTable) removeKey: #pid
-        WebSocketClient close: client
-        self assert: (self awaitClosed: client) equals: true
+    self
+      eachScheme: [:opts :scheme |
+        srv := self
+          serverWith: (self pidSock)
+          options: opts
+          upgrade: #{}
+        pids := #()
+        2
+          timesRepeat: [
+            client := self clientFor: scheme port: (self portOf: srv)
+            self shake: client
+            WebSocketClient sendText: client data: "whoami"
+            self assert: (self textOf: client) equals: "pid"
+            pids := pids add: self pidOfTest
+            (Ets named: self termTable) removeKey: #pid
+            WebSocketClient close: client
+            self assert: (self awaitClosed: client) equals: true
+          ]
+        self assert: pids size equals: 2
+        self deny: (pids at: 1) =:= (pids at: 2)
+        self deny: (pids at: 1) =:= Pid current
+        self assert: (srv stop: 5000) isOk
       ]
-      self assert: pids size equals: 2
-      self deny: (pids at: 1) =:= (pids at: 2)
-      self deny: (pids at: 1) =:= Pid current
-      self assert: (srv stop: 5000) isOk
-    ]

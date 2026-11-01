@@ -11,11 +11,19 @@ typed Object subclass: Handshake
     validation := UpgradeValidation validate: ex
     validation isError ifTrue: [^Result error: validation error]
     compress := self serverCompress: config upgradeOpts: upgradeOpts
-    negotiated := compress ifTrue: [
-      self negotiate: ex config: config upgradeOpts: upgradeOpts
-    ] ifFalse: [{nil, #()}]
+    negotiated := compress
+      ifTrue: [
+        self
+          negotiate: ex
+          config: config
+          upgradeOpts: upgradeOpts
+      ]
+      ifFalse: [{nil, #()}]
     {instance, params} := negotiated
-    self sendHandshake: ex compress: instance params: params
+    self
+      sendHandshake: ex
+      compress: instance
+      params: params
     Result ok: negotiated
 
   /// Compression needs both the server flag and the upgrade flag
@@ -28,14 +36,21 @@ typed Object subclass: Handshake
 
   class sealed negotiate: ex :: Exchange config: config :: BuccaneerConfig upgradeOpts: upgradeOpts :: Dictionary -> Tuple =>
     serverDeflate := config websocket at: #deflateOptions ifAbsent: [#{}]
-    deflateOpts := #{
-      #level => (self deflateOpt: upgradeOpts server: serverDeflate name: #level default: #default),
-      #memLevel => (self deflateOpt: upgradeOpts server: serverDeflate name: #memLevel default: 8),
-      #strategy => (self deflateOpt: upgradeOpts server: serverDeflate name: #strategy default: #default),
-      #maxInflateRatio => (upgradeOpts at: #maxInflateRatio ifAbsent: [
+    deflateOpts := #{#level => (self
+        deflateOpt: upgradeOpts
+        server: serverDeflate
+        name: #level
+        default: #default), #memLevel => (self
+        deflateOpt: upgradeOpts
+        server: serverDeflate
+        name: #memLevel
+        default: 8), #strategy => (self
+        deflateOpt: upgradeOpts
+        server: serverDeflate
+        name: #strategy
+        default: #default), #maxInflateRatio => (upgradeOpts at: #maxInflateRatio ifAbsent: [
         config websocket at: #maxInflateRatio ifAbsent: [25]
-      ])
-    }
+      ])}
     PermessageDeflate negotiate: (self requestedExtensions: ex) options: deflateOpts
 
   /// A per-upgrade deflate option, falling back to the server's
@@ -49,29 +64,31 @@ typed Object subclass: Handshake
   /// with bare names carrying true (Bandit's requested_extensions).
   class sealed requestedExtensions: ex :: Exchange -> List =>
     offered := #()
-    ex headers do: [:h |
-      (h at: 1) =:= "sec-websocket-extensions" ifTrue: [
-        ((Headers stringOrOpaque: (h at: 2)) match: [
-          s :: String -> Headers splitList: s;
-          _ -> #()
-        ]) do: [:item | offered := offered add: (self extension: item)]
+    ex headers
+      do: [:h |
+        (h at: 1) =:= "sec-websocket-extensions"
+          ifTrue: [
+            ((Headers stringOrOpaque: (h at: 2)) match: [
+              s :: String -> Headers splitList: s;
+              _ -> #()
+            ]) do: [:item | offered := offered add: (self extension: item)]
+          ]
       ]
-    ]
     offered
 
   class sealed extension: item :: String -> Tuple =>
     parts := item split: ";"
     name := (parts at: 1) trim
     params := #()
-    2 to: parts size do: [:i |
-      trimmed := (parts at: i) trim
-      pieces := trimmed split: "="
-      pieces size =:= 2 ifTrue: [
-        params := params add: {(pieces at: 1) trim, (pieces at: 2) trim}
-      ] ifFalse: [
-        params := params add: {trimmed, true}
+    2
+      to: parts size
+      do: [:i |
+        trimmed := (parts at: i) trim
+        pieces := trimmed split: "="
+        pieces size =:= 2 ifTrue: [
+          params := params add: {(pieces at: 1) trim, (pieces at: 2) trim}
+        ] ifFalse: [params := params add: {trimmed, true}]
       ]
-    ]
     {name, params}
 
   class sealed sendHandshake: ex :: Exchange compress: compress :: Object params: params :: List -> Result(Nil, Object) =>
@@ -81,26 +98,24 @@ typed Object subclass: Handshake
       _ -> ""
     ]
     digest := (Erlang crypto) hash: #sha with: (keyString ++ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
-    headers := #(
-      {"upgrade", "websocket"},
-      {"connection", "Upgrade"},
-      {"sec-websocket-accept", digest asBase64}
-    )
-    compress isNil ifFalse: [
-      headers := headers add: {"sec-websocket-extensions", (self extensionHeader: params)}
-    ]
+    headers := #({"upgrade", "websocket"}, {"connection", "Upgrade"}, {"sec-websocket-accept", digest asBase64})
+    compress isNil
+      ifFalse: [
+        headers := headers add: {"sec-websocket-extensions", (self extensionHeader: params)}
+      ]
     headers := headers add: {"cache-control", "max-age=0, private, must-revalidate"}
-    (ex load) respHeaders do: [:h :: Tuple |
-      headers := headers add: h
-    ]
+    (ex load) respHeaders do: [:h :: Tuple | headers := headers add: h]
     ex inform: 101 headers: headers
 
   /// The negotiated extension header: "permessage-deflate" plus the
   /// accepted params (`Extensions` in Bandit's send_handshake).
   class sealed extensionHeader: params :: List -> String =>
     out := "permessage-deflate"
-    params do: [:p :: Tuple |
-      {name, value} := p
-      value =:= true ifTrue: [out := out ++ ";" ++ name] ifFalse: [out := out ++ ";" ++ name ++ "=" ++ value printString]
-    ]
+    params
+      do: [:p :: Tuple |
+        {name, value} := p
+        value =:= true ifTrue: [
+          out := out ++ ";" ++ name
+        ] ifFalse: [out := out ++ ";" ++ name ++ "=" ++ value printString]
+      ]
     out

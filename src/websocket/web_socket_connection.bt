@@ -28,9 +28,7 @@ sealed typed Value subclass: WebSocketConnection
   init: socket :: Socket -> Tuple(WebSocketConnection, Object) =>
     result := (self websockState respondsTo: #init) ifTrue: [
       self websockState init
-    ] ifFalse: [
-      WebSocketResult ok: self websockState
-    ]
+    ] ifFalse: [WebSocketResult ok: self websockState]
     self handleContinuation: result socket: socket
 
   /// One parsed frame. Answers {connection, outcome}.
@@ -43,22 +41,29 @@ sealed typed Value subclass: WebSocketConnection
   handleFirstFrame: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     conn := self withMetrics: (self recvMetrics: frame)
     frame match: [
-      c :: ContinuationFrame -> conn doError: 1002 reason: "Received unexpected continuation frame (RFC6455§5.4)" socket: sock;
-      t :: TextFrame -> t fin ifTrue: [
-        t compressed ifTrue: [^conn doInflate: t socket: sock]
-        (conn validateText: t data) ifFalse: [
-          ^conn doError: 1007 reason: "Received non UTF-8 text frame (RFC6455§8.1)" socket: sock
+      c :: ContinuationFrame -> conn
+        doError: 1002
+        reason: "Received unexpected continuation frame (RFC6455§5.4)"
+        socket: sock;
+      t :: TextFrame -> t fin
+        ifTrue: [
+          t compressed ifTrue: [^conn doInflate: t socket: sock]
+          (conn validateText: t data)
+            ifFalse: [
+              ^conn
+                doError: 1007
+                reason: "Received non UTF-8 text frame (RFC6455§8.1)"
+                socket: sock
+            ]
+          conn handleContinuation: (conn websockState handleIn: {#text, t data}) socket: sock
         ]
-        conn handleContinuation: (conn websockState handleIn: {#text, t data}) socket: sock
-      ] ifFalse: [
-        conn beginFragment: t data: t data
-      ];
-      b :: BinaryFrame -> b fin ifTrue: [
-        b compressed ifTrue: [^conn doInflate: b socket: sock]
-        conn handleContinuation: (conn websockState handleIn: {#binary, b data}) socket: sock
-      ] ifFalse: [
-        conn beginFragment: b data: b data
-      ];
+        ifFalse: [conn beginFragment: t data: t data];
+      b :: BinaryFrame -> b fin
+        ifTrue: [
+          b compressed ifTrue: [^conn doInflate: b socket: sock]
+          conn handleContinuation: (conn websockState handleIn: {#binary, b data}) socket: sock
+        ]
+        ifFalse: [conn beginFragment: b data: b data];
       _ -> conn handleControlFrame: frame socket: sock
     ]
 
@@ -71,20 +76,34 @@ sealed typed Value subclass: WebSocketConnection
   handleFragment: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     conn := self withMetrics: (self recvMetrics: frame)
     frame match: [
-      c :: ContinuationFrame -> c fin ifTrue: [
-        ^conn assembleFrame: c socket: sock
-      ] ifFalse: [
-        c data size =:= 0 ifTrue: [
-          ^conn doError: 1008 reason: "Received zero byte non-fin continuation frame" socket: sock
-        ]
-        size := conn fragmentSize + c data size
-        (conn oversizeMessage: size) ifTrue: [
-          ^conn doError: 1009 reason: "Received oversize fragmented message" socket: sock
-        ]
-        {(conn withFragmentChunks: (conn fragmentChunks addFirst: c data)) withFragmentSize: size, #continue}
-      ];
-      t :: TextFrame -> conn doError: 1002 reason: "Received unexpected text frame (RFC6455§5.4)" socket: sock;
-      b :: BinaryFrame -> conn doError: 1002 reason: "Received unexpected binary frame (RFC6455§5.4)" socket: sock;
+      c :: ContinuationFrame -> c fin
+        ifTrue: [^conn assembleFrame: c socket: sock]
+        ifFalse: [
+          c data size =:= 0
+            ifTrue: [
+              ^conn
+                doError: 1008
+                reason: "Received zero byte non-fin continuation frame"
+                socket: sock
+            ]
+          size := conn fragmentSize + c data size
+          (conn oversizeMessage: size)
+            ifTrue: [
+              ^conn
+                doError: 1009
+                reason: "Received oversize fragmented message"
+                socket: sock
+            ]
+          {(conn withFragmentChunks: (conn fragmentChunks addFirst: c data)) withFragmentSize: size, #continue}
+        ];
+      t :: TextFrame -> conn
+        doError: 1002
+        reason: "Received unexpected text frame (RFC6455§5.4)"
+        socket: sock;
+      b :: BinaryFrame -> conn
+        doError: 1002
+        reason: "Received unexpected binary frame (RFC6455§5.4)"
+        socket: sock;
       _ -> conn handleControlFrame: frame socket: sock
     ]
 
@@ -92,9 +111,13 @@ sealed typed Value subclass: WebSocketConnection
   /// handle it as one message (Bandit's fin-continuation clause).
   assembleFrame: frame :: ContinuationFrame socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     size := self fragmentSize + frame data size
-    (self oversizeMessage: size) ifTrue: [
-      ^self doError: 1009 reason: "Received oversize fragmented message" socket: sock
-    ]
+    (self oversizeMessage: size)
+      ifTrue: [
+        ^self
+          doError: 1009
+          reason: "Received oversize fragmented message"
+          socket: sock
+      ]
     data := Binary fromIolist: ((self fragmentChunks addFirst: frame data) reversed)
     first := self fragmentFrame match: [
       t :: TextFrame -> (t withFin: true) withData: data;
@@ -107,8 +130,14 @@ sealed typed Value subclass: WebSocketConnection
   handleControlFrame: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     frame match: [
       c :: ConnectionCloseFrame -> self handleRemoteClose: c socket: sock;
-      p :: PingFrame -> self handlePing: p data socket: sock opcode: #ping;
-      p :: PongFrame -> self handlePing: p data socket: sock opcode: #pong
+      p :: PingFrame -> self
+        handlePing: p data
+        socket: sock
+        opcode: #ping;
+      p :: PongFrame -> self
+        handlePing: p data
+        socket: sock
+        opcode: #pong
     ]
 
   /// The peer went away: answer our close and end with #close (RFC6455§7.4.1-2).
@@ -120,7 +149,11 @@ sealed typed Value subclass: WebSocketConnection
       ]) ifTrue: [1000] ifFalse: [1002];
       _ -> 1002
     ]
-    {conn, _} := self doStop: reply detail: "" reason: #remote socket: sock
+    {conn, _} := self
+      doStop: reply
+      detail: ""
+      reason: #remote
+      socket: sock
     {conn withConnState: #closed, #close}
 
   /// Answer a ping with a pong, then the optional handleControl:.
@@ -128,10 +161,17 @@ sealed typed Value subclass: WebSocketConnection
     conn := opcode =:= #ping ifTrue: [
       self withMetrics: (self sendMetrics: #pong data: data)
     ] ifFalse: [self]
-    opcode =:= #ping ifTrue: [
-      WebSocketSocket sendFrame: sock type: #pong data: data compressed: false
+    opcode =:= #ping
+      ifTrue: [
+        WebSocketSocket
+          sendFrame: sock
+          type: #pong
+          data: data
+          compressed: false
+      ]
+    (conn websockState respondsTo: #handleControl:) ifFalse: [
+      ^{conn, #continue}
     ]
-    (conn websockState respondsTo: #handleControl:) ifFalse: [^{conn, #continue}]
     conn handleContinuation: (conn websockState handleControl: {opcode, data}) socket: sock
 
   /// Fragment reassembly guard (Bandit's oversize_message?/2).
@@ -152,23 +192,42 @@ sealed typed Value subclass: WebSocketConnection
   /// The peer closed or Catalina is tearing down: 1006, as Bandit's
   /// handle_close does.
   handleClose: socket :: Socket -> Tuple(WebSocketConnection, Object) =>
-    self doError: 1006 reason: #closed socket: socket
+    self
+      doError: 1006
+      reason: #closed
+      socket: socket
 
   /// The server is shutting down: a clean 1000, as handle_shutdown.
   handleShutdown: socket :: Socket -> Tuple(WebSocketConnection, Object) =>
-    self doStop: 1000 detail: "" reason: #shutdown socket: socket
+    self
+      doStop: 1000
+      detail: ""
+      reason: #shutdown
+      socket: socket
 
   /// A socket error or a raised error: 1011, as handle_error does.
   handleError: reason :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     reason match: [
-      {#deserializing, #max_frame_size_exceeded} -> self doError: 1009 reason: reason socket: sock;
-      {#deserializing, _r} -> self doError: 1002 reason: reason socket: sock;
-      _ -> self doError: 1011 reason: reason socket: sock
+      {#deserializing, #max_frame_size_exceeded} -> self
+        doError: 1009
+        reason: reason
+        socket: sock;
+      {#deserializing, _r} -> self
+        doError: 1002
+        reason: reason
+        socket: sock;
+      _ -> self
+        doError: 1011
+        reason: reason
+        socket: sock
     ]
 
   /// The read timeout expired: 1002, as handle_timeout does.
   handleTimeout: socket :: Socket -> Tuple(WebSocketConnection, Object) =>
-    self doError: 1002 reason: #timeout socket: socket
+    self
+      doError: 1002
+      reason: #timeout
+      socket: socket
 
   /// Fold a WebSock answer back into the connection, sending frames
   /// and stopping as directed (Bandit's handle_continuation).
@@ -179,24 +238,37 @@ sealed typed Value subclass: WebSocketConnection
       #push -> conn doDeflate: result frames socket: sock;
       #reply -> conn doDeflate: result frames socket: sock;
       #stop -> (conn doSendAll: result frames socket: sock) match: [
-        {stopped, #continue} -> stopped doStop: result code detail: result detail reason: #normal socket: sock;
+        {stopped, #continue} -> stopped
+          doStop: result code
+          detail: result detail
+          reason: #normal
+          socket: sock;
         other -> other
       ];
       _ -> (conn doSendAll: result frames socket: sock) match: [
-        {stopped, #continue} -> stopped doError: result code reason: result reason socket: sock;
+        {stopped, #continue} -> stopped
+          doError: result code
+          reason: result reason
+          socket: sock;
         other -> other
       ]
     ]
 
   /// Send zero or more frames, stopping at the first failure.
   doSendAll: frames :: List socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
-    self doSend: frames at: 1 socket: sock
+    self
+      doSend: frames
+      at: 1
+      socket: sock
 
   doSend: frames :: List at: i :: Integer socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     i > frames size ifTrue: [^{self, #continue}]
     {next, outcome} := self doDeflateOne: (frames at: i) socket: sock
     outcome =:= #continue ifFalse: [^{next, outcome}]
-    next doSend: frames at: i + 1 socket: sock
+    next
+      doSend: frames
+      at: i + 1
+      socket: sock
 
   /// Send the frames of one push or reply. Answers {connection, #continue}
   /// or the error outcome (Bandit's do_deflate).
@@ -205,54 +277,93 @@ sealed typed Value subclass: WebSocketConnection
 
   doDeflateOne: frame :: Tuple socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     {opcode, data} := frame
-    bytes := (data isKindOf: List) ifTrue: [Binary fromIolist: data] ifFalse: [data]
+    bytes := (data isKindOf: List) ifTrue: [
+      Binary fromIolist: data
+    ] ifFalse: [data]
     opcode match: [
-      #text -> self sendText: bytes socket: sock opcode: #text;
-      #binary -> self sendText: bytes socket: sock opcode: #binary;
-      _ -> self sendControl: bytes socket: sock opcode: opcode
+      #text -> self
+        sendText: bytes
+        socket: sock
+        opcode: #text;
+      #binary -> self
+        sendText: bytes
+        socket: sock
+        opcode: #binary;
+      _ -> self
+        sendControl: bytes
+        socket: sock
+        opcode: opcode
     ]
 
   sendText: bytes :: Binary socket: sock :: Socket opcode: opcode :: Symbol -> Tuple(WebSocketConnection, Object) =>
-    (PermessageDeflate deflate: bytes with: self compress) match: [
-      ok :: Result -> ok isError ifTrue: [
-        ok error =:= #no_compress ifTrue: [
-          ^self sendUncompressed: bytes socket: sock opcode: opcode
-        ]
-        ^self doError: 1007 reason: ("Deflation error: " ++ ok error printString) socket: sock
-      ] ifFalse: [
-        WebSocketSocket sendFrame: sock type: opcode data: ok value compressed: true
-        {self withMetrics: (self sendMetrics: opcode data: ok value), #continue}
+    (PermessageDeflate deflate: bytes with: self compress) match: [ok :: Result -> ok isError
+      ifTrue: [
+        ok error =:= #no_compress
+          ifTrue: [
+            ^self
+              sendUncompressed: bytes
+              socket: sock
+              opcode: opcode
+          ]
+        ^self
+          doError: 1007
+          reason: ("Deflation error: " ++ ok error printString)
+          socket: sock
       ]
-    ]
+      ifFalse: [
+        WebSocketSocket
+          sendFrame: sock
+          type: opcode
+          data: ok value
+          compressed: true
+        {self withMetrics: (self sendMetrics: opcode data: ok value), #continue}
+      ]]
 
   sendUncompressed: bytes :: Binary socket: sock :: Socket opcode: opcode :: Symbol -> Tuple(WebSocketConnection, Object) =>
-    WebSocketSocket sendFrame: sock type: opcode data: bytes compressed: false
+    WebSocketSocket
+      sendFrame: sock
+      type: opcode
+      data: bytes
+      compressed: false
     conn := self
     {conn withMetrics: (conn sendMetrics: opcode data: bytes), #continue}
 
   sendControl: bytes :: Binary socket: sock :: Socket opcode: opcode :: Symbol -> Tuple(WebSocketConnection, Object) =>
-    WebSocketSocket sendFrame: sock type: opcode data: bytes compressed: false
+    WebSocketSocket
+      sendFrame: sock
+      type: opcode
+      data: bytes
+      compressed: false
     conn := self
     {conn withMetrics: (conn sendMetrics: opcode data: bytes), #continue}
 
   /// Inflate one compressed frame, then handle it uncompressed
   /// (Bandit's do_inflate).
   doInflate: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
-    (PermessageDeflate inflate: frame data with: self compress) match: [
-      ok :: Result -> ok isError ifTrue: [
+    (PermessageDeflate inflate: frame data with: self compress) match: [ok :: Result -> ok isError
+      ifTrue: [
         ok error match: [
-          #no_compress -> self doError: 1002 reason: "Received unexpected compressed frame (RFC6455§5.2)" socket: sock;
-          #too_much_inflation -> self doError: 1009 reason: "Received compressed frame inflating too much" socket: sock;
-          _ -> self doError: 1007 reason: "Inflation error" socket: sock
+          #no_compress -> self
+            doError: 1002
+            reason: "Received unexpected compressed frame (RFC6455§5.2)"
+            socket: sock;
+          #too_much_inflation -> self
+            doError: 1009
+            reason: "Received compressed frame inflating too much"
+            socket: sock;
+          _ -> self
+            doError: 1007
+            reason: "Inflation error"
+            socket: sock
         ]
-      ] ifFalse: [
+      ]
+      ifFalse: [
         plain := frame match: [
           t :: TextFrame -> (t withCompressed: false) withData: ok value;
           b :: BinaryFrame -> (b withCompressed: false) withData: ok value
         ]
         self handleFrame: plain socket: sock
-      ]
-    ]
+      ]]
 
   /// A clean stop: terminate, close, stop the span (Bandit's do_stop).
   /// Only acts in #open; every later teardown is a no-op.
@@ -261,7 +372,10 @@ sealed typed Value subclass: WebSocketConnection
     (self websockState respondsTo: #terminate:) ifTrue: [
       self websockState terminate: treason
     ]
-    WebSocketSocket close: sock code: code reason: detail
+    WebSocketSocket
+      close: sock
+      code: code
+      reason: detail
     PermessageDeflate close: self compress
     self stopSpan: nil
     {(((self withConnState: #closing) withCompress: nil) withMetrics: Dictionary new), #continue}
@@ -271,14 +385,20 @@ sealed typed Value subclass: WebSocketConnection
   /// in #open; every later teardown is a no-op.
   doError: code :: Integer reason: reason :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     self connState =:= #open ifFalse: [^{self, {#error, reason}}]
-    (self websockState respondsTo: #terminate:) ifTrue: [
-      self websockState terminate: (reason =:= #timeout ifTrue: [#timeout] ifFalse: [{#error, reason}])
-    ]
+    (self websockState respondsTo: #terminate:)
+      ifTrue: [
+        self websockState terminate: (reason =:= #timeout ifTrue: [
+          #timeout
+        ] ifFalse: [{#error, reason}])
+      ]
     WebSocketSocket close: sock code: code
     PermessageDeflate close: self compress
-    self logErrors ifTrue: [
-      Logger error: ("(stop) " ++ reason printString) metadata: #{#domain => #(#buccaneer)}
-    ]
+    self logErrors
+      ifTrue: [
+        Logger error: ("(stop) " ++ reason printString) metadata: #{
+          #domain => #(#buccaneer)
+        }
+      ]
     self stopSpan: reason
     {(((self withConnState: #closed) withCompress: nil) withMetrics: Dictionary new), {#error, reason}}
 
@@ -286,28 +406,86 @@ sealed typed Value subclass: WebSocketConnection
     self span isNil ifTrue: [^self]
     reason isNil ifTrue: [
       self span stopWith: self metrics metadata: #{}
-    ] ifFalse: [
-      self span stopWith: self metrics metadata: #{#error => reason}
-    ]
+    ] ifFalse: [self span stopWith: self metrics metadata: #{#error => reason}]
     self
 
   /// Frame metrics, as Bandit's recv_metrics (counts and byte sizes).
   recvMetrics: frame :: Object -> Dictionary =>
     frame match: [
-      t :: TextFrame -> self bump: #recv_text_frame_count by: 1 metrics: (self bump: #recv_text_frame_bytes by: t data size metrics: self metrics);
-      b :: BinaryFrame -> self bump: #recv_binary_frame_count by: 1 metrics: (self bump: #recv_binary_frame_bytes by: b data size metrics: self metrics);
-      c :: ContinuationFrame -> self bump: #recv_continuation_frame_count by: 1 metrics: (self bump: #recv_continuation_frame_bytes by: c data size metrics: self metrics);
-      c :: ConnectionCloseFrame -> self bump: #recv_connection_close_frame_count by: 1 metrics: (self bump: #recv_connection_close_frame_bytes by: c reason size metrics: self metrics);
-      p :: PingFrame -> self bump: #recv_ping_frame_count by: 1 metrics: (self bump: #recv_ping_frame_bytes by: p data size metrics: self metrics);
-      p :: PongFrame -> self bump: #recv_pong_frame_count by: 1 metrics: (self bump: #recv_pong_frame_bytes by: p data size metrics: self metrics)
+      t :: TextFrame -> self
+        bump: #recv_text_frame_count
+        by: 1
+        metrics: (self
+          bump: #recv_text_frame_bytes
+          by: t data size
+          metrics: self metrics);
+      b :: BinaryFrame -> self
+        bump: #recv_binary_frame_count
+        by: 1
+        metrics: (self
+          bump: #recv_binary_frame_bytes
+          by: b data size
+          metrics: self metrics);
+      c :: ContinuationFrame -> self
+        bump: #recv_continuation_frame_count
+        by: 1
+        metrics: (self
+          bump: #recv_continuation_frame_bytes
+          by: c data size
+          metrics: self metrics);
+      c :: ConnectionCloseFrame -> self
+        bump: #recv_connection_close_frame_count
+        by: 1
+        metrics: (self
+          bump: #recv_connection_close_frame_bytes
+          by: c reason size
+          metrics: self metrics);
+      p :: PingFrame -> self
+        bump: #recv_ping_frame_count
+        by: 1
+        metrics: (self
+          bump: #recv_ping_frame_bytes
+          by: p data size
+          metrics: self metrics);
+      p :: PongFrame -> self
+        bump: #recv_pong_frame_count
+        by: 1
+        metrics: (self
+          bump: #recv_pong_frame_bytes
+          by: p data size
+          metrics: self metrics)
     ]
 
   sendMetrics: opcode :: Symbol data: bytes :: Binary -> Dictionary =>
     opcode match: [
-      #text -> self bump: #send_text_frame_count by: 1 metrics: (self bump: #send_text_frame_bytes by: bytes size metrics: self metrics);
-      #binary -> self bump: #send_binary_frame_count by: 1 metrics: (self bump: #send_binary_frame_bytes by: bytes size metrics: self metrics);
-      #ping -> self bump: #send_ping_frame_count by: 1 metrics: (self bump: #send_ping_frame_bytes by: bytes size metrics: self metrics);
-      _ -> self bump: #send_pong_frame_count by: 1 metrics: (self bump: #send_pong_frame_bytes by: bytes size metrics: self metrics)
+      #text -> self
+        bump: #send_text_frame_count
+        by: 1
+        metrics: (self
+          bump: #send_text_frame_bytes
+          by: bytes size
+          metrics: self metrics);
+      #binary -> self
+        bump: #send_binary_frame_count
+        by: 1
+        metrics: (self
+          bump: #send_binary_frame_bytes
+          by: bytes size
+          metrics: self metrics);
+      #ping -> self
+        bump: #send_ping_frame_count
+        by: 1
+        metrics: (self
+          bump: #send_ping_frame_bytes
+          by: bytes size
+          metrics: self metrics);
+      _ -> self
+        bump: #send_pong_frame_count
+        by: 1
+        metrics: (self
+          bump: #send_pong_frame_bytes
+          by: bytes size
+          metrics: self metrics)
     ]
 
   bump: key :: Symbol by: n :: Integer metrics: metrics :: Dictionary -> Dictionary =>

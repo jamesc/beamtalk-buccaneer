@@ -7,8 +7,7 @@
 /// byte-for-byte.
 TestCase subclass: FrameSerializationTest
 
-  payload: n :: Integer -> Binary =>
-    "a" repeat: n
+  payload: n :: Integer -> Binary => "a" repeat: n
 
   /// Serialized header for the length: short, 16-bit or 64-bit.
   lengthBytes: n :: Integer -> Binary =>
@@ -20,15 +19,7 @@ TestCase subclass: FrameSerializationTest
     Binary fromBytes: #((n bitShift: -8) bitAnd: 255, n bitAnd: 255)
 
   bytes64: n :: Integer -> Binary =>
-    Binary fromBytes: #(
-      (n bitShift: -56) bitAnd: 255,
-      (n bitShift: -48) bitAnd: 255,
-      (n bitShift: -40) bitAnd: 255,
-      (n bitShift: -32) bitAnd: 255,
-      (n bitShift: -24) bitAnd: 255,
-      (n bitShift: -16) bitAnd: 255,
-      (n bitShift: -8) bitAnd: 255,
-      n bitAnd: 255)
+    Binary fromBytes: #((n bitShift: -56) bitAnd: 255, (n bitShift: -48) bitAnd: 255, (n bitShift: -40) bitAnd: 255, (n bitShift: -32) bitAnd: 255, (n bitShift: -24) bitAnd: 255, (n bitShift: -16) bitAnd: 255, (n bitShift: -8) bitAnd: 255, n bitAnd: 255)
 
   testBinary125 =>
     frame := (BinaryFrame new withFin: true) withData: (self payload: 125)
@@ -97,14 +88,12 @@ TestCase subclass: FrameSerializationTest
 
   testCloseCodeAndReason =>
     frame := ((ConnectionCloseFrame new withCode: 1000) withReason: (self payload: 123))
-    expected := ((Binary fromBytes: #(136)) concat: (self lengthBytes: 125)) concat: (
-      (Binary fromBytes: #(3, 232)) concat: frame reason)
+    expected := ((Binary fromBytes: #(136)) concat: (self lengthBytes: 125)) concat: ((Binary fromBytes: #(3, 232)) concat: frame reason)
     self assert: (Frame serialize: frame) equals: expected
 
   testCloseCodeOnly =>
     frame := ConnectionCloseFrame new withCode: 1000
-    expected := ((Binary fromBytes: #(136)) concat: (self lengthBytes: 2)) concat: (
-      Binary fromBytes: #(3, 232))
+    expected := ((Binary fromBytes: #(136)) concat: (self lengthBytes: 2)) concat: (Binary fromBytes: #(3, 232))
     self assert: (Frame serialize: frame) equals: expected
 
   testCloseNoCode =>

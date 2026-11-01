@@ -49,9 +49,20 @@ sealed typed Value subclass: TestSock
       #ok -> WebSocketResult ok: self;
       #ignore -> WebSocketResult ok: self;
       #push -> WebSocketResult push: frames state: self;
-      #reply -> WebSocketResult reply: #ok frames: frames state: self;
-      #stop -> WebSocketResult stop: self code: code detail: detail frames: frames;
-      _ -> WebSocketResult stopError: reason state: self code: code frames: frames
+      #reply -> WebSocketResult
+        reply: #ok
+        frames: frames
+        state: self;
+      #stop -> WebSocketResult
+        stop: self
+        code: code
+        detail: detail
+        frames: frames;
+      _ -> WebSocketResult
+        stopError: reason
+        state: self
+        code: code
+        frames: frames
     ]
 
   init -> WebSocketResult =>
@@ -67,13 +78,18 @@ sealed typed Value subclass: TestSock
   /// "abnormal_close"), checked before the configured answer.
   stopFor: text :: String -> Tuple | Nil =>
     text =:= self stopOn ifTrue: [^{self stopReason, self stopCode}]
-    (self stopOn2 notNil and: [text =:= self stopOn2]) ifTrue: [^{self stopReason2, self stopCode2}]
+    (self stopOn2 notNil and: [
+      text =:= self stopOn2
+    ]) ifTrue: [^{self stopReason2, self stopCode2}]
     nil
 
   doStopWith: spec :: Tuple -> WebSocketResult =>
     {reason, code} := spec
     reason =:= #normal ifTrue: [^WebSocketResult stop: self code: code]
-    WebSocketResult stopError: reason state: self code: 1011
+    WebSocketResult
+      stopError: reason
+      state: self
+      code: 1011
 
   handleIn: message :: Tuple(Symbol, Binary) -> WebSocketResult =>
     stop := message match: [
@@ -124,24 +140,36 @@ sealed typed Value subclass: TestSock
   /// text frame, as Bandit's handle_info dump does).
   record: message :: Object -> WebSocketResult =>
     message match: [
-      {#text, data} -> self dumpData: data opcode: #text message: message;
-      {op, data} -> self dumpOp: op data: data message: message;
-      data :: Binary -> self dumpData: data opcode: #text message: message;
+      {#text, data} -> self
+        dumpData: data
+        opcode: #text
+        message: message;
+      {op, data} -> self
+        dumpOp: op
+        data: data
+        message: message;
+      data :: Binary -> self
+        dumpData: data
+        opcode: #text
+        message: message;
       _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
     ]
 
   dumpOp: op :: Symbol data: data :: Object message: message :: Object -> WebSocketResult =>
-    self dumpData: data opcode: op message: message
+    self
+      dumpData: data
+      opcode: op
+      message: message
 
   dumpData: data :: Object opcode: op :: Symbol message: message :: Object -> WebSocketResult =>
     data match: [
-      b :: Binary -> ((b asStringUnchecked) =:= "dump") ifTrue: [
-        ^WebSocketResult
-          push: {op, Binary fromIolist: #((self log printString))}
-          state: (self withLog: (self log addFirst: message))
-      ] ifFalse: [
-        WebSocketResult ok: (self withLog: (self log addFirst: message))
-      ];
+      b :: Binary -> ((b asStringUnchecked) =:= "dump")
+        ifTrue: [
+          ^WebSocketResult push: {op, Binary fromIolist: #((self log printString))} state: (self withLog: (self log addFirst: message))
+        ]
+        ifFalse: [
+          WebSocketResult ok: (self withLog: (self log addFirst: message))
+        ];
       _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
     ]
 

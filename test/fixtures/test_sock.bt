@@ -36,6 +36,9 @@ sealed typed Value subclass: TestSock
   field: log :: List = #()
   field: table :: Symbol | Nil = nil
   field: pidTable :: Symbol | Nil = nil
+  field: stopOn :: String | Nil = nil
+  field: stopReason :: Object = #normal
+  field: stopCode :: Integer = 1000
 
   /// One scripted answer. #stopError carries reason: and code:.
   answer: kind :: Symbol frames: frames :: List code: code :: Integer detail: detail :: String reason: reason :: Object -> WebSocketResult =>
@@ -56,7 +59,21 @@ sealed typed Value subclass: TestSock
       detail: self initDetail
       reason: self initReason
 
+  /// A content stop for the terminate tests (Bandit's inline
+  /// TerminateWebSock matching "normal"/"boom"), checked before the
+  /// configured answer.
+  stopNow -> WebSocketResult =>
+    self stopReason =:= #normal ifTrue: [
+      ^WebSocketResult stop: self code: self stopCode
+    ]
+    WebSocketResult stopError: self stopReason state: self code: 1011
+
   handleIn: message :: Tuple -> WebSocketResult =>
+    hit := message match: [
+      {#text, data} -> (self stopOn notNil and: [(data asStringUnchecked) =:= self stopOn]);
+      _ -> false
+    ]
+    hit ifTrue: [^self stopNow]
     self inAnswer match: [
       #echo -> WebSocketResult push: message state: self;
       #record -> self record: message;
@@ -83,9 +100,15 @@ sealed typed Value subclass: TestSock
     ]
 
   handleControl: message :: Tuple -> WebSocketResult =>
+    // The engine passes Bandit's {data, opcode} shape; normalize to
+    // the opcode-first shape push:/record: work with.
+    flipped := message match: [
+      {data, op} -> (op isKindOf: Symbol) ifTrue: [{op, data}] ifFalse: [message];
+      _ -> message
+    ]
     self controlAnswer match: [
-      #echo -> WebSocketResult push: message state: self;
-      #record -> self record: message;
+      #echo -> WebSocketResult push: flipped state: self;
+      #record -> self record: flipped;
       #pid -> self pushPid;
       _ -> self
         answer: self controlAnswer
@@ -95,12 +118,28 @@ sealed typed Value subclass: TestSock
         reason: self controlReason
     ]
 
-  /// Log the message; a "dump" text frame pushes the whole log.
+  /// Log the message; a "dump" pushes the whole log back in a
+  /// frame of the same opcode (a bare "dump" info message pushes a
+  /// text frame, as Bandit's handle_info dump does).
   record: message :: Object -> WebSocketResult =>
     message match: [
-      {#text, data} -> (data asStringUnchecked =:= "dump") ifTrue: [
+      {#text, data} -> self dumpData: data opcode: #text message: message;
+      {op, data} -> self dumpOp: op data: data message: message;
+      data :: Binary -> self dumpData: data opcode: #text message: message;
+      _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
+    ]
+
+  dumpOp: op :: Object data: data :: Object message: message :: Object -> WebSocketResult =>
+    op match: [
+      s :: Symbol -> self dumpData: data opcode: s message: message;
+      _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
+    ]
+
+  dumpData: data :: Object opcode: op :: Symbol message: message :: Object -> WebSocketResult =>
+    data match: [
+      b :: Binary -> ((b asStringUnchecked) =:= "dump") ifTrue: [
         ^WebSocketResult
-          push: {#text, self log printString}
+          push: {op, self log printString}
           state: (self withLog: (self log addFirst: message))
       ] ifFalse: [
         WebSocketResult ok: (self withLog: (self log addFirst: message))

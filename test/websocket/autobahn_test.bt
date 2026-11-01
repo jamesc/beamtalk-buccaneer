@@ -3,15 +3,16 @@
 
 /// Autobahn Testsuite (fuzzingclient) against an echo server with
 /// compression and a 20MB frame ceiling, mirroring Bandit's
-/// `autobahn_test.exs`. Needs docker and `AUTOBAHN=1`; without the
-/// variable the test passes immediately so plain `beamtalk test`
-/// stays fast. `AUTOBAHN_CASES` optionally limits the cases (as
-/// "1.2.3,2.*"); the suite is non-blocking in CI until green.
+/// `autobahn_test.exs`. Needs `AUTOBAHN=1` and docker or a local
+/// `wstest` (`pipx install autobahntestsuite`); without the variable
+/// the test passes immediately so plain `beamtalk test` stays fast.
+/// `AUTOBAHN_CASES` optionally limits the cases (as "1.2.3,2.*"); the
+/// suite is non-blocking in CI until green.
 TestCase subclass: AutobahnTest
 
   testFuzzingClient =>
     (self enabled) ifFalse: [^self]
-    self checkDocker
+    backend := self backend
     dir := "/tmp/buccaneer-autobahn"
     (Erlang os) cmd: ("rm -rf " ++ dir ++ "; mkdir -p " ++ dir ++ "/reports")
     sock := TestSock new withInAnswer: #echo
@@ -21,7 +22,9 @@ TestCase subclass: AutobahnTest
     } handler: [:ex | ex upgradeToWebSocket: sock options: #{}]) unwrap
     port := self portOf: srv
     (File writeAll: (dir ++ "/fuzzingclient.json") contents: (self specJson)) unwrap
-    out := (Erlang os) cmd: (self dockerCmd: dir port: port)
+    out := backend =:= #docker ifTrue: [
+      (Erlang os) cmd: (self dockerCmd: dir port: port)
+    ] ifFalse: [(Erlang os) cmd: (self localCmd: dir port: port)]
     self assert: (out includesSubstring: "EXIT:0") equals: true
     failures := self failuresIn: dir
     self assert: (srv stop: 5000) isOk
@@ -35,12 +38,18 @@ TestCase subclass: AutobahnTest
     (v =:= false or: [v isNil]) ifTrue: [^false]
     v =:= "1"
 
-  /// Fail fast with a clear message when docker is missing.
-  checkDocker =>
-    out := (Erlang os) cmd: "docker --version"
-    (out includesSubstring: "Docker version") ifFalse: [
-      self fail: "autobahn needs docker (AUTOBAHN=1 was set)"
-    ]
+  /// Pick the fuzzingclient backend: docker when present, else a
+  /// local wstest (`pipx install autobahntestsuite`). Fail fast
+  /// naming both options.
+  backend -> Symbol =>
+    dockerFound := (((Erlang os) cmd: "command -v docker; echo EXIT:$?") includesSubstring: "EXIT:0")
+    localFound := (((Erlang os) cmd: "command -v wstest; echo EXIT:$?") includesSubstring: "EXIT:0")
+    (dockerFound or: [localFound])
+      ifFalse: [
+        self fail: "autobahn needs docker or wstest (pipx install autobahntestsuite) with AUTOBAHN=1"
+      ]
+    dockerFound ifTrue: [^#docker]
+    #local
 
   /// The fuzzingclient spec: every case unless AUTOBAHN_CASES limits
   /// them. Built by hand: the keys are not valid Beamtalk symbols.
@@ -64,6 +73,17 @@ TestCase subclass: AutobahnTest
       ++ " --add-host=host.docker.internal:host-gateway"
       ++ " --name fuzzingclient crossbario/autobahn-testsuite"
       ++ " wstest --mode fuzzingclient -w ws://host.docker.internal:"
+      ++ port asString
+      ++ "; echo EXIT:$?"
+
+  /// Run the local wstest against the same spec; outdir is relative
+  /// so reports land in dir/reports exactly as with docker.
+  localCmd: dir :: String port: port :: Integer -> String =>
+    "cd "
+      ++ dir
+      ++ " && wstest --mode fuzzingclient --spec "
+      ++ dir
+      ++ "/fuzzingclient.json -w ws://127.0.0.1:"
       ++ port asString
       ++ "; echo EXIT:$?"
 

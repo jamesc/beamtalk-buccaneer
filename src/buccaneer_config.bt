@@ -4,6 +4,64 @@
 /// Option dictionaries: Symbol keys, values checked at each use site.
 type ConfigOptions = Dictionary(Symbol, Object)
 
+/// The `#http` section: Bandit's top-level HTTP options (logging and
+/// compression), in camelCase.
+///
+/// ## Options
+/// - `#logProtocolErrors` (`#short` | `#verbose` | `False`, default `#short`) — how much to log on a protocol error.
+/// - `#logClientClosures` (`#short` | `#verbose` | `False`, default `false`) — how much to log when the client went away first.
+/// - `#logExceptionsWithStatusCodes` (Integer, List, or anything answering `includes:`, default `500-599`) — which statuses log on an internal error.
+/// - `#compress` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#responseEncodings` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#deflateOptions` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#zstdOptions` (reserved) — accepted for Bandit parity, currently unused.
+type HttpOptions = Dictionary(Symbol, Object)
+
+/// The `#http1` section: Bandit's HTTP/1 options, in camelCase.
+///
+/// ## Options
+/// - `#enabled` (Boolean, default `true`) — whether plain HTTP/1 connections are served.
+/// - `#maxRequests` (Integer, default `0`) — requests per keepalive connection before closing; `0` means unlimited.
+/// - `#maxRequestLineLength` (Integer, default `10000`) — longest request line in bytes.
+/// - `#maxHeaderLength` (Integer, default `10000`) — longest header line in bytes.
+/// - `#maxHeaderCount` (Integer, default `50`) — most headers per request.
+/// - `#gcEveryNKeepaliveRequests` (Integer, default `5`) — garbage-collect every Nth keepalive request; non-Integers skip collection.
+/// - `#logUnknownMessages` (Boolean, default `false`) — log messages the connection does not understand.
+/// - `#clearProcessDict` (reserved) — accepted for Bandit parity; the process dictionary is always cleared between keepalive requests.
+type Http1Options = Dictionary(Symbol, Object)
+
+/// The `#http2` section: Bandit's HTTP/2 options, in camelCase.
+/// Accepted, validated and stored; no HTTP/2 engine reads them yet.
+///
+/// ## Options
+/// - `#enabled` (Boolean) — reserved; no HTTP/2 engine reads it yet.
+/// - `#maxHeaderBlockSize` (Integer) — reserved; no HTTP/2 engine reads it yet.
+/// - `#maxRequests` (Integer) — reserved; no HTTP/2 engine reads it yet.
+/// - `#maxResetStreamRate` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#sendfileChunkSize` (Integer) — reserved; no HTTP/2 engine reads it yet.
+/// - `#defaultLocalSettings` (reserved) — accepted for Bandit parity, currently unused.
+type Http2Options = Dictionary(Symbol, Object)
+
+/// The `#websocket` section: Bandit's WebSocket options, in camelCase.
+///
+/// ## Options
+/// - `#maxFrameSize` (Integer, default `8000000`) — largest accepted frame in bytes.
+/// - `#maxFragmentedMessageSize` (Integer, default `8000000`) — largest reassembled message in bytes.
+/// - `#validateTextFrames` (Boolean, default `true`) — reject non-UTF-8 text frames.
+/// - `#compress` (Boolean, default `false`) — offer permessage-deflate; the upgrade must opt in too.
+/// - `#maxInflateRatio` (Integer, default `25`) — largest allowed inflation ratio for compressed messages.
+/// - `#enabled` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#deflateOptions` (reserved) — accepted for Bandit parity; per-upgrade options carry these instead.
+/// - `#primitiveOpsModule` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#logProtocolErrors` (reserved) — accepted for Bandit parity; `#http` logging covers WebSocket errors.
+type WebSocketOptions = Dictionary(Symbol, Object)
+
+/// The `#catalina` section: Catalina `ServerConfig` options plus the
+/// transport conveniences folded in (`#port`, `#transport`). See
+/// `ServerConfig` for one bullet per key; unknown keys raise here, as
+/// `fromOptions:` raises there.
+type CatalinaOptions = Dictionary(Symbol, Object)
+
 /// URL schemes served.
 type Scheme = #http | #https
 
@@ -20,12 +78,49 @@ typed Value subclass: BuccaneerConfig
   field: port :: Integer = 4000
   field: displayHandler :: Object = nil
   field: startupLog :: LogLevel | False = #info
-  field: http :: ConfigOptions = Dictionary new
-  field: http1 :: ConfigOptions = Dictionary new
-  field: http2 :: ConfigOptions = Dictionary new
-  field: websocket :: ConfigOptions = Dictionary new
-  field: catalina :: ConfigOptions = Dictionary new
+  field: http :: HttpOptions = Dictionary new
+  field: http1 :: Http1Options = Dictionary new
+  field: http2 :: Http2Options = Dictionary new
+  field: websocket :: WebSocketOptions = Dictionary new
+  field: catalina :: CatalinaOptions = Dictionary new
 
+  /// Build a validated config from an options dictionary. Unknown keys
+  /// raise, as a typo the user should hear about.
+  ///
+  /// ## Arguments
+  /// - `options` (ConfigOptions) — top-level options plus one Dictionary
+  ///   per section (`#http`, `#http1`, `#http2`, `#websocket`,
+  ///   `#catalina`).
+  ///
+  /// ## Options
+  /// - `#handler` (Block or value answering `call:`, required) — answers one request; see `ExchangeHandler`.
+  /// - `#scheme` (`#http` | `#https`, default `#http`) — the URL scheme served.
+  /// - `#port` (Integer or numeric String, default `4000`, `4040` for `#https`) — the port to listen on.
+  /// - `#ip` (address term) — folded into `#transportOptions` as `{#ip, address}`.
+  /// - `#inet` (Boolean, default `false`) — folded into `#transportOptions` as a bare atom when true.
+  /// - `#inet6` (Boolean, default `false`) — folded into `#transportOptions` as a bare atom when true.
+  /// - `#keyfile` (String, `#https` only) — folded into `#transportOptions`.
+  /// - `#certfile` (String, `#https` only) — folded into `#transportOptions`.
+  /// - `#otpApp` (`#https` only) — folded into `#transportOptions`.
+  /// - `#cipherSuite` (`#https` only) — folded into `#transportOptions`.
+  /// - `#displayHandler` (Object, default `#handler`) — the handler named in the startup log.
+  /// - `#startupLog` (LogLevel | `False`, default `#info`) — the startup line level; `false` stays silent.
+  /// - `#http` (Dictionary, default empty) — see `HttpOptions` for one bullet per key.
+  /// - `#http1` (Dictionary, default empty) — see `Http1Options` for one bullet per key.
+  /// - `#http2` (Dictionary, default empty) — see `Http2Options` for one bullet per key.
+  /// - `#websocket` (Dictionary, default empty) — see `WebSocketOptions` for one bullet per key.
+  /// - `#catalina` (Dictionary, default empty) — see `CatalinaOptions` and `ServerConfig` for one bullet per key.
+  ///
+  /// ## Examples
+  /// ```beamtalk
+  /// config := BuccaneerConfig from: #{
+  ///   #handler => [:ex | nil],
+  ///   #port => 4001,
+  ///   #http1 => #{#maxRequests => 100}
+  /// }
+  /// config port                    // => 4001
+  /// config http1 at: #maxRequests  // => 100
+  /// ```
   class from: options :: ConfigOptions -> BuccaneerConfig =>
     self
       validateKeys: options
@@ -105,7 +200,7 @@ typed Value subclass: BuccaneerConfig
 
   /// Fail fast on logging verbosity typos: these are read on error
   /// paths, where a raise would mask the error being reported.
-  class checkHttpLoggingOptions: http :: ConfigOptions -> Nil =>
+  class checkHttpLoggingOptions: http :: HttpOptions -> Nil =>
     self checkVerbosity: (http at: #logProtocolErrors ifAbsent: [
       nil
     ]) name: "#logProtocolErrors"
@@ -164,7 +259,7 @@ typed Value subclass: BuccaneerConfig
       name: key asString
     dict
 
-  class catalinaSection: opts :: ConfigOptions port: port :: Integer scheme: scheme :: Scheme -> ConfigOptions =>
+  class catalinaSection: opts :: ConfigOptions port: port :: Integer scheme: scheme :: Scheme -> CatalinaOptions =>
     base := self
       section: opts
       name: #catalina

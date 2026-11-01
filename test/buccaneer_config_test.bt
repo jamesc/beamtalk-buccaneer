@@ -25,6 +25,15 @@ TestCase subclass: BuccaneerConfigTest
 
   handlerBlock => [:ex | nil]
 
+  testDocumentedExample =>
+    config := BuccaneerConfig from: #{
+      #handler => [:ex | nil],
+      #port => 4001,
+      #http1 => #{#maxRequests => 100}
+    }
+    self assert: config port equals: 4001
+    self assert: (config http1 at: #maxRequests) equals: 100
+
   testRequiresHandler =>
     self assertRaises: [
       BuccaneerConfig from: Dictionary new

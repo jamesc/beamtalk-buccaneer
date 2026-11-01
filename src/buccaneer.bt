@@ -10,6 +10,32 @@ Object subclass: Buccaneer
   /// Start a server. Answers `Result ok:` with the server, or Catalina's
   /// error. Raises on invalid options. The handler answers one request;
   /// see `ExchangeHandler`.
+  ///
+  /// ## Arguments
+  /// - `options` (ConfigOptions) — top-level options plus one Dictionary
+  ///   per section (`#http`, `#http1`, `#http2`, `#websocket`,
+  ///   `#catalina`).
+  ///
+  /// ## Options
+  /// - `#handler` (Block or value answering `call:`, required) — answers one request; see `ExchangeHandler`.
+  /// - `#scheme` (`#http` | `#https`, default `#http`) — the URL scheme served.
+  /// - `#port` (Integer or numeric String, default `4000`, `4040` for `#https`) — the port to listen on.
+  /// - `#ip`, `#inet`, `#inet6`, `#keyfile`, `#certfile`, `#otpApp`,
+  ///   `#cipherSuite` — transport conveniences folded into `#catalina`;
+  ///   see `BuccaneerConfig from:`.
+  /// - `#displayHandler` (Object, default `#handler`) — the handler named in the startup log.
+  /// - `#startupLog` (LogLevel | `False`, default `#info`) — the startup line level; `false` stays silent.
+  /// - `#http`, `#http1`, `#http2`, `#websocket`, `#catalina` (Dictionary,
+  ///   default empty) — per-section options; see `HttpOptions`,
+  ///   `Http1Options`, `Http2Options`, `WebSocketOptions` and `ServerConfig`.
+  ///
+  /// ## Examples
+  /// ```beamtalk
+  /// srv := (Buccaneer start: #{#port => 0, #handler => [:ex |
+  ///   ex sendResp: 200 headers: #() body: "hi"
+  /// ]}) unwrap
+  /// srv stop: 5000
+  /// ```
   class sealed start: options :: ConfigOptions -> Result(ServerSupervisor, Error) =>
     config := BuccaneerConfig from: options
     started := Catalina start: (self catalinaOptions: config)
@@ -20,6 +46,22 @@ Object subclass: Buccaneer
 
   /// Start a server with the handler apart from the options, so a block
   /// handler's parameter is typed `Exchange`. Overwrites `#handler`.
+  ///
+  /// ## Arguments
+  /// - `options` (ConfigOptions) — as `start:`; a `#handler` key here is overwritten.
+  /// - `handler` (Block(Exchange, Object)) — answers one request; see `ExchangeHandler`.
+  ///
+  /// ## Options
+  /// The same top-level options as `start:`; see `BuccaneerConfig from:`
+  /// for one bullet per key.
+  ///
+  /// ## Examples
+  /// ```beamtalk
+  /// srv := (Buccaneer start: #{#port => 0} handler: [:ex |
+  ///   ex sendResp: 200 headers: #() body: "hi"
+  /// ]) unwrap
+  /// srv stop: 5000
+  /// ```
   class sealed start: options :: ConfigOptions handler: handler :: Block(Exchange, Object) -> Result(ServerSupervisor, Error) =>
     self start: (options at: #handler put: handler)
 

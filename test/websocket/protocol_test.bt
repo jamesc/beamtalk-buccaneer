@@ -76,7 +76,10 @@ TestCase subclass: ProtocolTest
     ]
     false
 
-  isAlive: pid :: Object => (Erlang erlang) is_process_alive: pid
+  isAlive: pid :: Object => pid match: [
+    p :: Pid -> p isAlive;
+    _ -> false
+  ]
 
   // ===== packet splitting =====
 

@@ -147,13 +147,15 @@ sealed typed Value subclass: TestSock
 
   /// Record the connection pid for the test, then push a marker.
   pushPid -> WebSocketResult =>
-    self pidTable isNil ifFalse: [
-      (Ets named: self pidTable) at: #pid put: Pid current
+    self pidTable match: [
+      t :: Symbol -> (Ets named: t) at: #pid put: Pid current;
+      _ -> nil
     ]
     WebSocketResult push: {#text, "pid"} state: self
 
   terminate: reason :: Object -> Object =>
-    self table isNil ifFalse: [
-      (Ets named: self table) at: #terminate put: reason
+    self table match: [
+      t :: Symbol -> (Ets named: t) at: #terminate put: reason;
+      _ -> nil
     ]
     nil

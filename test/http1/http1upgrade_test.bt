@@ -115,3 +115,65 @@ TestCase subclass: HTTP1UpgradeTest
     self assert: (head includesSubstring: "500") equals: true
     self assert: ((LogCapture await: "boom" in: log) includesSubstring: "boom") equals: true
     self assert: (srv stop: 5000) isOk
+
+  upgradeRequest =>
+    "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+
+  /// A second upgrade on an upgraded exchange raises AlreadySent: 500
+  /// on the wire, the server healthy (Bandit has no double-upgrade
+  /// test; the AlreadySent contract is ours to pin).
+  testDoubleUpgrade500s =>
+    log := LogCapture attach: #http1UpgradeDouble
+    srv := (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        upgraded := ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
+        upgraded upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
+      ]) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: self upgradeRequest
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "500") equals: true
+    self assert: ((LogCapture await: "already_sent" in: log) includesSubstring: "already_sent")
+    self assert: (srv stop: 5000) isOk
+
+  /// A response sent after the upgrade raises AlreadySent: 500 on the
+  /// wire, the server healthy.
+  testSendAfterUpgrade500s =>
+    log := LogCapture attach: #http1UpgradeSendAfter
+    srv := (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        upgraded := ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
+        upgraded
+          sendResp: 200
+          headers: #()
+          body: "hi"
+      ]) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: self upgradeRequest
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "500") equals: true
+    self assert: ((LogCapture await: "already_sent" in: log) includesSubstring: "already_sent")
+    self assert: (srv stop: 5000) isOk
+
+  /// A bad deflate tuning value fails the handshake loudly: 500 on the
+  /// wire (the zlib open signals), the server healthy. The half-opened
+  /// stream is a GC-managed NIF resource, so nothing leaks.
+  testBadDeflateLevel500s =>
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #websocket => #{#compress => true, #deflateOptions => #{#level => 99}}
+      }
+      handler: [:ex |
+        ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
+      ]) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nsec-websocket-extensions: permessage-deflate\r\n\r\n"
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "500") equals: true
+    self assert: (srv stop: 5000) isOk

@@ -1715,3 +1715,104 @@ TestCase subclass: SockTest
         self deny: (pids at: 1) =:= Pid current
         self assert: (srv stop: 5000) isOk
       ]
+
+  /// A raising init crashes before the protocol state commits, so
+  /// the engine has no connection to run its error path on: the TCP
+  /// connection just closes, with no close frame, no terminate and no
+  /// log (Bandit crashes the same way; there is no close frame to
+  /// send from outside the connection).
+  testInitRaisesClosesConnection =>
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock withInitAnswer: #raise)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        self assert: (self awaitClosed: client) equals: true
+        outcome := Result tryDo: [WebSocketClient recvClose: client]
+        self assert: outcome isError
+        self noTerm
+        self assert: (srv stop: 5000) isOk
+      ]
+
+  /// A raising handleIn is a handler bug: 1011 on the wire,
+  /// terminate with the wrapped error (no handler-raise test in Bandit).
+  testHandleInRaisesCloses1011 =>
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock withInAnswer: #raise)
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: (self awaitTerm at: 1) equals: #error
+        self assert: (srv stop: 5000) isOk
+      ]
+
+  /// A raising handleInfo is a handler bug: 1011 on the wire,
+  /// terminate with the wrapped error.
+  testHandleInfoRaisesCloses1011 =>
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self pidSock) withInfoAnswer: #raise))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "whoami"
+        self assert: (self textOf: client) equals: "pid"
+        (Erlang erlang) send: (self pidOfTest) with: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: (self awaitTerm at: 1) equals: #error
+        self assert: (srv stop: 5000) isOk
+      ]
+
+  /// A pushed frame of unknown type is a handler bug: the send
+  /// signals, the engine answers 1011 (Bandit raises
+  /// FunctionClauseError; the old code sent a pong instead).
+  testPushUnknownOpcodeCloses1011 =>
+    self
+      eachScheme: [:opts :scheme |
+        sock := (self testSock withInAnswer: #push) withInFrames: #({#bogus, "x"})
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "OK"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1011)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: (self awaitTerm at: 1) equals: #error
+        self assert: (srv stop: 5000) isOk
+      ]
+
+  /// A raising terminate: is logged and the teardown continues: the
+  /// peer still gets its close frame (Bandit crashes here instead).
+  testTerminateRaisesStillCloses =>
+    self
+      eachScheme: [:opts :scheme |
+        sock := (((self testSock withStopOn: "boom") withTerminateAnswer: #raise))
+        srv := self
+          serverWith: sock
+          options: opts
+          upgrade: #{}
+        client := self clientFor: scheme port: (self portOf: srv)
+        self shake: client
+        WebSocketClient sendText: client data: "boom"
+        self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+        self assert: (self awaitClosed: client) equals: true
+        self assert: self awaitTerm equals: #normal
+        self assert: (srv stop: 5000) isOk
+      ]

@@ -7,18 +7,30 @@
 /// paths can ignore a dead peer.
 typed Object subclass: WebSocketSocket
 
-  /// Send one outgoing frame. `type` is #text | #binary | #ping | #pong.
+  /// Send one outgoing frame. Unknown types signal (a handler bug);
+  /// the engine answers 1011, as Bandit's FunctionClauseError does.
+  ///
+  /// ## Arguments
+  /// - `socket` (Socket) — the server side, unmasked.
+  /// - `type` (Symbol) — `#text` | `#binary` | `#ping` | `#pong`.
+  /// - `data` (Binary) — the frame body.
+  /// - `compressed` (Boolean) — set RSV1 for a negotiated deflate.
   class sealed sendFrame: socket :: Socket type: type :: Symbol data: data :: Binary compressed: compressed :: Boolean -> Result(Nil, Object) =>
     frame := type match: [
       #text -> ((TextFrame new withFin: true) withCompressed: compressed) withData: data;
       #binary -> ((BinaryFrame new withFin: true) withCompressed: compressed) withData: data;
       #ping -> PingFrame new withData: data;
-      _ -> PongFrame new withData: data
+      #pong -> PongFrame new withData: data;
+      _ -> Error signal: "unknown WebSocket frame type"
     ]
     socket send: (Frame serialize: frame)
 
   /// Send the close frame, then shut the socket down for writing.
   /// A code alone sends no reason (Bandit's close with an integer).
+  ///
+  /// ## Arguments
+  /// - `socket` (Socket) — the server side.
+  /// - `code` (Integer) — the close code.
   class sealed close: socket :: Socket code: code :: Integer -> Result(Nil, Object) =>
     self
       close: socket
@@ -27,6 +39,11 @@ typed Object subclass: WebSocketSocket
 
   /// Send the close frame with a reason, then shut down for writing
   /// (Bandit's close with {code, detail}).
+  ///
+  /// ## Arguments
+  /// - `socket` (Socket) — the server side.
+  /// - `code` (Integer) — the close code.
+  /// - `reason` (Binary) — the close reason.
   class sealed close: socket :: Socket code: code :: Integer reason: reason :: Binary -> Result(Nil, Object) =>
     frame := (ConnectionCloseFrame new withCode: code) withReason: reason
     (socket send: (Frame serialize: frame)) isError ifTrue: [

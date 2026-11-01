@@ -38,6 +38,9 @@ sealed typed Value subclass: WebSocketConnection
     ]
     self handleFragment: frame socket: sock
 
+  /// One parsed frame outside a fragment: data frames run the
+  /// WebSock (after inflate and UTF-8 checks), control frames run
+  /// the control path, and a continuation is a 1002.
   handleFirstFrame: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     conn := self withMetrics: (self recvMetrics: frame)
     frame match: [
@@ -73,6 +76,9 @@ sealed typed Value subclass: WebSocketConnection
   beginFragment: frame :: Object data: data :: Binary -> Tuple(WebSocketConnection, Object) =>
     {((self withFragmentChunks: #(data)) withFragmentFrame: frame) withFragmentSize: data size, #continue}
 
+  /// One parsed frame inside a fragment: continuations
+  /// accumulate (checked against the size budget) or assemble, data
+  /// frames are a 1002, control frames run the control path.
   handleFragment: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     conn := self withMetrics: (self recvMetrics: frame)
     frame match: [
@@ -261,6 +267,7 @@ sealed typed Value subclass: WebSocketConnection
       at: 1
       socket: sock
 
+  /// Send `frames` from index `i`, stopping at the first failure.
   doSend: frames :: List at: i :: Integer socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     i > frames size ifTrue: [^{self, #continue}]
     {next, outcome} := self doDeflateOne: (frames at: i) socket: sock
@@ -275,6 +282,8 @@ sealed typed Value subclass: WebSocketConnection
   doDeflate: frames :: List socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     self doSendAll: frames socket: sock
 
+  /// Send one push/reply frame tuple, deflating data frames and
+  /// serializing control frames as-is.
   doDeflateOne: frame :: Tuple socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     {opcode, data} := frame
     bytes := (data isKindOf: List) ifTrue: [
@@ -295,6 +304,7 @@ sealed typed Value subclass: WebSocketConnection
         opcode: opcode
     ]
 
+  /// Send a data frame, deflated when compression is negotiated.
   sendText: bytes :: Binary socket: sock :: Socket opcode: opcode :: Symbol -> Tuple(WebSocketConnection, Object) =>
     (PermessageDeflate deflate: bytes with: self compress) match: [ok :: Result -> ok isError
       ifTrue: [
@@ -319,6 +329,7 @@ sealed typed Value subclass: WebSocketConnection
         {self withMetrics: (self sendMetrics: opcode data: ok value), #continue}
       ]]
 
+  /// Send a data frame uncompressed.
   sendUncompressed: bytes :: Binary socket: sock :: Socket opcode: opcode :: Symbol -> Tuple(WebSocketConnection, Object) =>
     WebSocketSocket
       sendFrame: sock
@@ -328,6 +339,7 @@ sealed typed Value subclass: WebSocketConnection
     conn := self
     {conn withMetrics: (conn sendMetrics: opcode data: bytes), #continue}
 
+  /// Send a control frame (never compressed).
   sendControl: bytes :: Binary socket: sock :: Socket opcode: opcode :: Symbol -> Tuple(WebSocketConnection, Object) =>
     WebSocketSocket
       sendFrame: sock
@@ -366,12 +378,21 @@ sealed typed Value subclass: WebSocketConnection
       ]]
 
   /// A clean stop: terminate, close, stop the span (Bandit's do_stop).
-  /// Only acts in #open; every later teardown is a no-op.
+  /// Only acts in #open; every later teardown is a no-op. A raising
+  /// terminate: is logged and the teardown continues (Bandit would
+  /// crash here; losing the close frame over a handler bug is worse).
   doStop: code :: Integer detail: detail :: String reason: treason :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     self connState =:= #open ifFalse: [^{self, #continue}]
-    (self websockState respondsTo: #terminate:) ifTrue: [
-      self websockState terminate: treason
-    ]
+    (self websockState respondsTo: #terminate:)
+      ifTrue: [
+        [self websockState terminate: treason]
+          on: Error
+          do: [:e |
+            Logger error: "terminate: raised; continuing teardown" metadata: #{
+              #domain => #(#buccaneer)
+            }
+          ]
+      ]
     WebSocketSocket
       close: sock
       code: code
@@ -382,14 +403,23 @@ sealed typed Value subclass: WebSocketConnection
 
   /// A protocol error stop: terminate with the wrapped reason, close,
   /// log, stop the span with the error (Bandit's do_error). Only acts
-  /// in #open; every later teardown is a no-op.
+  /// in #open; every later teardown is a no-op. A raising terminate:
+  /// is logged and the teardown continues, as in doStop:.
   doError: code :: Integer reason: reason :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     self connState =:= #open ifFalse: [^{self, {#error, reason}}]
     (self websockState respondsTo: #terminate:)
       ifTrue: [
-        self websockState terminate: (reason =:= #timeout ifTrue: [
-          #timeout
-        ] ifFalse: [{#error, reason}])
+        [
+          self websockState terminate: (reason =:= #timeout ifTrue: [
+            #timeout
+          ] ifFalse: [{#error, reason}])
+        ]
+          on: Error
+          do: [:e |
+            Logger error: "terminate: raised; continuing teardown" metadata: #{
+              #domain => #(#buccaneer)
+            }
+          ]
       ]
     WebSocketSocket close: sock code: code
     PermessageDeflate close: self compress
@@ -402,6 +432,8 @@ sealed typed Value subclass: WebSocketConnection
     self stopSpan: reason
     {(((self withConnState: #closed) withCompress: nil) withMetrics: Dictionary new), {#error, reason}}
 
+  /// Stop the telemetry span with the accumulated metrics, tagging
+  /// the error unless the stop is clean (nil reason).
   stopSpan: reason :: Object -> WebSocketConnection =>
     self span isNil ifTrue: [^self]
     reason isNil ifTrue: [
@@ -456,6 +488,7 @@ sealed typed Value subclass: WebSocketConnection
           metrics: self metrics)
     ]
 
+  /// Sent-frame metrics for one frame, as Bandit's send_metrics.
   sendMetrics: opcode :: Symbol data: bytes :: Binary -> Dictionary =>
     opcode match: [
       #text -> self
@@ -488,5 +521,6 @@ sealed typed Value subclass: WebSocketConnection
           metrics: self metrics)
     ]
 
+  /// `metrics` with `key` incremented by `n`.
   bump: key :: Symbol by: n :: Integer metrics: metrics :: Dictionary -> Dictionary =>
     metrics at: key put: ((metrics at: key ifAbsent: [0]) + n)

@@ -6,12 +6,13 @@
 /// of inline test websocks.
 ///
 /// Kinds: #ok (keep state), #ignore (keep state, for callbacks the
-/// test leaves unimplemented), #echo (push the incoming frame back),
-/// #record (log the message; a "dump" text frame pushes the log),
-/// #pid (record the connection pid and push "pid"), #push (push
-/// frames:), #reply (reply frames:), #stop / #stopError (end with
-/// code:/detail:/reason:). terminate: records its reason in the Ets
-/// table `table` when set.
+/// test leaves unimplemented), #raise (signal "boom"), #echo (push the
+/// incoming frame back), #record (log the message; a "dump" text frame
+/// pushes the log), #pid (record the connection pid and push "pid"),
+/// #push (push frames:), #reply (reply frames:), #stop / #stopError
+/// (end with code:/detail:/reason:). terminate: records its reason in
+/// the Ets table `table` when set, then signals "boom" when
+/// terminateAnswer is #raise.
 sealed typed Value subclass: TestSock
   field: initAnswer :: Symbol = #ok
   field: initFrames :: List = #()
@@ -34,6 +35,7 @@ sealed typed Value subclass: TestSock
   field: infoDetail :: String = ""
   field: infoReason :: Object = #abnormal
   field: log :: List = #()
+  field: terminateAnswer :: Symbol = #record
   field: table :: Symbol | Nil = nil
   field: pidTable :: Symbol | Nil = nil
   field: stopOn :: String | Nil = nil
@@ -43,8 +45,10 @@ sealed typed Value subclass: TestSock
   field: stopReason2 :: Object = #normal
   field: stopCode2 :: Integer = 1000
 
-  /// One scripted answer. #stopError carries reason: and code:.
+  /// One scripted answer. #raise signals "boom" (a handler bug);
+  /// #stopError carries reason: and code:.
   answer: kind :: Symbol frames: frames :: List code: code :: Integer detail: detail :: String reason: reason :: Object -> WebSocketResult =>
+    kind =:= #raise ifTrue: [Error signal: "boom"]
     kind match: [
       #ok -> WebSocketResult ok: self;
       #ignore -> WebSocketResult ok: self;
@@ -181,9 +185,12 @@ sealed typed Value subclass: TestSock
     ]
     WebSocketResult push: {#text, "pid"} state: self
 
+  /// Record the reason, then signal when terminateAnswer is #raise
+  /// (a handler bug during teardown).
   terminate: reason :: Object -> Object =>
     self table match: [
       t :: Symbol -> (Ets named: t) at: #terminate put: reason;
       _ -> nil
     ]
+    self terminateAnswer =:= #raise ifTrue: [Error signal: "boom"]
     nil

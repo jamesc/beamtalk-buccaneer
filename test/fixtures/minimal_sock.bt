@@ -1,0 +1,21 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A WebSock with only init/handleIn (no handleControl, handleInfo or
+/// terminate:), covering Bandit's optional-callback cases: missing
+/// callbacks must not crash the connection. With stopOnNormal it stops
+/// cleanly on {"text", "normal"}; otherwise it echoes.
+sealed typed Value subclass: MinimalSock
+  field: stopOnNormal :: Boolean = false
+
+  init -> WebSocketResult => WebSocketResult ok: self
+
+  handleIn: message :: Tuple(Symbol, Binary) -> WebSocketResult =>
+    message match: [
+      {#text, data} -> (self stopOnNormal and: [
+        data asStringUnchecked =:= "normal"
+      ]) ifTrue: [
+        ^WebSocketResult stop: self code: 1000
+      ] ifFalse: [WebSocketResult push: message state: self];
+      _ -> WebSocketResult push: message state: self
+    ]

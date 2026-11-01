@@ -1,0 +1,112 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `websocket/upgrade_validation_test.exs`: the
+/// requests never upgrade; a handler answers 200 with the validation
+/// outcome, exercised over HTTP like Bandit's plug.
+TestCase subclass: UpgradeValidationTest
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  server =>
+    (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          result := UpgradeValidation validate: ex
+          ex
+            sendResp: 200
+            headers: #()
+            body: (result ifOk: [:v | "ok"] ifError: [:e | e])
+        ]}) unwrap
+
+  /// The reply body: every request carries `connection: close`, so
+  /// read byte-wise to the end (a block read would wait for its full
+  /// length past the close).
+  scenario: port request: req =>
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: req
+    resp := Binary fromBytes: #()
+    more := true
+    [more]
+      whileTrue: [
+        chunk := (Erlang gen_tcp)
+          recv: client
+          with: 1
+          with: 2000
+        chunk isError ifTrue: [
+          more := false
+        ] ifFalse: [resp := resp concat: chunk value]
+      ]
+    (Erlang gen_tcp) close: client
+    resp asStringUnchecked
+
+  /// A validation request; `close` is always present so the server
+  /// closes after the reply. Duplicate connection headers are legal
+  /// and the contains check scans every instance.
+  get: headers version: version =>
+    "GET /validate_upgrade HTTP/"
+      ++ version
+      ++ "\r\n"
+      ++ headers
+      ++ "connection: close\r\n\r\n"
+
+  goodHeaders =>
+    "host: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n"
+
+  testAcceptsWellFormed =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self scenario: port request: (self get: self goodHeaders version: "1.1")
+    self assert: (resp endsWith: "ok")
+    self assert: (srv stop: 5000) isOk
+
+  testRejectsNonGet =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    head := "POST /validate_upgrade HTTP/1.1\r\n"
+      ++ self goodHeaders
+      ++ "connection: close\r\n\r\n"
+    resp := self scenario: port request: head
+    self assert: (resp endsWith: "HTTP method POST unsupported")
+    self assert: (srv stop: 5000) isOk
+
+  testRejectsNon11 =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self scenario: port request: (self get: self goodHeaders version: "1.0")
+    self assert: (resp endsWith: "HTTP version HTTP/1.0 unsupported")
+    self assert: (srv stop: 5000) isOk
+
+  testRejectsNonUpgrade =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self scenario: port request: ("GET /validate_upgrade HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: close\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n")
+    self assert: (resp endsWith: "'connection' header must contain 'upgrade', got #(""close"")")
+    self assert: (srv stop: 5000) isOk
+
+  testRejectsNonWebsocket =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    head := "GET /validate_upgrade HTTP/1.1\r\nhost: server.example.com\r\nupgrade: bogus\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\nconnection: close\r\n\r\n"
+    resp := self scenario: port request: head
+    self assert: (resp endsWith: "'upgrade' header must contain 'websocket', got #(""bogus"")")
+    self assert: (srv stop: 5000) isOk
+
+  testRejectsMissingKey =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    head := "GET /validate_upgrade HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-version: 13\r\nconnection: close\r\n\r\n"
+    resp := self scenario: port request: head
+    self assert: (resp endsWith: "'sec-websocket-key' header is absent")
+    self assert: (srv stop: 5000) isOk
+
+  testRejectsBadVersion =>
+    srv := self server
+    port := (srv listenerInfo unwrap) at: 2
+    head := "GET /validate_upgrade HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 12\r\nconnection: close\r\n\r\n"
+    resp := self scenario: port request: head
+    self assert: (resp endsWith: "'sec-websocket-version' header must equal '13', got #(""12"")")
+    self assert: (srv stop: 5000) isOk

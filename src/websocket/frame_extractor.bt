@@ -1,0 +1,66 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.Extractor for WebSocket frames: feeds TCP packets in,
+/// pops whole frames out. Header parsing scans the buffered bytes
+/// for one frame header; payload parsing accumulates chunks until
+/// the declared length arrives. Answers {extractor, #more} when the
+/// bytes so far are incomplete, or {extractor, Result} with the
+/// parsed frame (or its error) and any trailing bytes kept.
+sealed typed Value subclass: FrameExtractor
+  field: mode :: Symbol = #headerParsing
+  field: header :: Binary = ""
+  field: chunks :: List(Binary) = #()
+  field: payloadLength :: Integer = 0
+  field: requiredLength :: Integer = 0
+  field: headerLength :: Integer = 0
+  field: maxFrameSize :: Integer = 8000000
+
+  /// Feed received bytes. Header mode appends to the header buffer;
+  /// payload mode accumulates a chunk (newest first; reversed at pop).
+  pushData: data :: Binary -> FrameExtractor =>
+    self mode match: [
+      #headerParsing -> self withHeader: (self header concat: data);
+      _ -> (self withChunks: (self chunks addFirst: data)) withPayloadLength: (self payloadLength + data size)
+    ]
+
+  /// Pop one frame: {updated, #more} or {updated, Result}.
+  popFrame -> Tuple(FrameExtractor, Object) =>
+    self mode match: [
+      #headerParsing -> self popHeader;
+      _ -> self popPayload
+    ]
+
+  /// Scan the header buffer; on success move to payload mode and
+  /// recurse, since the payload may already be buffered.
+  popHeader -> Tuple(FrameExtractor, Object) =>
+    (Frame headerAndPayloadLength: self header maxFrameSize: self maxFrameSize) match: [
+      #more -> {self, #more};
+      r :: Result -> r isError
+        ifTrue: [{self, r}]
+        ifFalse: [
+          {headerLength, requiredLength} := r value
+          (self transitionToPayload: headerLength required: requiredLength) popFrame
+        ]
+    ]
+
+  /// Split the buffered bytes at the header end: the head stays the
+  /// header, the tail becomes the first payload chunk.
+  transitionToPayload: headerLength :: Integer required: requiredLength :: Integer -> FrameExtractor =>
+    buffered := self header size - headerLength
+    payload := self header part: headerLength size: buffered
+    (((((self withHeader: (self header part: 0 size: headerLength)) withChunks: (buffered =:= 0 ifTrue: [
+      #()
+    ] ifFalse: [
+      #(payload)
+    ])) withPayloadLength: buffered) withRequiredLength: requiredLength) withHeaderLength: headerLength) withMode: #payloadParsing
+
+  /// Join the chunks once the declared length has arrived, parse the
+  /// frame, and keep any trailing bytes as the next header.
+  popPayload -> Tuple(FrameExtractor, Object) =>
+    self payloadLength < self requiredLength ifTrue: [^{self, #more}]
+    payload := Binary fromIolist: self chunks reversed
+    frame := Frame deserialize: (self header concat: (payload part: 0 size: self requiredLength))
+    rest := payload part: self requiredLength size: (self payloadLength - self requiredLength)
+    next := ((((self withHeader: rest) withChunks: #()) withPayloadLength: 0) withRequiredLength: 0) withMode: #headerParsing
+    {next, frame}

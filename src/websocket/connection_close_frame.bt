@@ -1,0 +1,9 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A WebSocket connection close frame (Bandit opcode 0x8). A nil code
+/// sends an empty payload; a code with a nil reason sends the 2-byte
+/// code alone. Never fragmented, never compressed.
+sealed typed Value subclass: ConnectionCloseFrame
+  field: code :: Integer | Nil = nil
+  field: reason :: Binary = ""

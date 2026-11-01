@@ -1,0 +1,56 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// One WebSock callback answer (WebSock's {:ok, ...}, {:push, ...},
+/// {:reply, ...} and {:stop, ...} tuples): the next state, frames to
+/// send, and whether the connection stops normally or with an error.
+///
+/// Frames are {#text | #binary | #ping | #pong, data} tuples; several
+/// may be given as a List. stopError: carries the close code the peer
+/// sees (Bandit's do_error codes: 1002, 1007, 1009, 1011).
+sealed typed Value subclass: WebSocketResult
+  field: kind :: Symbol = #ok
+  field: state :: Object = nil
+  field: frames :: List = #()
+  field: code :: Integer = 1000
+  field: detail :: String = ""
+  field: status :: Object = #ok
+  field: reason :: Object = #normal
+
+  class sealed ok: state :: Object -> WebSocketResult =>
+    WebSocketResult new withState: state
+
+  class sealed push: frames :: Tuple(Symbol, Binary) | List state: state :: Object -> WebSocketResult =>
+    ((WebSocketResult new withKind: #push) withState: state) withFrames: (self listOf: frames)
+
+  class sealed reply: status :: Object frames: frames :: Tuple(Symbol, Binary) | List state: state :: Object -> WebSocketResult =>
+    ((((WebSocketResult new withKind: #reply) withState: state) withFrames: (self listOf: frames)) withStatus: status)
+
+  class sealed stop: state :: Object -> WebSocketResult =>
+    (WebSocketResult new withKind: #stop) withState: state
+
+  class sealed stop: state :: Object code: code :: Integer -> WebSocketResult =>
+    ((WebSocketResult new withKind: #stop) withState: state) withCode: code
+
+  class sealed stop: state :: Object code: code :: Integer frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
+    (((WebSocketResult new withKind: #stop) withState: state) withCode: code) withFrames: (self listOf: frames)
+
+  class sealed stop: state :: Object code: code :: Integer detail: detail :: String -> WebSocketResult =>
+    (((WebSocketResult new withKind: #stop) withState: state) withCode: code) withDetail: detail
+
+  class sealed stop: state :: Object code: code :: Integer detail: detail :: String frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
+    ((((WebSocketResult new withKind: #stop) withState: state) withCode: code) withDetail: detail) withFrames: (self listOf: frames)
+
+  class sealed stopError: reason :: Object state: state :: Object -> WebSocketResult =>
+    (((WebSocketResult new withKind: #stopError) withState: state) withCode: 1011) withReason: reason
+
+  class sealed stopError: reason :: Object state: state :: Object code: code :: Integer -> WebSocketResult =>
+    (((WebSocketResult new withKind: #stopError) withState: state) withCode: code) withReason: reason
+
+  class sealed stopError: reason :: Object state: state :: Object code: code :: Integer frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
+    ((((WebSocketResult new withKind: #stopError) withState: state) withCode: code) withReason: reason) withFrames: (self listOf: frames)
+
+  /// One frame tuple or a List of them, normalized to a List.
+  class sealed listOf: frames :: Object -> List =>
+    (frames isKindOf: List) ifTrue: [^frames]
+    #(frames)

@@ -19,7 +19,7 @@ typed Object subclass: Pipeline
   /// `connectionSpan` is Catalina's connection span (nil in tests);
   /// `connData` is {secure?, peerAddress}; `config` is the server's
   /// BuccaneerConfig.
-  class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple(Boolean, Tuple | Symbol) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+  class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple(Boolean, Tuple | Symbol) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     startTime := BuccaneerTelemetry monotonicTime
     base := self baseMetadata: connectionSpan handler: config
     // Only the prologue runs protected here. runInner: has its own
@@ -101,9 +101,18 @@ typed Object subclass: Pipeline
 
   /// The inner request: call the handler, commit, forget the exchange,
   /// stop the span. Errors here all know their conn.
-  class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+  class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     [
       self callHandler: handler with: ex
+      ex state =:= #upgraded
+        ifTrue: [
+          ^self
+            upgrade: ex
+            span: span
+            transport: transport
+            metadata: meta
+            options: config
+        ]
       ex commit
       final := ex load
       done := ex finish
@@ -136,6 +145,65 @@ typed Object subclass: Pipeline
             options: config
         ]
       ]
+
+  /// The handler asked to switch to WebSocket: validate the request,
+  /// send 101, stop the request span, forget the exchange, and answer
+  /// the WebSocketProtocol for the connection to continue with (Plug's
+  /// maybe_upgrade!, after the handler returns). A failed validation
+  /// raises an HTTPError, which the surrounding handler turns into a
+  /// 400 exactly like a malformed request.
+  class sealed upgrade: ex :: Exchange span: span :: BuccaneerTelemetry transport: _transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
+    (config websocket at: #enabled ifAbsent: [
+      true
+    ]) ifFalse: [
+      Error signal: "upgrade to websocket not supported by Buccaneer"
+    ]
+    st := ex load
+    result := Handshake
+      run: ex
+      config: config
+      options: st websocketOptions
+    result isError ifTrue: [HTTPError signal: result error reason: 400]
+    {compress, _params} := result value
+    final := ex load
+    span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
+    buffer := final transport buffer
+    ex forget
+    wsSpan := BuccaneerTelemetry
+      startSpan: #websocket
+      measurements: #{
+        #monotonic_time => BuccaneerTelemetry monotonicTime,
+        #compress => compress notNil
+      }
+      metadata: (meta at: #websock put: st websock)
+    ws := config websocket
+    connection := WebSocketConnection
+      websock: st websock
+      websockState: st websockState
+      connState: #open
+      compress: compress
+      fragmentFrame: nil
+      fragmentChunks: #()
+      fragmentSize: 0
+      validateTextFrames: (ws at: #validateTextFrames ifAbsent: [true])
+      maxFragmentedMessageSize: (ws at: #maxFragmentedMessageSize ifAbsent: [
+        8000000
+      ])
+      logErrors: ((ws at: #logProtocolErrors ifAbsent: [
+        true
+      ]) =:= false ifTrue: [false] ifFalse: [true])
+      span: wsSpan
+      metrics: Dictionary new
+    protocol := WebSocketProtocol
+      config: config
+      connection: connection
+      extractor: (FrameExtractor new withMaxFrameSize: (ws at: #maxFrameSize ifAbsent: [
+        8000000
+      ]))
+      buffer: buffer
+      started: false
+      timeoutMs: (st websocketOptions at: #timeout ifAbsent: [nil])
+    Result ok: protocol
 
   /// A malformed request or a socket failure: stop the span with the
   /// error, log per the #http section, answer the error status unless

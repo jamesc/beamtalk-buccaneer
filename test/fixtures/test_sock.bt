@@ -1,0 +1,196 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// The configurable WebSock for the websocket tests: each callback
+/// answers per its kind field, so one fixture covers Bandit's dozens
+/// of inline test websocks.
+///
+/// Kinds: #ok (keep state), #ignore (keep state, for callbacks the
+/// test leaves unimplemented), #raise (signal "boom"), #echo (push the
+/// incoming frame back), #record (log the message; a "dump" text frame
+/// pushes the log), #pid (record the connection pid and push "pid"),
+/// #push (push frames:), #reply (reply frames:), #stop / #stopError
+/// (end with code:/detail:/reason:). terminate: records its reason in
+/// the Ets table `table` when set, then signals "boom" when
+/// terminateAnswer is #raise.
+sealed typed Value subclass: TestSock
+  field: initAnswer :: Symbol = #ok
+  field: initFrames :: List = #()
+  field: initCode :: Integer = 1000
+  field: initDetail :: String = ""
+  field: initReason :: Object = #abnormal
+  field: inAnswer :: Symbol = #echo
+  field: inFrames :: List = #()
+  field: inCode :: Integer = 1000
+  field: inDetail :: String = ""
+  field: inReason :: Object = #abnormal
+  field: controlAnswer :: Symbol = #ignore
+  field: controlFrames :: List = #()
+  field: controlCode :: Integer = 1000
+  field: controlDetail :: String = ""
+  field: controlReason :: Object = #abnormal
+  field: infoAnswer :: Symbol = #ok
+  field: infoFrames :: List = #()
+  field: infoCode :: Integer = 1000
+  field: infoDetail :: String = ""
+  field: infoReason :: Object = #abnormal
+  field: log :: List = #()
+  field: terminateAnswer :: Symbol = #record
+  field: table :: Symbol | Nil = nil
+  field: pidTable :: Symbol | Nil = nil
+  field: stopOn :: String | Nil = nil
+  field: stopReason :: Object = #normal
+  field: stopCode :: Integer = 1000
+  field: stopOn2 :: String | Nil = nil
+  field: stopReason2 :: Object = #normal
+  field: stopCode2 :: Integer = 1000
+
+  /// One scripted answer. #raise signals "boom" (a handler bug);
+  /// #stopError carries reason: and code:.
+  answer: kind :: Symbol frames: frames :: List code: code :: Integer detail: detail :: String reason: reason :: Object -> WebSocketResult =>
+    kind =:= #raise ifTrue: [Error signal: "boom"]
+    kind match: [
+      #ok -> WebSocketResult ok: self;
+      #ignore -> WebSocketResult ok: self;
+      #push -> WebSocketResult push: frames state: self;
+      #reply -> WebSocketResult
+        reply: #ok
+        frames: frames
+        state: self;
+      #stop -> WebSocketResult
+        stop: self
+        code: code
+        detail: detail
+        frames: frames;
+      _ -> WebSocketResult
+        stopError: reason
+        state: self
+        code: code
+        frames: frames
+    ]
+
+  init -> WebSocketResult =>
+    self
+      answer: self initAnswer
+      frames: self initFrames
+      code: self initCode
+      detail: self initDetail
+      reason: self initReason
+
+  /// Content stops for the terminate and telemetry tests (Bandit's
+  /// inline websocks matching "normal"/"boom" and "close"/
+  /// "abnormal_close"), checked before the configured answer.
+  stopFor: text :: String -> Tuple | Nil =>
+    text =:= self stopOn ifTrue: [^{self stopReason, self stopCode}]
+    (self stopOn2 notNil and: [
+      text =:= self stopOn2
+    ]) ifTrue: [^{self stopReason2, self stopCode2}]
+    nil
+
+  doStopWith: spec :: Tuple -> WebSocketResult =>
+    {reason, code} := spec
+    reason =:= #normal ifTrue: [^WebSocketResult stop: self code: code]
+    WebSocketResult
+      stopError: reason
+      state: self
+      code: 1011
+
+  handleIn: message :: Tuple(Symbol, Binary) -> WebSocketResult =>
+    stop := message match: [
+      {#text, data} -> self stopFor: (data asStringUnchecked);
+      _ -> nil
+    ]
+    stop notNil ifTrue: [^self doStopWith: stop]
+    self inAnswer match: [
+      #echo -> WebSocketResult push: message state: self;
+      #record -> self record: message;
+      #pid -> self pushPid;
+      _ -> self
+        answer: self inAnswer
+        frames: self inFrames
+        code: self inCode
+        detail: self inDetail
+        reason: self inReason
+    ]
+
+  handleInfo: message :: Object -> WebSocketResult =>
+    self infoAnswer match: [
+      #echo -> WebSocketResult ok: self;
+      #record -> self record: message;
+      #pid -> self pushPid;
+      _ -> self
+        answer: self infoAnswer
+        frames: self infoFrames
+        code: self infoCode
+        detail: self infoDetail
+        reason: self infoReason
+    ]
+
+  handleControl: message :: Tuple(Symbol, Binary) -> WebSocketResult =>
+    self controlAnswer match: [
+      #echo -> WebSocketResult push: message state: self;
+      #record -> self record: message;
+      #pid -> self pushPid;
+      _ -> self
+        answer: self controlAnswer
+        frames: self controlFrames
+        code: self controlCode
+        detail: self controlDetail
+        reason: self controlReason
+    ]
+
+  /// Log the message; a "dump" pushes the whole log back in a
+  /// frame of the same opcode (a bare "dump" info message pushes a
+  /// text frame, as Bandit's handle_info dump does).
+  record: message :: Object -> WebSocketResult =>
+    message match: [
+      {#text, data} -> self
+        dumpData: data
+        opcode: #text
+        message: message;
+      {op, data} -> self
+        dumpOp: op
+        data: data
+        message: message;
+      data :: Binary -> self
+        dumpData: data
+        opcode: #text
+        message: message;
+      _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
+    ]
+
+  dumpOp: op :: Symbol data: data :: Object message: message :: Object -> WebSocketResult =>
+    self
+      dumpData: data
+      opcode: op
+      message: message
+
+  dumpData: data :: Object opcode: op :: Symbol message: message :: Object -> WebSocketResult =>
+    data match: [
+      b :: Binary -> ((b asStringUnchecked) =:= "dump")
+        ifTrue: [
+          ^WebSocketResult push: {op, Binary fromIolist: #((self log printString))} state: (self withLog: (self log addFirst: message))
+        ]
+        ifFalse: [
+          WebSocketResult ok: (self withLog: (self log addFirst: message))
+        ];
+      _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
+    ]
+
+  /// Record the connection pid for the test, then push a marker.
+  pushPid -> WebSocketResult =>
+    self pidTable match: [
+      t :: Symbol -> (Ets named: t) at: #pid put: Pid current;
+      _ -> nil
+    ]
+    WebSocketResult push: {#text, "pid"} state: self
+
+  /// Record the reason, then signal when terminateAnswer is #raise
+  /// (a handler bug during teardown).
+  terminate: reason :: Object -> Object =>
+    self table match: [
+      t :: Symbol -> (Ets named: t) at: #terminate put: reason;
+      _ -> nil
+    ]
+    self terminateAnswer =:= #raise ifTrue: [Error signal: "boom"]
+    nil

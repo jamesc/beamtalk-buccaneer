@@ -1,0 +1,465 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `websocket/frame_deserialization_test.exs`: reserved
+/// flags, all three length forms, the mask requirement, short and extra
+/// data, unknown opcodes, and every frame type with its refusal cases.
+/// Client frames are built masked with 0x01020304, as in Bandit's suite.
+TestCase subclass: FrameDeserializationTest
+
+  maskInt -> Integer => 16909060
+
+  maskBytes: n :: Integer -> Binary =>
+    Binary fromBytes: #((n bitShift: -24) bitAnd: 255, (n bitShift: -16) bitAnd: 255, (n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  /// A masked client frame: first byte, length bytes, mask, masked data.
+  masked: payload :: Binary first: first :: Integer lengths: lengths :: Binary -> Binary =>
+    mask := self maskBytes: self maskInt
+    (((Binary fromBytes: #(first)) concat: lengths) concat: mask) concat: (WebSocketOps mask: payload with: mask)
+
+  short: first :: Integer length: n :: Integer payload: data :: Binary -> Binary =>
+    self
+      masked: data
+      first: first
+      lengths: (Binary fromBytes: #(128 + n))
+
+  medium: first :: Integer length: n :: Integer payload: data :: Binary -> Binary =>
+    self
+      masked: data
+      first: first
+      lengths: ((Binary fromBytes: #(254)) concat: (self bytes16: n))
+
+  large: first :: Integer length: n :: Integer payload: data :: Binary -> Binary =>
+    self
+      masked: data
+      first: first
+      lengths: ((Binary fromBytes: #(255)) concat: (self bytes64: n))
+
+  bytes16: n :: Integer -> Binary =>
+    Binary fromBytes: #((n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  bytes64: n :: Integer -> Binary =>
+    Binary fromBytes: #((n bitShift: -56) bitAnd: 255, (n bitShift: -48) bitAnd: 255, (n bitShift: -40) bitAnd: 255, (n bitShift: -32) bitAnd: 255, (n bitShift: -24) bitAnd: 255, (n bitShift: -16) bitAnd: 255, (n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  payload: n :: Integer -> Binary => Binary fromBytes: (("a" repeat: n) toBytes)
+
+  /// A frame the extractor can scan: for the header tests the payload
+  /// is raw (unscanned lengths don't need masking).
+  raw: first :: Integer second: second :: Integer tail: tail :: Binary -> Binary =>
+    (Binary fromBytes: #(first, second)) concat: tail
+
+  testReservedFlag1 =>
+    frame := self
+      raw: 209
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result isError
+    self assert: result error equals: "Received unsupported RSV flags 1"
+
+  testReservedFlag2 =>
+    frame := self
+      raw: 225
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result isError
+    self assert: result error equals: "Received unsupported RSV flags 2"
+
+  testParse2Bytes =>
+    frame := self
+      short: 129
+      length: 2
+      payload: (self payload: 2)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((TextFrame new withFin: true) withData: (self payload: 2))
+
+  testParse10Bytes =>
+    frame := self
+      short: 129
+      length: 10
+      payload: (self payload: 10)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((TextFrame new withFin: true) withData: (self payload: 10))
+
+  testParse125Bytes =>
+    frame := self
+      short: 129
+      length: 125
+      payload: (self payload: 125)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((TextFrame new withFin: true) withData: (self payload: 125))
+
+  testParse126Bytes =>
+    frame := self
+      medium: 129
+      length: 126
+      payload: (self payload: 126)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((TextFrame new withFin: true) withData: (self payload: 126))
+
+  testParse127Bytes =>
+    frame := self
+      medium: 129
+      length: 127
+      payload: (self payload: 127)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((TextFrame new withFin: true) withData: (self payload: 127))
+
+  testParse16000Bytes =>
+    frame := self
+      medium: 129
+      length: 16000
+      payload: (self payload: 16000)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((TextFrame new withFin: true) withData: (self payload: 16000))
+
+  testParse1000000Bytes =>
+    frame := self
+      large: 129
+      length: 1000000
+      payload: (self payload: 1000000)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((TextFrame new withFin: true) withData: (self payload: 1000000))
+
+  testMaxFrameSizeSmall =>
+    frame := self
+      short: 129
+      length: 125
+      payload: (self payload: 125)
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 124
+    self assert: result equals: (Result error: #max_frame_size_exceeded)
+
+  testMaxFrameSizeMedium =>
+    frame := self
+      medium: 129
+      length: 16000
+      payload: (self payload: 16000)
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 15999
+    self assert: result equals: (Result error: #max_frame_size_exceeded)
+
+  testMaxFrameSizeLarge =>
+    frame := self
+      large: 129
+      length: 1000000
+      payload: (self payload: 1000000)
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 999999
+    self assert: result equals: (Result error: #max_frame_size_exceeded)
+
+  testUnmaskedSmall =>
+    frame := self
+      raw: 129
+      second: 5
+      tail: ""
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 0
+    self assert: result equals: (Result error: #client_frame_without_mask)
+
+  testUnmaskedMedium =>
+    frame := self
+      raw: 129
+      second: 126
+      tail: ""
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 0
+    self assert: result equals: (Result error: #client_frame_without_mask)
+
+  testUnmaskedLarge =>
+    frame := self
+      raw: 129
+      second: 127
+      tail: ""
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 0
+    self assert: result equals: (Result error: #client_frame_without_mask)
+
+  testUnmaskedIgnoresSizeLimit =>
+    frame := (self
+      raw: 129
+      second: 126
+      tail: (self bytes16: 500)) concat: (self payload: 500)
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 100
+    self assert: result equals: (Result error: #client_frame_without_mask)
+
+  testMoreBeforeLengthByte =>
+    frame := Binary fromBytes: #(129)
+    result := Frame headerAndPayloadLength: frame maxFrameSize: 0
+    self assert: result equals: #more
+
+  testInsufficientData =>
+    frame := self
+      raw: 129
+      second: 125
+      tail: ((self maskBytes: self maskInt) concat: (Binary fromBytes: #(1, 2, 3)))
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: #deserialization_failed)
+
+  testExtraData =>
+    frame := self
+      short: 129
+      length: 1
+      payload: (Binary fromBytes: #(1, 2, 3))
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: #deserialization_failed)
+
+  testUnknownOpcode =>
+    frame := self
+      short: 143
+      length: 1
+      payload: (Binary fromBytes: #(1))
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "unknown opcode 15")
+
+  testContinuationFin =>
+    frame := self
+      short: 128
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((ContinuationFrame new withFin: true) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  testContinuationNoFin =>
+    frame := self
+      short: 0
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((ContinuationFrame new withFin: false) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  testContinuationCompressed =>
+    frame := self
+      short: 64
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a compressed continuation frame (RFC7692§6.1)")
+
+  testTextNoFinNoCompress =>
+    frame := self
+      short: 1
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (((TextFrame new withFin: false) withCompressed: false) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  testTextFin =>
+    frame := self
+      short: 129
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (((TextFrame new withFin: true) withCompressed: false) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  testTextCompressed =>
+    frame := self
+      short: 65
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (((TextFrame new withFin: false) withCompressed: true) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  testBinaryNoFinNoCompress =>
+    frame := self
+      short: 2
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (((BinaryFrame new withFin: false) withCompressed: false) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  testBinaryFin =>
+    frame := self
+      short: 130
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (((BinaryFrame new withFin: true) withCompressed: false) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  testBinaryCompressed =>
+    frame := self
+      short: 66
+      length: 5
+      payload: (Binary fromBytes: #(1, 2, 3, 4, 5))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (((BinaryFrame new withFin: false) withCompressed: true) withData: (Binary fromBytes: #(1, 2, 3, 4, 5)))
+
+  closeCode: code :: Integer -> Binary =>
+    Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255)
+
+  testCloseCodeAndReason =>
+    frame := self
+      short: 136
+      length: 125
+      payload: ((self closeCode: 1000) concat: (self payload: 123))
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ((ConnectionCloseFrame new withCode: 1000) withReason: (self payload: 123))
+
+  testCloseCodeOnly =>
+    frame := self
+      short: 136
+      length: 2
+      payload: (self closeCode: 1000)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (ConnectionCloseFrame new withCode: 1000)
+
+  testCloseNoPayload =>
+    frame := self
+      raw: 136
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: ConnectionCloseFrame new
+
+  testCloseInvalidPayload =>
+    frame := self
+      short: 136
+      length: 1
+      payload: (Binary fromBytes: #(1))
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Invalid connection close payload (RFC6455§5.5)")
+
+  testCloseOverlyLargePayload =>
+    frame := self
+      medium: 136
+      length: 126
+      payload: (self payload: 126)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Invalid connection close payload (RFC6455§5.5)")
+
+  testCloseFragmented =>
+    frame := self
+      raw: 8
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a fragmented connection close frame (RFC6455§5.5)")
+
+  testCloseCompressed =>
+    frame := self
+      raw: 200
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a compressed connection close frame (RFC7692§6.1)")
+
+  testCloseCompressedNoFin =>
+    frame := self
+      raw: 72
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a compressed connection close frame (RFC7692§6.1)")
+
+  testPingWithData =>
+    frame := self
+      short: 137
+      length: 125
+      payload: (self payload: 125)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (PingFrame new withData: (self payload: 125))
+
+  testPingNoPayload =>
+    frame := self
+      raw: 137
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (PingFrame new withData: (Binary fromBytes: #()))
+
+  testPingOverlyLarge =>
+    frame := self
+      medium: 137
+      length: 126
+      payload: (self payload: 126)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Invalid ping payload (RFC6455§5.5.2)")
+
+  testPingFragmented =>
+    frame := self
+      raw: 9
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a fragmented ping frame (RFC6455§5.5.2)")
+
+  testPingCompressed =>
+    frame := self
+      raw: 201
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a compressed ping frame (RFC7692§6.1)")
+
+  testPingCompressedNoFin =>
+    frame := self
+      raw: 73
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a compressed ping frame (RFC7692§6.1)")
+
+  testPongWithData =>
+    frame := self
+      short: 138
+      length: 125
+      payload: (self payload: 125)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (PongFrame new withData: (self payload: 125))
+
+  testPongNoPayload =>
+    frame := self
+      raw: 138
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result isOk
+    self assert: result value equals: (PongFrame new withData: (Binary fromBytes: #()))
+
+  testPongOverlyLarge =>
+    frame := self
+      medium: 138
+      length: 126
+      payload: (self payload: 126)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Invalid pong payload (RFC6455§5.5.3)")
+
+  testPongFragmented =>
+    frame := self
+      raw: 10
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a fragmented pong frame (RFC6455§5.5.3)")
+
+  testPongCompressed =>
+    frame := self
+      raw: 202
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a compressed pong frame (RFC7692§6.1)")
+
+  testPongCompressedNoFin =>
+    frame := self
+      raw: 74
+      second: 128
+      tail: (self maskBytes: self maskInt)
+    result := Frame deserialize: frame
+    self assert: result equals: (Result error: "Cannot have a compressed pong frame (RFC7692§6.1)")

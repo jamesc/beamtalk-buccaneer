@@ -1,0 +1,944 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `websocket/protocol_test.exs`: frame splitting and
+/// sizes, fragmentation, compression, ping/pong, close handshakes,
+/// error handling, error logging and timeouts. TCP only, matching
+/// Bandit; the close-wait timeout has no engine support (see PLAN).
+TestCase subclass: ProtocolTest
+
+  termTable -> Symbol => #protocolTerms
+
+  setUp =>
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    Ets new: self termTable type: #set
+    self
+
+  tearDown =>
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    self
+
+  serverWith: sock config: cfg upgrade: uopts =>
+    // Fencing: a previous server's terminate reason must not leak
+    // into this one's reads.
+    (Ets named: self termTable) removeKey: #terminate
+    (Ets named: self termTable) removeKey: #pid
+    (Buccaneer start: (#{
+      #port => 0
+    } merge: cfg) handler: [:ex |
+      ex upgradeToWebSocket: sock options: uopts
+    ]) unwrap
+
+  /// Wait out a previous connection's terminate, then clear it, so a
+  /// later server in the same test reads only its own reason.
+  drainTerm =>
+    self awaitTerm
+    (Ets named: self termTable) removeKey: #terminate
+    nil
+
+  echoSock =>
+    ((TestSock new withControlAnswer: #echo) withTable: self termTable)
+
+  termSock => (TestSock new withTable: self termTable)
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  shake: client :: Tuple =>
+    {status, _} := WebSocketClient handshake: client
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+
+  shakeDeflate: client :: Tuple =>
+    {status, _} := WebSocketClient
+      handshake: client
+      path: "/"
+      extensions: #("permessage-deflate")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+
+  textOf: client :: Tuple -> String =>
+    (WebSocketClient recvText: client) asStringUnchecked
+
+  closeBytes: code :: Integer =>
+    Binary fromBytes: #((code bitShift: -8) bitAnd: 255, code bitAnd: 255)
+
+  bytesOf: s :: String -> Binary => Binary fromBytes: (s toBytes)
+
+  awaitTerm =>
+    40
+      timesRepeat: [
+        term := (Ets named: self termTable) at: #terminate ifAbsent: [nil]
+        term notNil ifTrue: [^term]
+        Timer sleep: 50
+      ]
+    nil
+
+  awaitClosed: client =>
+    6
+      timesRepeat: [
+        (WebSocketClient closedForReading: client) ifTrue: [^true]
+        Timer sleep: 50
+      ]
+    false
+
+  isAlive: pid :: Object =>
+    pid match: [
+      p :: Pid -> p isAlive;
+      _ -> false
+    ]
+
+  // ===== packet splitting =====
+  testSplitBytes =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    frame := (Binary fromBytes: #(129, 130, 0, 0, 0, 0)) concat: "OK"
+    WebSocketClient sendEachByte: client data: frame
+    self assert: (self textOf: client) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testSplitPacket =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    first := Binary fromIolist: #((Binary fromBytes: #(129, 130, 0, 0, 0, 0)), "OK", (Binary fromBytes: #(129)))
+    (WebSocketClient send: client bytes: first) unwrap
+    self assert: (self textOf: client) equals: "OK"
+    rest := Binary fromIolist: #((Binary fromBytes: #(130, 0, 0, 0, 0)), "OK")
+    (WebSocketClient send: client bytes: rest) unwrap
+    self assert: (self textOf: client) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testMergedPackets =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    both := Binary fromIolist: #((Binary fromBytes: #(129, 130, 0, 0, 0, 0)), "OK", (Binary fromBytes: #(129, 130, 0, 0, 0, 0)), "OK")
+    (WebSocketClient send: client bytes: both) unwrap
+    self assert: (self textOf: client) equals: "OK"
+    self assert: (self textOf: client) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  // ===== frame sizes =====
+  testSmallFrames =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "OK"
+    self assert: (self textOf: client) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testMidFrames =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    payload := self bytesOf: ("0123456789" repeat: 1000)
+    WebSocketClient sendText: client data: payload
+    self assert: (WebSocketClient recvText: client) equals: payload
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testLargeFrames =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    payload := self bytesOf: ("0123456789" repeat: 100000)
+    WebSocketClient sendText: client data: payload
+    self assert: (WebSocketClient recvText: client) equals: payload
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testOversizeFrames =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{#websocket => #{#maxFrameSize => 2000000}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: (self bytesOf: ("0123456789" repeat: 200001))
+    Timer sleep: 500
+    self assert: self awaitTerm equals: {#error, {#deserializing, #max_frame_size_exceeded}}
+    self assert: ((LogCapture await: "max_frame_size_exceeded" in: log) includesSubstring: "max_frame_size_exceeded")
+    self assert: (srv stop: 5000) isOk
+
+  // ===== fragmentation =====
+  testFragmentedText =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    payload := self bytesOf: ("0123456789" repeat: 1000)
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 1
+      data: payload
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: false
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: true
+    self assert: (WebSocketClient recvText: client) equals: ((payload concat: payload) concat: payload)
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testFragmentedBinary =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    payload := self bytesOf: ("0123456789" repeat: 1000)
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 2
+      data: payload
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: false
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: true
+    self assert: (WebSocketClient recvBinary: client) equals: ((payload concat: payload) concat: payload)
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testZeroByteFinContinuation =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    payload := self bytesOf: ("0123456789" repeat: 1000)
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 2
+      data: payload
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: false
+    WebSocketClient
+      sendContinuation: client
+      data: (Binary fromBytes: #())
+      fin: true
+    self assert: (WebSocketClient recvBinary: client) equals: (payload concat: payload)
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testZeroByteNonFinContinuation =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 2
+      data: "0123456789"
+    WebSocketClient
+      sendContinuation: client
+      data: (Binary fromBytes: #())
+      fin: false
+    self assert: self awaitTerm equals: {#error, "Received zero byte non-fin continuation frame"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1008)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "zero byte" in: log) includesSubstring: "zero byte")
+    self assert: (srv stop: 5000) isOk
+
+  testMaxFragmentedContinuation =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{#websocket => #{#maxFragmentedMessageSize => 2000000}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    payload := self bytesOf: ("0123456789" repeat: 99999)
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 2
+      data: payload
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: false
+    Timer sleep: 50
+    self assert: ((Ets named: self termTable) at: #terminate ifAbsent: [
+      nil
+    ]) equals: nil
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: false
+    self assert: self awaitTerm equals: {#error, "Received oversize fragmented message"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1009)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "oversize" in: log) includesSubstring: "oversize")
+    self assert: (srv stop: 5000) isOk
+
+  testMaxFragmentedFin =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{#websocket => #{#maxFragmentedMessageSize => 2000000}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    payload := self bytesOf: ("0123456789" repeat: 99999)
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 2
+      data: payload
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: false
+    Timer sleep: 50
+    self assert: ((Ets named: self termTable) at: #terminate ifAbsent: [
+      nil
+    ]) equals: nil
+    WebSocketClient
+      sendContinuation: client
+      data: payload
+      fin: true
+    self assert: self awaitTerm equals: {#error, "Received oversize fragmented message"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1009)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "oversize" in: log) includesSubstring: "oversize")
+    self assert: (srv stop: 5000) isOk
+
+  // ===== compression =====
+  testNegotiatesCompression =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/"
+      extensions: #("permessage-deflate")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assert: (headers includes: "sec-websocket-extensions: permessage-deflate")
+    self assert: (headers includes: "cache-control: max-age=0, private, must-revalidate")
+    WebSocketClient sendDeflatedText: client data: "OK"
+    self assert: ((WebSocketClient inflateRaw: (WebSocketClient recvDeflatedText: client)) asStringUnchecked) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoCompressionByDefault =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => false}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/"
+      extensions: #("permessage-deflate")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assert: (headers includes: "cache-control: max-age=0, private, must-revalidate")
+    self
+      deny: (headers anySatisfy: [:h :: String |
+        h includesSubstring: "sec-websocket-extensions"
+      ])
+    WebSocketClient sendText: client data: "OK"
+    self assert: (self textOf: client) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testDeflateTextRoundTrip =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    WebSocketClient sendDeflatedText: client data: "OK"
+    self assert: ((WebSocketClient inflateRaw: (WebSocketClient recvDeflatedText: client)) asStringUnchecked) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testDeflateBinaryRoundTrip =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    WebSocketClient sendDeflatedBinary: client data: "OK"
+    self assert: ((WebSocketClient inflateRaw: (WebSocketClient recvDeflatedBinary: client)) asStringUnchecked) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testDeflateFragmentedText =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    deflated := WebSocketClient deflateRaw: "OK"
+    size := deflated size
+    WebSocketClient
+      sendFrame: client
+      flags: 4
+      opcode: 1
+      data: (deflated part: 0 size: 1)
+    WebSocketClient
+      sendContinuation: client
+      data: (deflated part: 1 size: 1)
+      fin: false
+    WebSocketClient
+      sendContinuation: client
+      data: (deflated part: 2 size: size - 2)
+      fin: true
+    self assert: ((WebSocketClient inflateRaw: (WebSocketClient recvDeflatedText: client)) asStringUnchecked) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testDeflateFragmentedBinary =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    deflated := WebSocketClient deflateRaw: "OK"
+    size := deflated size
+    WebSocketClient
+      sendFrame: client
+      flags: 4
+      opcode: 2
+      data: (deflated part: 0 size: 1)
+    WebSocketClient
+      sendContinuation: client
+      data: (deflated part: 1 size: 1)
+      fin: false
+    WebSocketClient
+      sendContinuation: client
+      data: (deflated part: 2 size: size - 2)
+      fin: true
+    self assert: ((WebSocketClient inflateRaw: (WebSocketClient recvDeflatedBinary: client)) asStringUnchecked) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoCompressPingPong =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    WebSocketClient sendPing: client data: "OK"
+    self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
+    self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testInflateTooMuch =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    WebSocketClient sendDeflatedText: client data: (self bytesOf: ("a" repeat: 200000))
+    self assert: self awaitTerm equals: {#error, "Received compressed frame inflating too much"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1009)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "inflating too much" in: log) includesSubstring: "inflating too much")
+    self assert: (srv stop: 5000) isOk
+
+  testMaxInflateRatio =>
+    // A payload inflating ~10:1, large enough that inflation spans
+    // several safeInflate rounds but within the default ratio of 25
+    // (Bandit protocol_test, "respects max_inflate_ratio").
+    block := Binary
+      fromIolist: ((1 to: 6000)
+        collect: [:i |
+          Binary fromBytes: #(((i bitShift: -24) bitAnd: 255), ((i bitShift: -16) bitAnd: 255), ((i bitShift: -8) bitAnd: 255), (i bitAnd: 255))
+        ])
+    payload := Binary fromIolist: #(block, block, block, block, block, block)
+    deflated := WebSocketClient deflateRaw: payload
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    WebSocketClient
+      sendFrame: client
+      flags: 12
+      opcode: 2
+      data: deflated
+    self assert: (WebSocketClient inflateRaw: (WebSocketClient recvDeflatedBinary: client)) equals: payload
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+    self drainTerm
+    log := LogCapture attach: #protocolLog
+    srv2 := self
+      serverWith: self termSock
+      config: #{#websocket => #{#compress => true, #maxInflateRatio => 5}}
+      upgrade: #{}
+    client2 := WebSocketClient connect: (self portOf: srv2)
+    self shakeDeflate: client2
+    WebSocketClient
+      sendFrame: client2
+      flags: 12
+      opcode: 2
+      data: deflated
+    self assert: self awaitTerm equals: {#error, "Received compressed frame inflating too much"}
+    self assert: (WebSocketClient recvClose: client2) equals: (self closeBytes: 1009)
+    self assert: (self awaitClosed: client2) equals: true
+    self assert: ((LogCapture await: "inflating too much" in: log) includesSubstring: "inflating too much")
+    self assert: (srv2 stop: 5000) isOk
+
+  testDeflateOptions =>
+    srv := self
+      serverWith: self echoSock
+      config: #{
+        #websocket => #{#compress => true, #deflateOptions => #{#level => 0}}
+      }
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    payload := self bytesOf: ("a" repeat: 1000)
+    WebSocketClient sendText: client data: payload
+    deflated := WebSocketClient recvDeflatedText: client
+    self deny: (deflated size) <= 1000
+    self assert: ((WebSocketClient inflateRaw: deflated) asStringUnchecked) equals: ("a" repeat: 1000)
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  // ===== ping and pong =====
+  testPingPong =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendPing: client data: "OK"
+    self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
+    self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "OK"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testPingInterleaved =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 1
+      data: "AB"
+    WebSocketClient sendPing: client data: "OK"
+    self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
+    self assert: ((WebSocketClient recvPing: client) asStringUnchecked) equals: "OK"
+    WebSocketClient
+      sendContinuation: client
+      data: "CD"
+      fin: true
+    self assert: (self textOf: client) equals: "ABCD"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testPongInterleaved =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 1
+      data: "AB"
+    WebSocketClient sendPong: client data: "OK"
+    self assert: ((WebSocketClient recvPong: client) asStringUnchecked) equals: "OK"
+    WebSocketClient
+      sendContinuation: client
+      data: "CD"
+      fin: true
+    self assert: (self textOf: client) equals: "ABCD"
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  // ===== close handshakes =====
+  testServerCloseHandshake =>
+    sock := ((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withStopOn: "normal") withTable: self termTable)
+    srv := self
+      serverWith: sock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    pid := (Ets named: self termTable) at: #pid ifAbsent: [nil]
+    WebSocketClient sendText: client data: "normal"
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    Timer sleep: 10
+    self assert: (self isAlive: pid) equals: true
+    WebSocketClient sendClose: client code: 1000
+    Timer sleep: 10
+    self deny: (self isAlive: pid)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: (srv stop: 5000) isOk
+
+  testDirtyClientClose =>
+    sock := (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
+    srv := self
+      serverWith: sock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    pid := (Ets named: self termTable) at: #pid ifAbsent: [nil]
+    WebSocketClient close: client
+    Timer sleep: 500
+    self deny: (self isAlive: pid)
+    self assert: (srv stop: 5000) isOk
+
+  testCleanClientClose =>
+    sock := (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
+    srv := self
+      serverWith: sock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    pid := (Ets named: self termTable) at: #pid ifAbsent: [nil]
+    WebSocketClient sendClose: client code: 1000
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    self assert: (self awaitClosed: client) equals: true
+    Timer sleep: 500
+    self deny: (self isAlive: pid)
+    self assert: (srv stop: 5000) isOk
+
+  testCloseInterleaved =>
+    sock := (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
+    srv := self
+      serverWith: sock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    pid := (Ets named: self termTable) at: #pid ifAbsent: [nil]
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 1
+      data: "whoami"
+    WebSocketClient sendClose: client code: 1000
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    self assert: (self awaitClosed: client) equals: true
+    Timer sleep: 500
+    self deny: (self isAlive: pid)
+    self assert: (srv stop: 5000) isOk
+
+  // ===== error handling =====
+  testUnexpectedContinuation =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendContinuation: client
+      data: (Binary fromBytes: #(1, 2, 3))
+      fin: true
+    self assert: self awaitTerm equals: {#error, "Received unexpected continuation frame (RFC6455§5.4)"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "unexpected continuation" in: log) includesSubstring: "unexpected continuation")
+    self assert: (srv stop: 5000) isOk
+
+  testTextDuringContinuation =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 1
+      data: (Binary fromBytes: #(1, 2, 3))
+    WebSocketClient sendText: client data: (Binary fromBytes: #(1, 2, 3))
+    self assert: self awaitTerm equals: {#error, "Received unexpected text frame (RFC6455§5.4)"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "unexpected text" in: log) includesSubstring: "unexpected text")
+    self assert: (srv stop: 5000) isOk
+
+  testBinaryDuringContinuation =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 2
+      data: (Binary fromBytes: #(1, 2, 3))
+    WebSocketClient sendBinary: client data: (Binary fromBytes: #(1, 2, 3))
+    self assert: self awaitTerm equals: {#error, "Received unexpected binary frame (RFC6455§5.4)"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "unexpected binary" in: log) includesSubstring: "unexpected binary")
+    self assert: (srv stop: 5000) isOk
+
+  testCompressedWithoutDeflate =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 12
+      opcode: 1
+      data: (WebSocketClient deflateRaw: "OK")
+    self assert: self awaitTerm equals: {#error, "Received unexpected compressed frame (RFC6455§5.2)"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "unexpected compressed" in: log) includesSubstring: "unexpected compressed")
+    self assert: (srv stop: 5000) isOk
+
+  testMalformedCompressed =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{#websocket => #{#compress => true}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    WebSocketClient
+      sendFrame: client
+      flags: 12
+      opcode: 1
+      data: (Binary fromBytes: #(1, 2, 3))
+    self assert: self awaitTerm equals: {#error, "Inflation error"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1007)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "Inflation error" in: log) includesSubstring: "Inflation error")
+    self assert: (srv stop: 5000) isOk
+
+  testNonUtf8Text =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: (Binary fromBytes: #(226, 130, 40))
+    self assert: self awaitTerm equals: {#error, "Received non UTF-8 text frame (RFC6455§8.1)"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1007)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "non UTF-8" in: log) includesSubstring: "non UTF-8")
+    self assert: (srv stop: 5000) isOk
+
+  testFragmentedNonUtf8Text =>
+    log := LogCapture attach: #protocolLog
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 0
+      opcode: 1
+      data: (Binary fromBytes: #(226))
+    WebSocketClient
+      sendContinuation: client
+      data: (Binary fromBytes: #(130, 40))
+      fin: true
+    self assert: self awaitTerm equals: {#error, "Received non UTF-8 text frame (RFC6455§8.1)"}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1007)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "non UTF-8" in: log) includesSubstring: "non UTF-8")
+    self assert: (srv stop: 5000) isOk
+
+  testNonUtf8Allowed =>
+    srv := self
+      serverWith: self echoSock
+      config: #{#websocket => #{#validateTextFrames => false}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: (Binary fromBytes: #(226, 130, 40))
+    self assert: (WebSocketClient recvText: client) equals: (Binary fromBytes: #(226, 130, 40))
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  // ===== protocol error logging =====
+  testDeserializationLogged =>
+    log := LogCapture attach: #protocolLog
+    sock := (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
+    srv := self
+      serverWith: sock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    pid := (Ets named: self termTable) at: #pid ifAbsent: [nil]
+    WebSocketClient
+      sendFrame: client
+      flags: 10
+      opcode: 1
+      data: "OK"
+    self assert: self awaitTerm equals: {#error, {#deserializing, "Received unsupported RSV flags 2"}}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: ((LogCapture await: "RSV flags 2" in: log) includesSubstring: "RSV flags 2")
+    Timer sleep: 100
+    self deny: (self isAlive: pid)
+    self assert: (srv stop: 5000) isOk
+
+  testDeserializationNotLogged =>
+    log := LogCapture attach: #protocolLog
+    sock := (((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable)
+    srv := self
+      serverWith: sock
+      config: #{#websocket => #{#logProtocolErrors => false}}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    WebSocketClient
+      sendFrame: client
+      flags: 10
+      opcode: 1
+      data: "OK"
+    self assert: self awaitTerm equals: {#error, {#deserializing, "Received unsupported RSV flags 2"}}
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    Timer sleep: 500
+    content := File readAll: log
+    self
+      deny: ((content isError ifTrue: [
+        ""
+      ] ifFalse: [content value]) includesSubstring: "RSV")
+    self assert: (srv stop: 5000) isOk
+
+  // ===== timeouts =====
+  testTimeoutIdle =>
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{#timeout => 100}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    Timer sleep: 300
+    self assert: self awaitTerm equals: #timeout
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: (srv stop: 5000) isOk
+
+  testTimeoutBetweenFrames =>
+    srv := self
+      serverWith: self echoSock
+      config: #{}
+      upgrade: #{#timeout => 100}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "OK"
+    self assert: (self textOf: client) equals: "OK"
+    Timer sleep: 300
+    self assert: self awaitTerm equals: #timeout
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1002)
+    self assert: (self awaitClosed: client) equals: true
+    self assert: (srv stop: 5000) isOk
+
+  pidOfTest => (Ets named: self termTable) at: #pid ifAbsent: [nil]
+
+  testCloseReplyTimeout =>
+    sock := ((((TestSock new withInAnswer: #pid) withPidTable: self termTable) withTable: self termTable) withStopOn: "normal")
+    srv := self
+      serverWith: sock
+      config: #{}
+      upgrade: #{#timeout => 100}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "whoami"
+    self assert: (self textOf: client) equals: "pid"
+    pid := self pidOfTest
+    WebSocketClient sendText: client data: "normal"
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    Timer sleep: 10
+    self assert: (self isAlive: pid) equals: true
+    Timer sleep: 250
+    self deny: (self isAlive: pid)
+    self assert: (WebSocketClient closedForReading: client) equals: true
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk

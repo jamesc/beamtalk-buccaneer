@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A WebSocket binary frame (Bandit opcode 0x2).
+sealed typed Value subclass: BinaryFrame
+  field: fin :: Boolean = true
+  field: compressed :: Boolean = false
+  field: data :: Binary = ""

@@ -497,6 +497,40 @@ non-blocking job, promoted to blocking once green. Blocked by Phases 1-2.
 **Rejected:** an Actor per connection for the handler. It doubles the
 process count and adds a hop per frame.
 
+**Status: done (BT-4084).** 229 ported `websocket/*` tests green
+(frame deserialization 49, serialization 20, handshake 14, protocol
+43, sock 93 including a one-process-per-connection test, upgrade 3,
+upgrade validation 7), 11 `http1` upgrade tests
+(`test/http1/http1upgrade_test.bt`: five invalid-upgrade 400s, a
+valid-upgrade 101, disabled-websocket and handler-error 500s, double
+upgrade and send-after-upgrade 500s, bad deflate level 500),
+Autobahn|Testsuite env-gated (`AUTOBAHN=1`) with a non-blocking CI
+job, and 16 beamtalk-http tests (12 adapter unit, 4 TCP integration:
+echo text/binary, actor pattern, close reason).
+
+Deviations from Bandit, all with covering tests:
+- Disabled websocket 500s loudly. Bandit's test plug rescued the
+  synchronous raise into a 200; ours raises in the pipeline after the
+  handler returns, so it takes the standard 500 path instead.
+- No unsupported-adapter kind exists in this engine; a failing
+  handler takes the standard loud-500 path (covered).
+- `#not_owner` travels as the `Error` reason (the stdlib
+  `ExceptionKind` union is closed, and `should:raise:` matches kinds):
+  `Error signal: msg reason: #not_owner`, asserted through `e reason`.
+- `WebSocketHandle` sends queue through the connection process under
+  a reserved `#wsSend` tag, which the adapter answers as pushes; a
+  handler must not send its own messages under that tag (documented in
+  beamtalk-http's README).
+- A raising `terminate:` is logged and the teardown continues (close
+  frame, deflate release, span stop). Bandit crashes here instead;
+  losing the close frame over a handler bug is worse.
+- A pushed frame of unknown type signals and the engine answers 1011
+  (Bandit raises FunctionClauseError with the same observable
+  outcome); the old code sent a pong instead.
+- A raising `init` closes the TCP connection with no close frame and
+  no terminate, as in Bandit: the crash lands before the protocol
+  state commits, so there is no connection to run the error path on.
+
 ### Phase 5: HPACK package (M)
 
 **Scope:** a new repository, **`jamesc/beamtalk-hpack`** (package

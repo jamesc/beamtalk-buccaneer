@@ -32,3 +32,11 @@ sealed typed Value subclass: ExchangeState
   field: reqBodyEndTime :: Integer | Nil = nil
   field: respStartTime :: Integer | Nil = nil
   field: respEndTime :: Integer | Nil = nil
+  /// The WebSocket upgrade request (Phase 4): the WebSock handler and
+  /// its initial state, plus the per-upgrade options Dictionary.
+  field: websock :: Object = nil
+  field: websockState :: Object = nil
+  field: websocketOptions :: Dictionary = Dictionary new
+  /// Response headers the handler set before answering (putRespHeader:),
+  /// sent with the next response head — the 101 on an upgrade.
+  field: respHeaders :: HttpHeaders = #()

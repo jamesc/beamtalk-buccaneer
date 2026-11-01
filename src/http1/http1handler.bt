@@ -38,10 +38,12 @@ sealed typed Value subclass: HTTP1Handler
     limit =:= 0 ifTrue: [^false]
     self requestsProcessed + 1 >= limit
 
-  /// After an answered request: close, or clear, collect and continue
-  /// (recursing on pipelined bytes, as Bandit's tail call does).
-  maybeKeepalive: transport :: HTTPTransport socket: sock :: Socket -> HandlerResult =>
+  /// After an answered request: keep the WebSocket protocol reading,
+  /// close, or clear, collect and continue (recursing on pipelined
+  /// bytes, as Bandit's tail call does).
+  maybeKeepalive: transport :: Object socket: sock :: Socket -> HandlerResult =>
     transport match: [
+      p :: WebSocketProtocol -> p rearm: sock;
       s :: HTTP1Socket -> self maybeKeepaliveSocket: s socket: sock;
       _ -> HandlerResult close: self
     ]

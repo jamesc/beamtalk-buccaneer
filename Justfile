@@ -25,6 +25,12 @@ spikes:
 spike-bench *ARGS:
     bench/run.sh {{ARGS}}
 
+# Autobahn Testsuite fuzzingclient (needs docker): the full suite with
+# the AUTOBAHN=1 gate open (scoped runs cannot see test fixtures).
+# Non-blocking in CI until green; AUTOBAHN_CASES limits cases.
+autobahn:
+    AUTOBAHN=1 beamtalk test --warnings-as-errors
+
 # Check formatting
 fmt:
     beamtalk fmt-check

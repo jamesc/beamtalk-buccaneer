@@ -1,0 +1,107 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `websocket/upgrade_test.exs`: the upgrade honors
+/// options, plug headers ride along on the 101, and the upgrade emits
+/// the HTTP request stop telemetry.
+TestCase subclass: UpgradeTest
+
+  telePlug -> Symbol => #upgradeTelemetry
+
+  teleTable -> Symbol => #upgradeTelemetryEvents
+
+  reqTable -> Symbol => #upgradeRequestEvents
+
+  termTable -> Symbol => #upgradeTerms
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  shake: client :: Tuple =>
+    {status, _} := WebSocketClient handshake: client
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+
+  awaitTerm =>
+    40
+      timesRepeat: [
+        term := (Ets named: self termTable) at: #terminate ifAbsent: [nil]
+        term notNil ifTrue: [^term]
+        Timer sleep: 50
+      ]
+    nil
+
+  teleBegin =>
+    (Ets exists: self teleTable) ifTrue: [(Ets named: self teleTable) delete]
+    TelemetryCollector detach: self teleTable
+    Ets new: self teleTable type: #set
+    TelemetryCollector attachWebsocket: self telePlug table: self teleTable
+    (Ets exists: self reqTable) ifTrue: [(Ets named: self reqTable) delete]
+    TelemetryCollector detach: self reqTable
+    Ets new: self reqTable type: #set
+    TelemetryCollector attachAll: self telePlug table: self reqTable
+    nil
+
+  teleEnd =>
+    TelemetryCollector detach: self teleTable
+    (Ets named: self teleTable) delete
+    TelemetryCollector detach: self reqTable
+    (Ets named: self reqTable) delete
+    nil
+
+  testUpgradeRespectsTimeoutOption =>
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    Ets new: self termTable type: #set
+    sock := (TestSock new withTable: self termTable)
+    srv := (Buccaneer start: #{
+      #port => 0
+    } handler: [:ex |
+      ex upgradeToWebSocket: sock options: #{#timeout => 250}
+    ]) unwrap
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient sendText: client data: "OK"
+    self assert: ((WebSocketClient recvText: client) asStringUnchecked) equals: "OK"
+    self assert: self awaitTerm equals: #timeout
+    (Ets named: self termTable) delete
+    self assert: (srv stop: 5000) isOk
+
+  testUpgradeIncludesPlugHeaders =>
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    Ets new: self termTable type: #set
+    sock := (TestSock new withTable: self termTable)
+    srv := (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        headed := ex putRespHeader: "x-plug-set-header" value: "itsaheader"
+        headed upgradeToWebSocket: sock options: #{}
+      ]) unwrap
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient handshake: client
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assert: (headers includes: "cache-control: max-age=0, private, must-revalidate")
+    self assert: (headers includes: "x-plug-set-header: itsaheader")
+    self assert: (srv stop: 5000) isOk
+
+  testUpgradeEmitsHttpTelemetry =>
+    self teleBegin
+    (Ets exists: self termTable) ifTrue: [(Ets named: self termTable) delete]
+    Ets new: self termTable type: #set
+    sock := (TestSock new withTable: self termTable)
+    srv := (Buccaneer start: #{
+      #port => 0,
+      #displayHandler => self telePlug
+    } handler: [:ex | ex upgradeToWebSocket: sock options: #{}]) unwrap
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    stop := TelemetryCollector
+      await: #request
+      named: #stop
+      in: self reqTable
+    self deny: stop =:= nil
+    measurements := stop at: 2
+    metadata := stop at: 3
+    self assert: (measurements at: #monotonic_time) notNil
+    self deny: (measurements at: #duration) < 0
+    self assert: (metadata at: #plug) equals: self telePlug
+    self assert: ((metadata at: #conn) status) equals: 101
+    self assert: (srv stop: 5000) isOk
+    self teleEnd

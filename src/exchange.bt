@@ -8,6 +8,8 @@
 /// the owner first. Phase 1 covers the request, readBody, readAll: and
 /// sendResp:; chunked responses, inform:, sendFile: and the 100-continue
 /// come in Phase 3, upgrade in Phase 4.
+type WebSocketUpgradeOptions = Dictionary(Symbol, Object)
+
 sealed typed Value subclass: Exchange
   // Always set by open:; nilable only because a Value field needs a default.
   field: ref :: Reference | Nil = nil
@@ -277,10 +279,13 @@ sealed typed Value subclass: Exchange
 
   /// A 1xx response (Bandit's inform/3). Refused on HTTP/1.0, and a
   /// Result error (never a raise) once the final response went out: a 1xx
-  /// must precede it.
+  /// must precede it. An in-progress upgrade (#upgraded) is not final:
+  /// the 101 itself goes out through here after upgradeToWebSocket:.
   inform: status :: Integer headers: hs :: HttpHeaders -> Result(Nil, Object) =>
     st := self load
-    st respState =:= #unset ifFalse: [^Result error: #already_sent]
+    (st respState =:= #unset or: [
+      st respState =:= #upgraded
+    ]) ifFalse: [^Result error: #already_sent]
     st transport version =:= #http10 ifTrue: [^Result error: #not_supported]
     headed := self
       sendHeadersOn: st
@@ -289,6 +294,42 @@ sealed typed Value subclass: Exchange
       disposition: #inform
     self store: headed
     Result ok: nil
+
+  /// Ask to switch this request to WebSocket (Plug.Conn.upgrade_adapter
+  /// with :websocket). Records the WebSock handler and options; the
+  /// pipeline validates the request, sends 101 and hands the connection
+  /// over after the handler returns, as Plug's model. Answers the
+  /// exchange. Raises AlreadySent unless nothing was sent yet.
+  ///
+  /// ## Arguments
+  /// - `websock` (Object) — the `WebSock` handler: its `init`,
+  ///   `handleIn:`, `handleInfo:`, optional `handleControl:` and
+  ///   `terminate:` run in the upgraded connection's process.
+  /// - `opts` (WebSocketUpgradeOptions) — per-upgrade options.
+  ///
+  /// ## Options
+  /// - `#timeout` (Integer | Nil, default `nil`) — read timeout in
+  ///   milliseconds, re-armed while the connection is open; past it
+  ///   the connection closes with 1002 (or drops a closing
+  ///   connection). `nil` waits forever.
+  upgradeToWebSocket: websock :: Object options: opts :: WebSocketUpgradeOptions -> Exchange =>
+    st := self load
+    st respState =:= #unset
+      ifFalse: [
+        AlreadySent signal: "already_sent: a response was already sent for this request"
+      ]
+    self store: ((((st withWebsock: websock) withWebsockState: websock) withWebsocketOptions: opts) withRespState: #upgraded)
+
+  /// Queue a response header (Plug.Conn.put_resp_header), sent with the
+  /// next response head — the 101 on an upgrade. Answers the exchange.
+  /// Raises AlreadySent once the response went out.
+  putRespHeader: name :: String value: value :: String -> Exchange =>
+    st := self load
+    (st respState =:= #sent or: [st respState =:= #chunked])
+      ifTrue: [
+        AlreadySent signal: "already_sent: a response was already sent for this request"
+      ]
+    self store: (st withRespHeaders: (st respHeaders add: {name, value}))
 
   /// Per RFC9110§10.1.1, a client that asked for 100 Continue and never
   /// got one may never send the body: close rather than drain it.

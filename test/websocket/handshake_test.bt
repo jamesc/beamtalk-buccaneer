@@ -1,0 +1,232 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `websocket/http1_handshake_test.exs`: the 101 and
+/// its headers, and permessage-deflate negotiation. The handler
+/// upgrades /compress with compression enabled and every other path
+/// without, mirroring the test plug.
+TestCase subclass: HandshakeTest
+
+  server: compress :: Boolean =>
+    opts := compress ifTrue: [
+      #{#port => 0, #websocket => #{#compress => true}}
+    ] ifFalse: [#{#port => 0}]
+    (Buccaneer
+      start: opts
+      handler: [:ex |
+        upgradeOpts := (ex path =:= "/compress") ifTrue: [
+          #{}
+        ] ifFalse: [#{#compress => false}]
+        ex upgradeToWebSocket: TestSock new options: upgradeOpts
+      ]) unwrap
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  headersBlob: lines :: List -> String =>
+    lines inject: "" into: [:acc :each | acc ++ each ++ "\n"]
+
+  assertHandshake: lines :: List =>
+    blob := self headersBlob: lines
+    self assert: (blob includesSubstring: "upgrade: websocket")
+    self assert: (blob includesSubstring: "connection: Upgrade")
+    self assert: (blob includesSubstring: "sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+
+  testAcceptsWellFormed =>
+    srv := self server: false
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient handshake: client
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoContentEncoding =>
+    srv := self server: false
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/"
+      extensions: #()
+      headers: #("Accept-Encoding: deflate")
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    blob := self headersBlob: headers
+    self deny: (blob includesSubstring: "content-encoding")
+    self deny: (blob includesSubstring: "vary")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNegotiatesDeflate =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient handshakeDeflate: client
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self assert: (blob includesSubstring: "sec-websocket-extensions: permessage-deflate")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNegotiatesEmptyClientBits =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;client_max_window_bits")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self assert: (blob includesSubstring: "sec-websocket-extensions: permessage-deflate;client_max_window_bits=15")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNegotiatesNumericClientBits =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;client_max_window_bits=12")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self assert: (blob includesSubstring: "sec-websocket-extensions: permessage-deflate;client_max_window_bits=12")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNegotiatesNumericServerBits =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;server_max_window_bits=12")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self assert: (blob includesSubstring: "sec-websocket-extensions: permessage-deflate;server_max_window_bits=12")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNegotiatesServerNoTakeover =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;server_no_context_takeover")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self assert: (blob includesSubstring: "sec-websocket-extensions: permessage-deflate;server_no_context_takeover")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNegotiatesClientNoTakeover =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;client_no_context_takeover")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self assert: (blob includesSubstring: "sec-websocket-extensions: permessage-deflate;client_no_context_takeover")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testFallsBackToLaterOffer =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;server_max_window_bits=99,permessage-deflate;client_max_window_bits")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self assert: (blob includesSubstring: "sec-websocket-extensions: permessage-deflate;client_max_window_bits=15")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoDeflateWhenUnconfigured =>
+    srv := self server: false
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/"
+      extensions: #("permessage-deflate;client_max_window_bits")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self deny: (blob includesSubstring: "sec-websocket-extensions")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoUnknownExtensions =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("not-a-real-extension")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self deny: (blob includesSubstring: "sec-websocket-extensions")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoInvalidOptions =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate; this_is_not_an_option")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self deny: (blob includesSubstring: "sec-websocket-extensions")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoRepeatOptions =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;client_max_window_bits;client_max_window_bits")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self deny: (blob includesSubstring: "sec-websocket-extensions")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+
+  testNoInvalidValues =>
+    srv := self server: true
+    client := WebSocketClient connect: (self portOf: srv)
+    {status, headers} := WebSocketClient
+      handshake: client
+      path: "/compress"
+      extensions: #("permessage-deflate;server_max_window_bits")
+      headers: #()
+    self assert: status equals: "HTTP/1.1 101 Switching Protocols"
+    self assertHandshake: headers
+    blob := self headersBlob: headers
+    self deny: (blob includesSubstring: "sec-websocket-extensions")
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk

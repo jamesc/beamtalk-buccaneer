@@ -1,0 +1,116 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// The configurable WebSock for the websocket tests: each callback
+/// answers per its kind field, so one fixture covers Bandit's dozens
+/// of inline test websocks.
+///
+/// Kinds: #ok (keep state), #ignore (keep state, for callbacks the
+/// test leaves unimplemented), #echo (push the incoming frame back),
+/// #record (log the message; a "dump" text frame pushes the log),
+/// #pid (record the connection pid and push "pid"), #push (push
+/// frames:), #reply (reply frames:), #stop / #stopError (end with
+/// code:/detail:/reason:). terminate: records its reason in the Ets
+/// table `table` when set.
+sealed typed Value subclass: TestSock
+  field: initAnswer :: Symbol = #ok
+  field: initFrames :: List = #()
+  field: initCode :: Integer = 1000
+  field: initDetail :: String = ""
+  field: initReason :: Object = #abnormal
+  field: inAnswer :: Symbol = #echo
+  field: inFrames :: List = #()
+  field: inCode :: Integer = 1000
+  field: inDetail :: String = ""
+  field: inReason :: Object = #abnormal
+  field: controlAnswer :: Symbol = #ignore
+  field: controlFrames :: List = #()
+  field: controlCode :: Integer = 1000
+  field: controlDetail :: String = ""
+  field: controlReason :: Object = #abnormal
+  field: infoAnswer :: Symbol = #ok
+  field: infoFrames :: List = #()
+  field: infoCode :: Integer = 1000
+  field: infoDetail :: String = ""
+  field: infoReason :: Object = #abnormal
+  field: log :: List = #()
+  field: table :: Symbol | Nil = nil
+  field: pidTable :: Symbol | Nil = nil
+
+  /// One scripted answer. #stopError carries reason: and code:.
+  answer: kind :: Symbol frames: frames :: List code: code :: Integer detail: detail :: String reason: reason :: Object -> WebSocketResult =>
+    kind match: [
+      #ok -> WebSocketResult ok: self;
+      #ignore -> WebSocketResult ok: self;
+      #push -> WebSocketResult push: frames state: self;
+      #reply -> WebSocketResult reply: #ok frames: frames state: self;
+      #stop -> WebSocketResult stop: self code: code detail: detail;
+      _ -> WebSocketResult stopError: reason state: self code: code
+    ]
+
+  init -> WebSocketResult =>
+    self
+      answer: self initAnswer
+      frames: self initFrames
+      code: self initCode
+      detail: self initDetail
+      reason: self initReason
+
+  handleIn: message :: Tuple -> WebSocketResult =>
+    self inAnswer match: [
+      #echo -> WebSocketResult push: message state: self;
+      #record -> self record: message;
+      #pid -> self pushPid;
+      _ -> self
+        answer: self inAnswer
+        frames: self inFrames
+        code: self inCode
+        detail: self inDetail
+        reason: self inReason
+    ]
+
+  handleInfo: message :: Object -> WebSocketResult =>
+    self infoAnswer match: [
+      #echo -> WebSocketResult push: message state: self;
+      #record -> self record: message;
+      #pid -> self pushPid;
+      _ -> self
+        answer: self infoAnswer
+        frames: self infoFrames
+        code: self infoCode
+        detail: self infoDetail
+        reason: self infoReason
+    ]
+
+  handleControl: message :: Tuple -> WebSocketResult =>
+    self controlAnswer match: [
+      #echo -> WebSocketResult push: message state: self;
+      #record -> self record: message;
+      #pid -> self pushPid;
+      _ -> self
+        answer: self controlAnswer
+        frames: self controlFrames
+        code: self controlCode
+        detail: self controlDetail
+        reason: self controlReason
+    ]
+
+  /// Log the message; a "dump" text frame pushes the whole log.
+  record: message :: Object -> WebSocketResult =>
+    message match: [
+      {#text, "dump"} -> WebSocketResult push: {#text, self log printString} state: self;
+      _ -> WebSocketResult ok: (self withLog: (self log addFirst: message))
+    ]
+
+  /// Record the connection pid for the test, then push a marker.
+  pushPid -> WebSocketResult =>
+    self pidTable isNil ifFalse: [
+      (Ets named: self pidTable) at: #pid put: Pid current
+    ]
+    WebSocketResult push: {#text, "pid"} state: self
+
+  terminate: reason :: Object -> Object =>
+    self table isNil ifFalse: [
+      (Ets named: self table) at: #terminate put: reason
+    ]
+    nil

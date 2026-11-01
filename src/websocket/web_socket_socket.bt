@@ -18,7 +18,13 @@ typed Object subclass: WebSocketSocket
     socket send: (Frame serialize: frame)
 
   /// Send the close frame, then shut the socket down for writing.
+  /// A code alone sends no reason (Bandit's close with an integer).
   class sealed close: socket :: Socket code: code :: Integer -> Result(Nil, Object) =>
-    frame := ConnectionCloseFrame new withCode: code
+    self close: socket code: code reason: ""
+
+  /// Send the close frame with a reason, then shut down for writing
+  /// (Bandit's close with {code, detail}).
+  class sealed close: socket :: Socket code: code :: Integer reason: reason :: Binary -> Result(Nil, Object) =>
+    frame := (ConnectionCloseFrame new withCode: code) withReason: reason
     (socket send: (Frame serialize: frame)) isError ifTrue: [^Result error: #closed]
     socket shutdown: #write

@@ -111,7 +111,7 @@ sealed typed Value subclass: WebSocketConnection
       ]) ifTrue: [1000] ifFalse: [1002];
       _ -> 1002
     ]
-    {conn, _} := self doStop: reply reason: #remote socket: sock
+    {conn, _} := self doStop: reply detail: "" reason: #remote socket: sock
     {conn withConnState: #closed, #close}
 
   /// Answer a ping with a pong, then the optional handleControl:.
@@ -147,7 +147,7 @@ sealed typed Value subclass: WebSocketConnection
 
   /// The server is shutting down: a clean 1000, as handle_shutdown.
   handleShutdown: socket :: Socket -> Tuple(WebSocketConnection, Object) =>
-    self doStop: 1000 reason: #shutdown socket: socket
+    self doStop: 1000 detail: "" reason: #shutdown socket: socket
 
   /// A socket error or a raised error: 1011, as handle_error does.
   handleError: reason :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
@@ -170,7 +170,7 @@ sealed typed Value subclass: WebSocketConnection
       #push -> conn doDeflate: result frames socket: sock;
       #reply -> conn doDeflate: result frames socket: sock;
       #stop -> (conn doSendAll: result frames socket: sock) match: [
-        {stopped, #continue} -> stopped doStop: result code reason: #normal socket: sock;
+        {stopped, #continue} -> stopped doStop: result code detail: result detail reason: #normal socket: sock;
         other -> other
       ];
       _ -> (conn doSendAll: result frames socket: sock) match: [
@@ -247,12 +247,12 @@ sealed typed Value subclass: WebSocketConnection
 
   /// A clean stop: terminate, close, stop the span (Bandit's do_stop).
   /// Only acts in #open; every later teardown is a no-op.
-  doStop: code :: Integer reason: reason :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
+  doStop: code :: Integer detail: detail :: String reason: treason :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     self connState =:= #open ifFalse: [^{self, #continue}]
     (self websockState respondsTo: #terminate:) ifTrue: [
-      self websockState terminate: reason
+      self websockState terminate: treason
     ]
-    WebSocketSocket close: sock code: code
+    WebSocketSocket close: sock code: code reason: detail
     PermessageDeflate close: self compress
     self stopSpan: nil
     {(((self withConnState: #closing) withCompress: nil) withMetrics: Dictionary new), #continue}

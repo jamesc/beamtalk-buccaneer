@@ -13,6 +13,7 @@ sealed typed Value subclass: WebSocketResult
   field: state :: Object = nil
   field: frames :: List = #()
   field: code :: Integer = 1000
+  field: detail :: String = ""
   field: status :: Object = #ok
   field: reason :: Object = #normal
 
@@ -33,6 +34,12 @@ sealed typed Value subclass: WebSocketResult
 
   class sealed stop: state :: Object code: code :: Integer frames: frames :: Object -> WebSocketResult =>
     (((WebSocketResult new withKind: #stop) withState: state) withCode: code) withFrames: (self listOf: frames)
+
+  class sealed stop: state :: Object code: code :: Integer detail: detail :: String -> WebSocketResult =>
+    (((WebSocketResult new withKind: #stop) withState: state) withCode: code) withDetail: detail
+
+  class sealed stop: state :: Object code: code :: Integer detail: detail :: String frames: frames :: Object -> WebSocketResult =>
+    ((((WebSocketResult new withKind: #stop) withState: state) withCode: code) withDetail: detail) withFrames: (self listOf: frames)
 
   class sealed stopError: reason :: Object state: state :: Object -> WebSocketResult =>
     (((WebSocketResult new withKind: #stopError) withState: state) withCode: 1011) withReason: reason

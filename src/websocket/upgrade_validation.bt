@@ -7,9 +7,17 @@ typed Object subclass: UpgradeValidation
 
   class sealed validate: ex :: Exchange -> Result(Nil, String) =>
     ex httpProtocol =:= #http11 ifFalse: [
-      ^Result error: ("HTTP version " ++ ex httpProtocol printString ++ " unsupported")
+      ^Result error: ("HTTP version " ++ (self wireVersion: ex httpProtocol) ++ " unsupported")
     ]
     self validateHttp1: ex
+
+  /// The wire version string (Bandit reports :"HTTP/1.0", not the atom).
+  class sealed wireVersion: version :: Symbol -> String =>
+    version match: [
+      #http10 -> "HTTP/1.0";
+      #http11 -> "HTTP/1.1";
+      _ -> "HTTP/2"
+    ]
 
   class sealed validateHttp1: ex :: Exchange -> Result(Nil, String) =>
     ex method =:= "GET" ifFalse: [
@@ -40,4 +48,5 @@ typed Object subclass: UpgradeValidation
 
   /// Every raw value held for a header name, for error messages.
   class sealed values: ex :: Exchange name: name :: String -> List =>
-    ex headers select: [:h :: Tuple | (h at: 1) =:= name] collect: [:h :: Tuple | h at: 2]
+    selected := ex headers select: [:h :: Tuple | (h at: 1) =:= name]
+    selected collect: [:h :: Tuple | h at: 2]

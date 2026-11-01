@@ -212,7 +212,7 @@ TestCase subclass: PlugTest
           offNum := offAmp isNil ifTrue: [
             offRest
           ] ifFalse: [offRest take: offAmp - 1]
-          offset := (Headers parseInteger: offNum) unwrap at: 1
+          {offset, _} := (Headers parseInteger: offNum) unwrap
           lenMarker := "length="
           lenIdx := q indexOf: lenMarker
           lenRest := lenIdx isNil ifTrue: [
@@ -222,9 +222,12 @@ TestCase subclass: PlugTest
           lenRaw := lenAmp isNil ifTrue: [
             lenRest
           ] ifFalse: [lenRest take: lenAmp - 1]
-          length := lenRaw =:= ":all" ifTrue: [
-            #all
-          ] ifFalse: [(Headers parseInteger: lenRaw) unwrap at: 1]
+          length := lenRaw =:= ":all"
+            ifTrue: [#all]
+            ifFalse: [
+              {parsed, _} := (Headers parseInteger: lenRaw) unwrap
+              parsed
+            ]
           ex
             sendFile: 200
             headers: #()

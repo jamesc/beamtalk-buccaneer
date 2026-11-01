@@ -229,9 +229,8 @@ sealed typed Value subclass: Exchange
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
     st := st withRespStartTime: BuccaneerTelemetry monotonicTime
-    info := ((Erlang file) read_file_info: path with: #(#raw, {#time, #universal})) unwrap
-    size := info at: 2
-    (info at: 3) =:= #regular ifFalse: [
+    {_, size, kind, _, _, _, _, _, _, _, _, _, _, _} := ((Erlang file) read_file_info: path with: #(#raw, {#time, #universal})) unwrap
+    kind =:= #regular ifFalse: [
       Error signal: ("Cannot read file " ++ path ++ ": not a regular file")
     ]
     total := length =:= #all ifTrue: [size - offset] ifFalse: [length]

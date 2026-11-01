@@ -12,6 +12,7 @@
 /// adapter kind in this engine; the handler-error test covers that
 /// path class.
 TestCase subclass: HTTP1UpgradeTest
+
   termTable => #http1UpgradeTerms
 
   setUp =>
@@ -34,18 +35,22 @@ TestCase subclass: HTTP1UpgradeTest
   /// needs, and reading one would race the close.
   headOf: client =>
     head := ""
-    [(head includesSubstring: "\r\n\r\n") not] whileTrue: [
-      head := head concat: (((Erlang gen_tcp)
-        recv: client
-        with: 1
-        with: 2000) unwrap)
-    ]
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang gen_tcp)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
     head
 
   upgradeServer =>
-    (Buccaneer start: #{#port => 0} handler: [:ex |
-      ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
-    ]) unwrap
+    (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
+      ]) unwrap
 
   /// One invalid upgrade: 400 on the wire, the reason in the log.
   invalidUpgrade: request :: String log: expected :: String =>
@@ -60,36 +65,24 @@ TestCase subclass: HTTP1UpgradeTest
     self assert: (srv stop: 5000) isOk
 
   testNonGetUpgrade400s =>
-    self
-      invalidUpgrade: "POST /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
-      log: "HTTP method POST unsupported"
+    self invalidUpgrade: "POST /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n" log: "HTTP method POST unsupported"
 
   testBadUpgradeHeader400s =>
-    self
-      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: NOPE\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
-      log: "'upgrade' header must contain 'websocket'"
+    self invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: NOPE\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n" log: "'upgrade' header must contain 'websocket'"
 
   testBadConnectionHeader400s =>
-    self
-      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: NOPE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
-      log: "'connection' header must contain 'upgrade'"
+    self invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: NOPE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n" log: "'connection' header must contain 'upgrade'"
 
   testMissingKey400s =>
-    self
-      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-version: 13\r\n\r\n"
-      log: "'sec-websocket-key' header is absent"
+    self invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-version: 13\r\n\r\n" log: "'sec-websocket-key' header is absent"
 
   testBadVersion400s =>
-    self
-      invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 99\r\n\r\n"
-      log: "'sec-websocket-version' header must equal '13'"
+    self invalidUpgrade: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 99\r\n\r\n" log: "'sec-websocket-version' header must equal '13'"
 
   testValidUpgrade101s =>
     srv := self upgradeServer
     client := self connect: (self portOf: srv)
-    (Erlang gen_tcp)
-      send: client
-      with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+    (Erlang gen_tcp) send: client with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
     head := self headOf: client
     (Erlang gen_tcp) close: client
     self assert: (head includesSubstring: "101 Switching Protocols") equals: true
@@ -103,9 +96,7 @@ TestCase subclass: HTTP1UpgradeTest
         ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: #{}
       ]) unwrap
     client := self connect: (self portOf: srv)
-    (Erlang gen_tcp)
-      send: client
-      with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+    (Erlang gen_tcp) send: client with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
     head := self headOf: client
     (Erlang gen_tcp) close: client
     self assert: (head includesSubstring: "500") equals: true
@@ -114,13 +105,11 @@ TestCase subclass: HTTP1UpgradeTest
 
   testHandlerError500s =>
     log := LogCapture attach: #http1Upgrade
-    srv := (Buccaneer start: #{#port => 0} handler: [:ex |
-      Error signal: "boom"
-    ]) unwrap
+    srv := (Buccaneer start: #{
+      #port => 0
+    } handler: [:ex | Error signal: "boom"]) unwrap
     client := self connect: (self portOf: srv)
-    (Erlang gen_tcp)
-      send: client
-      with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+    (Erlang gen_tcp) send: client with: "GET /upgrade_websocket HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
     head := self headOf: client
     (Erlang gen_tcp) close: client
     self assert: (head includesSubstring: "500") equals: true

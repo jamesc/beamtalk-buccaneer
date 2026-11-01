@@ -102,9 +102,7 @@ sealed typed Value subclass: Exchange
   /// (Bandit's maybe_send_continue): only before the first body read.
   maybeSendContinueOn: st :: ExchangeState -> ExchangeState =>
     st expectContinue ifFalse: [^st]
-    st status notNil ifTrue: [
-      ^(st withStatus: st status) withExpectContinue: false
-    ]
+    st status notNil ifTrue: [^st withExpectContinue: false]
     dated := #(Clock dateHeader)
     [
       transport := st transport
@@ -175,7 +173,10 @@ sealed typed Value subclass: Exchange
 
   /// Start a chunked response (Bandit's send_chunked). When the caller
   /// sets content-length, the body streams length-delimited instead of
-  /// chunk-framed. No body goes out for HEAD, 204 or 304.
+  /// chunk-framed. No body goes out for HEAD, 204 or 304. The caller owns
+  /// the count: short or long streams are not validated (Bandit parity) —
+  /// a short stream leaves the client waiting, a long one bleeds into the
+  /// next response.
   sendChunked: status :: Integer headers: hs :: HttpHeaders -> Exchange =>
     st := self load
     st respState =:= #unset
@@ -208,12 +209,16 @@ sealed typed Value subclass: Exchange
         self store: (stamped withRespState: #sent)
         ^Result ok: nil
       ]
-    sent := [
+    // Size first, send second: invalid iodata raises before any byte goes
+    // out, so a Result error never follows a partial send.
+    pair := [
       [
-        st transport sendData: data end: false
+        size := Erlang erlang iolist_size: data
+        {(st transport sendData: data end: false), size}
       ] on: TransportError do: [:e :: Exception | ^Result error: e reason]
     ] on: Error do: [:e :: Exception | ^Result error: e message]
-    stamped := (st withTransport: sent) withRespBodyBytes: st respBodyBytes + (Erlang erlang iolist_size: data)
+    {transport, size} := pair
+    stamped := (st withTransport: transport) withRespBodyBytes: st respBodyBytes + size
     self store: stamped
     Result ok: nil
 
@@ -223,6 +228,9 @@ sealed typed Value subclass: Exchange
     (length isKindOf: Integer) ifTrue: [
       length <= 0 ifTrue: [Error signal: "Length cannot be zero or negative"]
     ]
+    ((length =:= #all) or: [
+      length isKindOf: Integer
+    ]) ifFalse: [Error signal: "Length must be an Integer byte count or #all"]
     st := self load
     st respState =:= #unset
       ifFalse: [
@@ -267,19 +275,19 @@ sealed typed Value subclass: Exchange
     stamped := ((headed withTransport: sent) withRespBodyBytes: total) withRespEndTime: BuccaneerTelemetry monotonicTime
     self store: (stamped withRespState: #sent)
 
-  /// A 1xx response (Bandit's inform/3). Refused on HTTP/1.0.
+  /// A 1xx response (Bandit's inform/3). Refused on HTTP/1.0, and a
+  /// Result error (never a raise) once the final response went out: a 1xx
+  /// must precede it.
   inform: status :: Integer headers: hs :: HttpHeaders -> Result(Nil, Object) =>
     st := self load
+    st respState =:= #unset ifFalse: [^Result error: #already_sent]
     st transport version =:= #http10 ifTrue: [^Result error: #not_supported]
     headed := self
       sendHeadersOn: st
       status: status
       headers: hs
       disposition: #inform
-    kept := status =:= 100 ifTrue: [
-      headed withExpectContinue: false
-    ] ifFalse: [headed]
-    self store: kept
+    self store: headed
     Result ok: nil
 
   /// Per RFC9110§10.1.1, a client that asked for 100 Continue and never
@@ -309,9 +317,15 @@ sealed typed Value subclass: Exchange
       ] ifFalse: [false]
     ]
     statused := (st withStatus: status) withExpectContinue: keep
-    actual := (self sendsBody: statused) ifTrue: [
+    // A 1xx is never a body: the sendsBody mapping to #noBody applies to
+    // final responses only. Funneling an inform: through #noBody would mark
+    // the socket #sent while the exchange stays #unset and wedge the next
+    // send (notably inform: on a HEAD request).
+    actual := (status between: 100 and: 199) ifTrue: [
       disposition
-    ] ifFalse: [#noBody]
+    ] ifFalse: [
+      (self sendsBody: statused) ifTrue: [disposition] ifFalse: [#noBody]
+    ]
     statused
       withTransport: (statused transport
         sendHeaders: status
@@ -363,8 +377,21 @@ sealed typed Value subclass: Exchange
         closed := st transport sendData: "" end: true
         stamped := (st withTransport: closed) withRespEndTime: BuccaneerTelemetry monotonicTime
         self store: (stamped withRespState: #sent)
-      ] on: TransportError do: [:e :: Exception | self]
-    ] on: Error do: [:e :: Exception | self]
+      ]
+        on: TransportError
+        do: [:e :: Exception |
+          // The closing write failed (client gone mid-close): the connection
+          // is dead, so drop keepalive for a clean close instead of serving a
+          // doomed next request on a #chunking transport.
+          dead := (st withTransport: (st transport withKeepalive: false)) withRespState: #sent
+          self store: dead
+        ]
+    ]
+      on: Error
+      do: [:e :: Exception |
+        dead := (st withTransport: (st transport withKeepalive: false)) withRespState: #sent
+        self store: dead
+      ]
 
   /// Forget the state without draining (the pipeline's error paths;
   /// idempotent, unlike finish).

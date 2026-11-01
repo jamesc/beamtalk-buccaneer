@@ -316,9 +316,7 @@ typed Value subclass: HTTP1Socket
       Error signal: "Response headers already sent"
     ]
     respLine := "{self versionString} {status} {Status reasonPhrase: status}\r\n"
-    kept := self handleKeepalive: status headers: headers
-    unframed := kept at: 1
-    socket := kept at: 2
+    {unframed, socket} := self handleKeepalive: status headers: headers
     // RFC9112§6.1: no Transfer-Encoding on HTTP/1.0 responses at all.
     finalHeaders := socket version =:= #http10 ifTrue: [
       unframed reject: [:h | (h at: 1) =:= "transfer-encoding"]

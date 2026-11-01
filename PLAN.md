@@ -447,6 +447,12 @@ Deviations from Bandit, all with covering tests:
 - `chunk:` maps `TransportError` to `Result error:` with the bare reason
   (`#closed` when the client went) and other errors to `Result error:`
   with the message, mirroring Bandit's `{:error, reason}` tuple.
+- `sendChunked:` with `content-length` does not validate the streamed total
+  (Bandit parity): short leaves the client waiting, long bleeds into the
+  next response. The handler owns the count.
+- `closeChunked` failure drops keepalive for a clean close instead of
+  serving the next request on a poisoned transport (deliberate improvement
+  over Bandit, which ignores the error and wedges).
 
 **Rejected:** two-argument handler blocks (`[:req :resp | ...]`). They
 change the handler signature and do nothing for actor handlers.

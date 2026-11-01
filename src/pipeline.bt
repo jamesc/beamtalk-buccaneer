@@ -207,14 +207,36 @@ typed Object subclass: Pipeline
   /// The exchange state for a parsed head (Bandit's build_conn!, minus
   /// the conn).
   class sealed buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: HttpHeaders connData: connData :: Tuple(Boolean, Tuple | Symbol) -> ExchangeState =>
-    scheme := (connData at: 1) =:= true ifTrue: [#https] ifFalse: [#http]
-    hostPort := self
+    {secure, _} := connData
+    scheme := secure =:= true ifTrue: [#https] ifFalse: [#http]
+    {host, port} := self
       hostAndPort: scheme
       version: transport version
       target: target
       headers: headers
-    pathQuery := self pathAndQuery: target
-    ((((((((ExchangeState new withTransport: transport) withMethod: method) withScheme: scheme) withHost: (hostPort at: 1)) withPort: (hostPort at: 2)) withPath: (pathQuery at: 1)) withQuery: (pathQuery at: 2)) withHeaders: headers)
+    {path, query} := self pathAndQuery: target
+    ExchangeState
+      new: #{
+        #transport => transport,
+        #method => method,
+        #scheme => scheme,
+        #host => host,
+        #port => port,
+        #path => path,
+        #query => query,
+        #headers => headers,
+        #expectContinue => self expectsContinue: headers version: transport version
+      }
+
+  /// Whether the client waits for `100 Continue` (Bandit's expect_continue?).
+  /// Exact match only, as in Bandit: extra tokens or whitespace mean no
+  /// auto-100 (and therefore no unhonored-expect close either).
+  class sealed expectsContinue: headers :: HttpHeaders version: ver :: HttpVersion -> Boolean =>
+    (ver =:= #http11 or: [ver =:= #http2]) ifFalse: [^false]
+    expect := Headers getHeader: headers name: "expect"
+    expect isNil ifTrue: [^false]
+    (expect isKindOf: String) ifFalse: [^false]
+    expect asciiLowercase =:= "100-continue"
 
   /// {host, port} from an absolute target, else the Host header
   /// (Bandit's determine_host_and_port!).

@@ -67,3 +67,78 @@ TestCase subclass: TlsTest
             body: "hi"
         ]}
     self assert: started isError
+
+  testHttpsSendfile =>
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => self certfile,
+        #keyfile => self keyfile,
+        #handler => [:ex |
+          ex
+            sendFile: 200
+            headers: #()
+            path: "test/fixtures/sendfile"
+            offset: 0
+            length: #all
+        ]
+      }) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang ssl) send: client with: "GET /send_full_file HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang ssl)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
+    body := (((Erlang ssl)
+      recv: client
+      with: 6
+      with: 2000) unwrap) asStringUnchecked
+    self assert: ((head asStringUnchecked) includesSubstring: "content-length: 6")
+    self assert: body equals: "ABCDEF"
+    (Erlang ssl) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testHttpsChunked =>
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => self certfile,
+        #keyfile => self keyfile,
+        #handler => [:ex |
+          ex sendChunked: 200 headers: #()
+          ex chunk: "OK"
+        ]
+      }) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang ssl) send: client with: "GET /chunked HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang ssl)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
+    self assert: ((head asStringUnchecked) includesSubstring: "transfer-encoding: chunked")
+    frame := (((Erlang ssl)
+      recv: client
+      with: 7
+      with: 2000) unwrap) asStringUnchecked
+    self assert: frame equals: "2\r\nOK\r\n"
+    tail := (((Erlang ssl)
+      recv: client
+      with: 5
+      with: 2000) unwrap) asStringUnchecked
+    self assert: tail equals: "0\r\n\r\n"
+    (Erlang ssl) close: client
+    self assert: (srv stop: 5000) isOk

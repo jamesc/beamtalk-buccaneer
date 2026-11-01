@@ -340,3 +340,319 @@ TestCase subclass: ExchangeTest
     self assert: next readState equals: #read
     self assert: next buffer asStringUnchecked equals: "GET /next"
     Loopback close: pair
+
+  // ===== Phase 3: chunked responses =====
+  chunkedHead: pair =>
+    client := pair at: 2
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang gen_tcp)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
+    head asStringUnchecked
+
+  chunkedBody: pair bytes: n =>
+    (((Erlang gen_tcp)
+      recv: (pair at: 2)
+      with: n
+      with: 2000) unwrap) asStringUnchecked
+
+  testSendChunkedWireFormat =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex sendChunked: 200 headers: #()
+    self assert: ex state equals: #chunked
+    head := self chunkedHead: pair
+    self assert: (head startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (head includesSubstring: "transfer-encoding: chunked")
+    self assert: (ex chunk: "OK") equals: (Result ok: nil)
+    frame := self chunkedBody: pair bytes: 7
+    self assert: frame equals: "2\r\nOK\r\n"
+    ex commit
+    self assert: ex state equals: #sent
+    tail := self chunkedBody: pair bytes: 5
+    self assert: tail equals: "0\r\n\r\n"
+    ex finish
+    Loopback close: pair
+
+  testSendChunkedWithContentLengthStreamsUnframed =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex sendChunked: 200 headers: #({"content-length", "2"})
+    head := self chunkedHead: pair
+    self deny: (head includesSubstring: "transfer-encoding")
+    self assert: (head includesSubstring: "content-length: 2")
+    self assert: (ex chunk: "O") equals: (Result ok: nil)
+    self assert: (ex chunk: "K") equals: (Result ok: nil)
+    part := self chunkedBody: pair bytes: 2
+    self assert: part equals: "OK"
+    ex commit
+    ex finish
+    Loopback close: pair
+
+  testChunkWithoutSendChunkedRaises =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    raised := [ex chunk: "x"] on: Error do: [:e :: Exception | e]
+    self assert: raised class equals: NotChunked
+    ex forget
+    Loopback close: pair
+
+  testCommitChunkedSendsEmptyClose =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex sendChunked: 200 headers: #()
+    self chunkedHead: pair
+    ex commit
+    tail := self chunkedBody: pair bytes: 5
+    self assert: tail equals: "0\r\n\r\n"
+    ex finish
+    Loopback close: pair
+
+  // ===== Phase 3: sendfile =====
+  testSendFileWhole =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendFile: 200
+      headers: #()
+      path: "test/fixtures/sendfile"
+      offset: 0
+      length: #all
+    resp := Loopback responseOf: pair body: 6
+    self assert: (resp includesSubstring: "content-length: 6")
+    self assert: (resp endsWith: "ABCDEF")
+    ex finish
+    Loopback close: pair
+
+  testSendFileOffsetLength =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendFile: 200
+      headers: #()
+      path: "test/fixtures/sendfile"
+      offset: 1
+      length: 3
+    resp := Loopback responseOf: pair body: 3
+    self assert: (resp includesSubstring: "content-length: 3")
+    self assert: (resp endsWith: "BCD")
+    ex finish
+    Loopback close: pair
+
+  testSendFileNegativeOffsetRaises =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    raised := [
+      ex
+        sendFile: 200
+        headers: #()
+        path: "test/fixtures/sendfile"
+        offset: 0 - 1
+        length: 3
+      nil
+    ] on: Error do: [:e :: Exception | e]
+    self assert: (raised message includesSubstring: "Offset cannot be negative")
+    ex forget
+    Loopback close: pair
+
+  testSendFileZeroLengthRaises =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    raised := [
+      ex
+        sendFile: 200
+        headers: #()
+        path: "test/fixtures/sendfile"
+        offset: 0
+        length: 0
+      nil
+    ] on: Error do: [:e :: Exception | e]
+    self assert: (raised message includesSubstring: "Length cannot be zero or negative")
+    ex forget
+    Loopback close: pair
+
+  testSendFileBeyondEOFRaises =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    raised := [
+      ex
+        sendFile: 200
+        headers: #()
+        path: "test/fixtures/sendfile"
+        offset: 1
+        length: 3000
+      nil
+    ] on: Error do: [:e :: Exception | e]
+    self assert: (raised message includesSubstring: "only 6 octets")
+    ex forget
+    Loopback close: pair
+
+  // ===== Phase 3: informational and 100-continue =====
+  testInformSends1xxThenFinal =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    self assert: (ex inform: 103 headers: #({"link", "</app.css>"})) equals: (Result ok: nil)
+    head := self chunkedHead: pair
+    self assert: (head startsWith: "HTTP/1.1 103")
+    self assert: (head includesSubstring: "link: </app.css>")
+    ex
+      sendResp: 200
+      headers: #()
+      body: "Informer"
+    self assert: ex state equals: #sent
+    ex finish
+    Loopback close: pair
+
+  testInformRefusedOnHttp10 =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "GET / HTTP/1.0" ++ self nl ++ "host: x" ++ self nl ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    transport := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    ex := Exchange open: ((ExchangeState new withTransport: transport) withMethod: "GET")
+    self assert: (ex inform: 100 headers: #()) equals: (Result error: #not_supported)
+    ex finish
+    Loopback close: pair
+
+  testReadBodySends100Continue =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 3"
+      ++ self nl
+      ++ "expect: 100-continue"
+      ++ self nl
+      ++ self nl
+      ++ "123"
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    transport := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    st := (ExchangeState new withTransport: transport) withMethod: "POST"
+    st := st withExpectContinue: true
+    ex := Exchange open: st
+    part := ex readBody unwrap
+    self assert: part data asStringUnchecked equals: "123"
+    self assert: part done
+    interim := self chunkedHead: pair
+    self assert: (interim startsWith: "HTTP/1.1 100 Continue")
+    ex finish
+    Loopback close: pair
+
+  testRespondWithoutReadingClosesUnhonoredExpect =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 5"
+      ++ self nl
+      ++ "expect: 100-continue"
+      ++ self nl
+      ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    transport := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    st := (ExchangeState new withTransport: transport) withMethod: "POST"
+    st := st withExpectContinue: true
+    ex := Exchange open: st
+    ex
+      sendResp: 401
+      headers: #()
+      body: "denied"
+    resp := self chunkedHead: pair
+    self assert: (resp startsWith: "HTTP/1.1 401")
+    self assert: (resp includesSubstring: "connection: close")
+    ex finish
+    Loopback close: pair
+
+  testInformOnHeadThenFinal =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "HEAD /h HTTP/1.1" ++ self nl ++ "host: x" ++ self nl ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    transport := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    ex := Exchange open: ((ExchangeState new withTransport: transport) withMethod: "HEAD")
+    self assert: (ex inform: 103 headers: #()) equals: (Result ok: nil)
+    interim := self chunkedHead: pair
+    self assert: (interim startsWith: "HTTP/1.1 103")
+    ex
+      sendResp: 200
+      headers: #()
+      body: "hi"
+    final := Loopback responseOf: pair body: 0
+    self assert: (final startsWith: "HTTP/1.1 200 OK")
+    self deny: (final includesSubstring: "transfer-encoding")
+    ex finish
+    Loopback close: pair
+
+  testInformAfterFinalAnswersAlreadySent =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 200
+      headers: #()
+      body: "done"
+    self assert: (ex inform: 103 headers: #()) equals: (Result error: #already_sent)
+    ex finish
+    Loopback close: pair
+
+  testCloseChunkedFailureDropsKeepalive =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex sendChunked: 200 headers: #()
+    self chunkedHead: pair
+    (ex transport socket) close
+    ex commit
+    self assert: ex state equals: #sent
+    self deny: ex transport keepalive
+    ex finish
+    Loopback close: pair
+
+  testChunkClosedAgainstGoneClient =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex sendChunked: 200 headers: #()
+    self chunkedHead: pair
+    (ex transport socket) close
+    self assert: (ex chunk: "gone") equals: (Result error: #closed)
+    ex forget
+    Loopback close: pair
+
+  testSendFileDirectory500 =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    raised := [
+      ex
+        sendFile: 200
+        headers: #()
+        path: "test/fixtures"
+        offset: 0
+        length: #all
+      nil
+    ] on: Error do: [:e :: Exception | e]
+    self assert: (raised message includesSubstring: "not a regular file")
+    ex forget
+    Loopback close: pair
+
+  testReadBody100SendFailsClosed =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "content-length: 3"
+      ++ self nl
+      ++ "expect: 100-continue"
+      ++ self nl
+      ++ self nl
+    (Erlang gen_tcp) send: (pair at: 2) with: head
+    transport := ((HTTP1Socket new withSocket: (pair at: 1)) readHeaders) at: 4
+    st := ((ExchangeState new withTransport: transport) withMethod: "POST") withExpectContinue: true
+    ex := Exchange open: st
+    (Erlang gen_tcp) close: (pair at: 2)
+    self assert: ex readBody equals: (Result error: #closed)
+    ex forget
+    Loopback close: pair

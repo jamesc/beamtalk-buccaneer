@@ -421,6 +421,39 @@ operation, including the cross-process error.
 in bounded memory (asserted in a test). Blocked by Phase 1 (beamtalk-http
 parts by Phase 2).
 
+**Status: engine done (buccaneer repo; beamtalk-http adapter in its own PR).**
+342 BUnit tests green (`just ci`: fmt, lint, build, test), including:
+Exchange unit tests (chunked framing, content-length streaming,
+`NotChunked`, sendfile whole/partial/errors, `inform:` + HTTP/1.0 refusal,
+auto-100-continue, unhonored-expect close); protocol sendfile (5),
+informational (2), Expect 100-continue (3), chunked responses (3 + HTTP/1.0
+close-delimited + content-length); plug `send_file` (9: 3 query + 5 error
++ partial); 1 GiB upload/download streaming in chunks with totals asserted
+(`test/http1/bounded_stream_test.bt`); TLS sendfile + chunked smoke
+(`tls_test.bt`). Deviations recorded below.
+
+Deviations from Bandit, all with covering tests:
+- `inform:` other than 100 preserves `expectContinue` (Bandit clears only on
+  100); a final response after a non-100 inform without a body read still
+  closes, as Bandit's unhonored-expect rule requires.
+- `sendChunked:` on HEAD/204/304 sends headers with `#noBody` and marks the
+  exchange `#sent` (no chunk framing); a later `chunk:` raises `not_chunked`.
+- `HTTP/1.0` chunked responses are close-delimited with `connection: close`
+  and no `transfer-encoding` (Bandit parity), including stripping an
+  app-supplied `transfer-encoding`.
+- `sendFile:` beyond EOF and negative offset/length raise (Bandit's
+  messages); missing-file `read_file_info` errors propagate as handler
+  500s via the pipeline.
+- `chunk:` maps `TransportError` to `Result error:` with the bare reason
+  (`#closed` when the client went) and other errors to `Result error:`
+  with the message, mirroring Bandit's `{:error, reason}` tuple.
+- `sendChunked:` with `content-length` does not validate the streamed total
+  (Bandit parity): short leaves the client waiting, long bleeds into the
+  next response. The handler owns the count.
+- `closeChunked` failure drops keepalive for a clean close instead of
+  serving the next request on a poisoned transport (deliberate improvement
+  over Bandit, which ignores the error and wedges).
+
 **Rejected:** two-argument handler blocks (`[:req :resp | ...]`). They
 change the handler signature and do nothing for actor handlers.
 

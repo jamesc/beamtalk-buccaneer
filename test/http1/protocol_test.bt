@@ -412,3 +412,484 @@ TestCase subclass: ProtocolTest
       body: 9
     self assert: (resp endsWith: "GET|/ok|x")
     self assert: (srv stop: 5000) isOk
+
+  // ===== Phase 3: sendfile =====
+  sendfileServer: handler =>
+    (Buccaneer start: #{#port => 0, #handler => handler}) unwrap
+
+  testSendFullFile =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendFile: 200
+          headers: #()
+          path: "test/fixtures/sendfile"
+          offset: 0
+          length: #all
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET /send_full_file HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 6
+    self assert: (resp startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: (resp includesSubstring: "content-length: 6")
+    self assert: (resp endsWith: "ABCDEF")
+    self assert: (srv stop: 5000) isOk
+
+  testSendFileHeadHasLengthButNoBody =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendFile: 200
+          headers: #()
+          path: "test/fixtures/sendfile"
+          offset: 0
+          length: #all
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "HEAD /send_full_file HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    self assert: (resp asStringUnchecked startsWith: "HTTP/1.1 200 OK\r\n")
+    self assert: ((resp asStringUnchecked) includesSubstring: "content-length: 6")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testSendFile204DropsLengthAndBody =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendFile: 204
+          headers: #()
+          path: "test/fixtures/sendfile"
+          offset: 0
+          length: #all
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "HEAD /send_full_file_204 HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    self assert: (resp asStringUnchecked startsWith: "HTTP/1.1 204 No Content\r\n")
+    self deny: ((resp asStringUnchecked) includesSubstring: "content-length")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testSendFile304KeepsLengthButNoBody =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendFile: 304
+          headers: #()
+          path: "test/fixtures/sendfile"
+          offset: 0
+          length: #all
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "HEAD /send_full_file_304 HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    self assert: (resp asStringUnchecked startsWith: "HTTP/1.1 304 Not Modified\r\n")
+    self assert: ((resp asStringUnchecked) includesSubstring: "content-length: 6")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testSendFilePartial =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendFile: 200
+          headers: #()
+          path: "test/fixtures/sendfile"
+          offset: 1
+          length: 3
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET /send_file?offset=1&length=3 HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 3
+    self assert: (resp endsWith: "BCD")
+    self assert: (resp includesSubstring: "content-length: 3")
+    self assert: (srv stop: 5000) isOk
+
+  // ===== Phase 3: informational =====
+  testInformThenFinal =>
+    srv := self
+      sendfileServer: [:ex |
+        ex inform: 100 headers: #({"x-from", "inform"})
+        ex
+          sendResp: 200
+          headers: #()
+          body: "Informer"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /send_inform HTTP/1.1\r\nhost: x\r\n\r\n"
+    first := Loopback responseOn: client body: 0
+    self assert: (first asStringUnchecked startsWith: "HTTP/1.1 100 Continue")
+    self assert: ((first asStringUnchecked) includesSubstring: "x-from: inform")
+    rest := Loopback responseOn: client body: 8
+    self assert: (rest asStringUnchecked includesSubstring: "200 OK")
+    self assert: ((rest asStringUnchecked) endsWith: "Informer")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testInformSkippedOnHttp10 =>
+    srv := self
+      sendfileServer: [:ex |
+        ex inform: 100 headers: #({"x-from", "inform"})
+        ex
+          sendResp: 200
+          headers: #()
+          body: "Informer"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET /send_inform HTTP/1.0\r\nhost: x\r\n\r\n"
+      body: 8
+    self assert: (resp startsWith: "HTTP/1.0 200 OK\r\n")
+    self deny: (resp includesSubstring: "100 Continue")
+    self assert: (srv stop: 5000) isOk
+
+  // ===== Phase 3: Expect 100-continue =====
+  testExpectContinueSends100ThenReadsBody =>
+    srv := self
+      sendfileServer: [:ex |
+        part := (ex readBody: #{#readTimeout => 2000}) unwrap
+        ex
+          sendResp: 200
+          headers: #()
+          body: part data
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /expect_continue_body HTTP/1.1\r\nhost: x\r\ncontent-length: 3\r\nexpect: 100-continue\r\n\r\n"
+    interim := Loopback responseOn: client body: 0
+    self assert: (interim asStringUnchecked startsWith: "HTTP/1.1 100 Continue")
+    (Erlang gen_tcp) send: client with: "123"
+    final := Loopback responseOn: client body: 3
+    self assert: (final asStringUnchecked includesSubstring: "200 OK")
+    self assert: ((final asStringUnchecked) endsWith: "123")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testExpectContinueUnreadSendsNo100 =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /expect_continue_body_unread HTTP/1.1\r\nhost: x\r\ncontent-length: 3\r\nexpect: 100-continue\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    self assert: (resp asStringUnchecked startsWith: "HTTP/1.1 200 OK")
+    self deny: ((resp asStringUnchecked) includesSubstring: "100 Continue")
+    self assert: ((resp asStringUnchecked) includesSubstring: "connection: close")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testHttp10ExpectIgnored =>
+    srv := self
+      sendfileServer: [:ex |
+        part := (ex readBody: #{#readTimeout => 2000}) unwrap
+        ex
+          sendResp: 200
+          headers: #()
+          body: part data
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /p HTTP/1.0\r\nhost: x\r\ncontent-length: 3\r\nexpect: 100-continue\r\n\r\n123"
+    resp := Loopback responseOn: client body: 3
+    self assert: ((resp asStringUnchecked) startsWith: "HTTP/1.0 200 OK")
+    self deny: ((resp asStringUnchecked) includesSubstring: "100 Continue")
+    self assert: ((resp asStringUnchecked) endsWith: "123")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedUploadResume =>
+    srv := self
+      sendfileServer: [:ex |
+        total := 0
+        done := false
+        [done]
+          whileFalse: [
+            part := (ex readBody: #{#length => 10}) unwrap
+            total := total + part data size
+            done := part done
+          ]
+        ex
+          sendResp: 200
+          headers: #()
+          body: total printString
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp)
+      send: client
+      with: "POST /up HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\n64\r\n"
+        ++ ("A" repeat: 100)
+        ++ "\r\n0\r\n\r\n"
+    resp := Loopback responseOn: client body: 3
+    self assert: ((resp asStringUnchecked) endsWith: "100")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testRaiseAfterChunkCloses =>
+    srv := self
+      sendfileServer: [:ex |
+        ex sendChunked: 200 headers: #()
+        ex chunk: "OK"
+        Error signal: "boom"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /send_chunked_200 HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := self chunkedReply: client
+    self assert: (head startsWith: "HTTP/1.1 200 OK")
+    frame := self chunkedRest: client bytes: 7
+    self assert: frame equals: "2\r\nOK\r\n"
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testExpectContinueRejectClosesWithoutDraining =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendResp: 401
+          headers: #()
+          body: "denied"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /expect_continue_reject HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n"
+    resp := Loopback responseOn: client body: 6
+    self assert: ((resp asStringUnchecked) startsWith: "HTTP/1.1 401 Unauthorized")
+    self assert: ((resp asStringUnchecked) includesSubstring: "connection: close")
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  // ===== Phase 3: chunked responses =====
+  chunkedReply: client =>
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang gen_tcp)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
+    head asStringUnchecked
+
+  chunkedRest: client bytes: n =>
+    (((Erlang gen_tcp)
+      recv: client
+      with: n
+      with: 2000) unwrap) asStringUnchecked
+
+  testChunkedResponse =>
+    srv := self
+      sendfileServer: [:ex |
+        ex sendChunked: 200 headers: #()
+        ex chunk: "OK"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /send_chunked_200 HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := self chunkedReply: client
+    self assert: (head startsWith: "HTTP/1.1 200 OK")
+    self assert: (head includesSubstring: "transfer-encoding: chunked")
+    frame := self chunkedRest: client bytes: 7
+    self assert: frame equals: "2\r\nOK\r\n"
+    tail := self chunkedRest: client bytes: 5
+    self assert: tail equals: "0\r\n\r\n"
+    // The chunked response left the connection open: a second request
+    // on the same connection is served.
+    (Erlang gen_tcp) send: client with: "GET /again HTTP/1.1\r\nhost: x\r\n\r\n"
+    head2 := self chunkedReply: client
+    self assert: (head2 startsWith: "HTTP/1.1 200 OK")
+    self assert: (head2 includesSubstring: "transfer-encoding: chunked")
+    frame2 := self chunkedRest: client bytes: 7
+    self assert: frame2 equals: "2\r\nOK\r\n"
+    tail2 := self chunkedRest: client bytes: 5
+    self assert: tail2 equals: "0\r\n\r\n"
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testChunked204HasNoTransferEncoding =>
+    srv := self sendfileServer: [:ex | ex sendChunked: 204 headers: #()]
+    port := (srv listenerInfo unwrap) at: 2
+    resp := self
+      scenario: port
+      request: "GET /send_chunked_204 HTTP/1.1\r\nhost: x\r\n\r\n"
+      body: 0
+    self assert: (resp startsWith: "HTTP/1.1 204 No Content\r\n")
+    self deny: (resp includesSubstring: "transfer-encoding")
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedHeadHasNoBody =>
+    srv := self sendfileServer: [:ex | ex sendChunked: 200 headers: #()]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "HEAD /send_chunked_200 HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := self chunkedReply: client
+    self assert: (head startsWith: "HTTP/1.1 200 OK\r\n")
+    self deny: (head includesSubstring: "transfer-encoding")
+    self deny: (head includesSubstring: "content-length")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedIolistBody =>
+    srv := self
+      sendfileServer: [:ex |
+        ex sendChunked: 200 headers: #()
+        ex chunk: #("O", "K")
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /send_chunked_200_iolist HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := self chunkedReply: client
+    self assert: (head includesSubstring: "transfer-encoding: chunked")
+    frame := self chunkedRest: client bytes: 7
+    self assert: frame equals: "2\r\nOK\r\n"
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedStripsTransferEncodingOnHttp10 =>
+    srv := self
+      sendfileServer: [:ex |
+        ex sendChunked: 200 headers: #({"transfer-encoding", "chunked"})
+        ex chunk: "OK"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /send_chunked_200 HTTP/1.0\r\nhost: x\r\n\r\n"
+    head := self chunkedReply: client
+    self assert: (head startsWith: "HTTP/1.0 200 OK")
+    self deny: (head includesSubstring: "transfer-encoding")
+    self assert: (head includesSubstring: "connection: close")
+    body := self chunkedRest: client bytes: 2
+    self assert: body equals: "OK"
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testExpectContinueAfterOwnInform =>
+    srv := self
+      sendfileServer: [:ex |
+        (ex path =:= "/expect_continue_after_own_inform")
+          ifTrue: [
+            ex inform: 103 headers: #()
+            part := (ex readBody: #{#readTimeout => 2000}) unwrap
+            ex
+              sendResp: 200
+              headers: #()
+              body: part data
+          ]
+          ifFalse: [
+            ex
+              sendResp: 200
+              headers: #()
+              body: "again"
+          ]
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /expect_continue_after_own_inform HTTP/1.1\r\nhost: x\r\ncontent-length: 3\r\nexpect: 100-continue\r\n\r\n"
+    first := Loopback responseOn: client body: 0
+    self assert: ((first asStringUnchecked) startsWith: "HTTP/1.1 103")
+    (Erlang gen_tcp) send: client with: "123"
+    final := Loopback responseOn: client body: 3
+    self assert: ((final asStringUnchecked) startsWith: "HTTP/1.1 200 OK")
+    self assert: ((final asStringUnchecked) endsWith: "123")
+    self deny: ((final asStringUnchecked) includesSubstring: "connection: close")
+    (Erlang gen_tcp) send: client with: "GET /again HTTP/1.1\r\nhost: x\r\n\r\n"
+    again := Loopback responseOn: client body: 5
+    self assert: ((again asStringUnchecked) endsWith: "again")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testExpectContinueOwnInformStillClosesWhenUnread =>
+    srv := self
+      sendfileServer: [:ex |
+        ex inform: 103 headers: #()
+        ex
+          sendResp: 401
+          headers: #()
+          body: "denied"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "POST /expect_continue_reject HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n"
+    first := Loopback responseOn: client body: 0
+    self assert: ((first asStringUnchecked) startsWith: "HTTP/1.1 103")
+    resp := Loopback responseOn: client body: 6
+    self assert: ((resp asStringUnchecked) startsWith: "HTTP/1.1 401 Unauthorized")
+    self assert: ((resp asStringUnchecked) includesSubstring: "connection: close")
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testSendFileMissing500 =>
+    srv := self
+      sendfileServer: [:ex |
+        ex
+          sendFile: 200
+          headers: #()
+          path: "test/fixtures/no-such-file"
+          offset: 0
+          length: #all
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /missing HTTP/1.1\r\nhost: x\r\n\r\n"
+    resp := Loopback responseOn: client body: 0
+    self assert: ((resp asStringUnchecked) startsWith: "HTTP/1.1 500")
+    self assert: ((resp asStringUnchecked) includesSubstring: "connection: close")
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedHttp10CloseDelimited =>
+    srv := self
+      sendfileServer: [:ex |
+        ex sendChunked: 200 headers: #()
+        ex chunk: "OK"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /send_chunked_200 HTTP/1.0\r\nhost: x\r\nconnection: keep-alive\r\n\r\n"
+    head := self chunkedReply: client
+    self assert: (head startsWith: "HTTP/1.0 200 OK")
+    self deny: (head includesSubstring: "transfer-encoding")
+    self assert: (head includesSubstring: "connection: close")
+    body := self chunkedRest: client bytes: 2
+    self assert: body equals: "OK"
+    self assertClosed: client
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedContentLengthStreamsUnframed =>
+    srv := self
+      sendfileServer: [:ex |
+        ex sendChunked: 200 headers: #({"content-length", "2"})
+        ex chunk: "O"
+        ex chunk: "K"
+      ]
+    port := (srv listenerInfo unwrap) at: 2
+    client := self connect: port
+    (Erlang gen_tcp) send: client with: "GET /send_chunked_200_with_content_length HTTP/1.1\r\nhost: x\r\n\r\n"
+    head := self chunkedReply: client
+    self deny: (head includesSubstring: "transfer-encoding")
+    self assert: (head includesSubstring: "content-length: 2")
+    body := self chunkedRest: client bytes: 2
+    self assert: body equals: "OK"
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk

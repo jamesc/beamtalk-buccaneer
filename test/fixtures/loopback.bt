@@ -4,6 +4,12 @@
 /// Loopback TCP pairs for socket-level tests: {serverSocket, clientRaw,
 /// listener}. The client side stays raw gen_tcp; the server side is a
 /// Catalina Socket for the code under test. Close with close:.
+///
+/// To test server-side failure paths deterministically, close the *server*
+/// side (`(ex transport socket) close`): closing the raw client only sends
+/// FIN, and small server sends still succeed into the void, so a
+/// `#closed` never arrives. `close:` only touches the client and the
+/// listener, so it stays safe to call afterwards.
 sealed Object subclass: Loopback
 
   class sealed pairWithReadTimeout: ms :: Integer -> Tuple =>

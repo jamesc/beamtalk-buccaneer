@@ -422,17 +422,20 @@ sealed typed Value subclass: HTTP2Protocol
       ]
     // Priority data in HEADERS is deprecated (RFC 9113 §5.3) and
     // ignored, as Bandit does.
-    self connection fragmentFrame isNil
-      ifFalse: [
-        H2ConnectionError signal: "Expected CONTINUATION frame (RFC9113§6.10)" code: HTTP2Errors protocolError
-      ]
     frame endHeaders ifFalse: [^self headersFragmented: frame]
-    (self streamState: sid) match: [
-      #new -> self finishHeaders: frame streamKnown: #new;
-      #invalid -> H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError;
-      #closed -> {Binary fromBytes: #(), #(), false, self};
-      _ -> self finishHeaders: frame streamKnown: #open
-    ]
+    self routeHeaders: frame
+
+  /// A complete header block, from HEADERS or the CONTINUATION that ended
+  /// it, by the stream's state: an invalid id is a connection error; every
+  /// other state decodes the block (the HPACK table must see every block,
+  /// RFC 7541 §2.2) and then routes it (a closed stream drops it).
+  routeHeaders: frame :: H2Headers -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    state := self streamState: frame streamId
+    state =:= #invalid
+      ifTrue: [
+        H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError
+      ]
+    self finishHeaders: frame streamKnown: state
 
   /// HEADERS without END_HEADERS: stash the fragment for CONTINUATION.
   headersFragmented: frame :: H2Headers -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
@@ -463,7 +466,7 @@ sealed typed Value subclass: HTTP2Protocol
         ^(self withConnection: (self connection withFragmentFrame: merged)) continuationAck
       ]
     full := (frag withFragment: (frag fragment concat: frame fragment)) withEndHeaders: true
-    self finishHeaders: full streamKnown: (self streamState: sid)
+    self routeHeaders: full
 
   continuationAck -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     {Binary fromBytes: #(), #(), false, self}
@@ -490,6 +493,10 @@ sealed typed Value subclass: HTTP2Protocol
   settingsFor: frame :: H2Settings -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     frame ack ifTrue: [^{Binary fromBytes: #(), #(), false, self}]
     {conn, delta} := self connection applyRemoteSettings: frame settings
+    (conn streamWindowsOverflowBy: delta)
+      ifTrue: [
+        H2ConnectionError signal: "Invalid SETTINGS_INITIAL_WINDOW_SIZE: a stream window exceeds the maximum (RFC9113§6.9.2)" code: HTTP2Errors flowControlError
+      ]
     ack := H2Frame serialize: ((H2Settings new withAck: true) withSettings: #{}) maxFrameSize: self maxSendFrameSize
     {released, proto} := (self withConnection: (conn withAllStreamWindowsOpened: delta)) releaseFlowControl
     {(ack concat: released), #(), false, proto}
@@ -582,6 +589,16 @@ sealed typed Value subclass: HTTP2Protocol
     ]
 
   streamWindowLive: sid :: Integer increment: inc :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    grown := FlowControl updateSendWindow: (self connection streamSendWindows at: sid ifAbsent: [
+      0
+    ]) increment: inc
+    grown isError
+      ifTrue: [
+        H2StreamError
+          signal: grown error
+          code: HTTP2Errors flowControlError
+          streamId: sid
+      ]
     conn := self connection withStreamWindowOpened: sid increment: inc
     {released, proto} := (self withConnection: conn) releaseFlowControl
     {released, #(), false, proto}
@@ -820,6 +837,7 @@ sealed typed Value subclass: HTTP2Protocol
   /// stream's header list"), or the peer's next block decodes wrongly.
   routeCommitted: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     committed := self withConnection: (conn withFragmentFrame: nil)
+    known =:= #closed ifTrue: [^{Binary fromBytes: #(), #(), false, committed}]
     [
       committed
         routeDecoded: sid
@@ -916,6 +934,15 @@ sealed typed Value subclass: HTTP2Protocol
 
   handleFrame: frame :: Object -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     [
+      // While a header block is open only its CONTINUATION may arrive
+      // (RFC 9113 §6.10), whatever else the frame is; Bandit rejects the
+      // same way.
+      ((self connection fragmentFrame isNil) or: [
+        frame isKindOf: H2Continuation
+      ])
+        ifFalse: [
+          H2ConnectionError signal: "Expected CONTINUATION frame (RFC9113§6.10)" code: HTTP2Errors protocolError
+        ]
       frame match: [
         f :: H2Data -> self dataFor: f;
         f :: H2Headers -> self headersFor: f;

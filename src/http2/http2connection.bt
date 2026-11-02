@@ -377,6 +377,13 @@ sealed typed Value subclass: HTTP2Connection
         0
       ]) + n))
 
+  /// Whether growing every live stream's send window by delta would push
+  /// one past the maximum (RFC 9113 §6.9.2: a connection error).
+  streamWindowsOverflowBy: delta :: Integer -> Boolean =>
+    (self streamSendWindows values select: [:w :: Integer |
+      w + delta > FlowControl maxWindowSize
+    ]) isEmpty not
+
   /// Grow every live stream's send window (remote SETTINGS delta).
   withAllStreamWindowsOpened: delta :: Integer -> HTTP2Connection =>
     grown := self streamSendWindows

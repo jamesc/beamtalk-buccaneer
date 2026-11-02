@@ -660,12 +660,13 @@ sealed typed Value subclass: HTTP2Protocol
   sendDataOpen: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Tuple(Symbol, Object, HTTP2Protocol) =>
     allowance := self connection sendAllowance: sid
     // An empty DATA frame (the END_STREAM terminator) costs no window.
-    data size =:= 0 ifTrue: [
-      ^self
-        sendDataFit: sid
-        data: data
-        endStream: end
-    ]
+    data size =:= 0
+      ifTrue: [
+        ^self
+          sendDataFit: sid
+          data: data
+          endStream: end
+      ]
     allowance <= 0 ifTrue: [
       ^{#park, {(Binary fromBytes: #()), data, end}, self}
     ]
@@ -823,9 +824,9 @@ sealed typed Value subclass: HTTP2Protocol
     // Trailers (a later HEADERS on an open stream) carry no pseudo-headers,
     // so the request-head checks apply to the first block only.
     isHead := known =:= #new
-    checked := isHead
-      ifTrue: [validator checkRequestHeaders: headers]
-      ifFalse: [{nil, nil, nil, nil}]
+    checked := isHead ifTrue: [
+      validator checkRequestHeaders: headers
+    ] ifFalse: [{nil, nil, nil, nil}]
     contentLength := checked at: 4
     limit := conn remoteSettings maxHeaderListSize
     limit match: [
@@ -839,9 +840,9 @@ sealed typed Value subclass: HTTP2Protocol
         ];
       _ -> nil
     ]
-    sized := isHead
-      ifTrue: [conn withContentLength: sid length: contentLength]
-      ifFalse: [conn]
+    sized := isHead ifTrue: [
+      conn withContentLength: sid length: contentLength
+    ] ifFalse: [conn]
     conn2 := sized withFragmentFrame: nil
     conn3 := frame endStream ifTrue: [conn2 markReqEnded: sid] ifFalse: [conn2]
     known match: [

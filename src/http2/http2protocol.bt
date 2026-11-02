@@ -199,7 +199,9 @@ sealed typed Value subclass: HTTP2Protocol
     self logStreamError: e streamId: sid
     {rst, failed, proto} := self resetStream: sid code: (self streamCode: e)
     proto2 := proto failAll: failed
-    {out concat: rst, spawns, false, proto2}
+    // serveFrame merges this answer onto out/spawns itself: answer only
+    // this frame's contribution, or earlier bytes and spawns double up.
+    {rst, #(), false, proto2}
 
   /// The code from a caught H2StreamError's {code, streamId} reason.
   /// Subclass methods do not dispatch on exception instances, so the
@@ -657,6 +659,13 @@ sealed typed Value subclass: HTTP2Protocol
 
   sendDataOpen: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Tuple(Symbol, Object, HTTP2Protocol) =>
     allowance := self connection sendAllowance: sid
+    // An empty DATA frame (the END_STREAM terminator) costs no window.
+    data size =:= 0 ifTrue: [
+      ^self
+        sendDataFit: sid
+        data: data
+        endStream: end
+    ]
     allowance <= 0 ifTrue: [
       ^{#park, {(Binary fromBytes: #()), data, end}, self}
     ]
@@ -811,7 +820,13 @@ sealed typed Value subclass: HTTP2Protocol
   routeDecoded: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     validator := HTTP2Stream new withStreamId: sid
     stringed := validator stringHeaders: headers
-    {_, _, _cooked, contentLength} := validator checkRequestHeaders: headers
+    // Trailers (a later HEADERS on an open stream) carry no pseudo-headers,
+    // so the request-head checks apply to the first block only.
+    isHead := known =:= #new
+    checked := isHead
+      ifTrue: [validator checkRequestHeaders: headers]
+      ifFalse: [{nil, nil, nil, nil}]
+    contentLength := checked at: 4
     limit := conn remoteSettings maxHeaderListSize
     limit match: [
       #infinity -> nil;
@@ -824,7 +839,10 @@ sealed typed Value subclass: HTTP2Protocol
         ];
       _ -> nil
     ]
-    conn2 := (conn withContentLength: sid length: contentLength) withFragmentFrame: nil
+    sized := isHead
+      ifTrue: [conn withContentLength: sid length: contentLength]
+      ifFalse: [conn]
+    conn2 := sized withFragmentFrame: nil
     conn3 := frame endStream ifTrue: [conn2 markReqEnded: sid] ifFalse: [conn2]
     known match: [
       #new -> self
@@ -928,11 +946,11 @@ sealed typed Value subclass: HTTP2Protocol
     ] ifFalse: [Logger error: line metadata: meta]
     self
 
-  /// The peer's max frame size for parsing; our own for sending.
-  maxFrameSize -> Integer => self connection remoteSettings maxFrameSize
+  /// Our advertised max frame size bounds what we parse (RFC 9113
+  /// §4.2); the peer's bounds what we send.
+  maxFrameSize -> Integer => self connection localSettings maxFrameSize
 
-  /// The peer's limit sizes what we send (RFC 9113 §6.5.2); ours sizes
-  /// what we parse.
+  /// The peer's limit sizes what we send (RFC 9113 §6.5.2).
   maxSendFrameSize -> Integer => self connection remoteSettings maxFrameSize
 
   /// GOAWAY bytes for a connection error code.

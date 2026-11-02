@@ -145,10 +145,6 @@ sealed typed Value subclass: Exchange
 
   // === The response ===
 
-  /// The whole response (Bandit's send_resp): content-length set from
-  /// body (a String, Binary or iodata), head and body in one send. No
-  /// body goes out for HEAD, 204 or 304. Raises AlreadySent on a second
-  /// response and TransportError if the socket fails.
   /// The queued putRespHeader: headers plus the call's own headers
   /// (Bandit merges conn.resp_headers into every response head).
   headersWithQueued: st :: ExchangeState extra: hs :: HttpHeaders -> HttpHeaders =>
@@ -156,6 +152,10 @@ sealed typed Value subclass: Exchange
     hs do: [:h :: Tuple | all := all add: h]
     all
 
+  /// The whole response (Bandit's send_resp): content-length set from
+  /// body (a String, Binary or iodata), head and body in one send. No
+  /// body goes out for HEAD, 204 or 304. Raises AlreadySent on a second
+  /// response and TransportError if the socket fails.
   sendResp: status :: Integer headers: hs :: HttpHeaders body: body :: Object -> Exchange =>
     st := self load
     st respState =:= #unset

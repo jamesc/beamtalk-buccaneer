@@ -34,8 +34,8 @@ type Http1Options = Dictionary(Symbol, Object)
 /// Accepted, validated and stored; the HTTP/2 engine reads them.
 ///
 /// ## Options
-/// - `#enabled` (Boolean, default `true`) — `false` refuses h2 with a
-///   connection error instead of serving it.
+/// - `#enabled` (Boolean, default `true`) — `false` closes an h2
+///   connection (ALPN `h2` or the `PRI` preface) instead of serving it.
 /// - `#maxHeaderBlockSize` (Integer, default `50000`) — largest
 ///   reassembled header block in bytes.
 /// - `#maxRequests` (Integer, default `0`) — most streams per connection;

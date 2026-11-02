@@ -49,3 +49,25 @@ TestCase subclass: H2StreamCollectionTest
     c withInserted: 1 pid: Pid current
     self assert: (c getPid: 1) equals: #new
     self assert: c openCount equals: 0
+
+  testReservedStreamIsOpenBeforeSpawn =>
+    c := H2StreamCollection default reserving: 1
+    self assert: (c getPid: 1) equals: #reserved
+    self assert: (c getPid: 3) equals: #new
+    self assert: c lastStreamId equals: 1
+    self assert: c count equals: 1
+    self assert: c openCount equals: 1
+
+  testSpawnFulfilsReservation =>
+    me := Pid current
+    c := (H2StreamCollection default reserving: 1) withInserted: 1 pid: me
+    self assert: (c getPid: 1) equals: me
+    self assert: c count equals: 1
+    self assert: c openCount equals: 1
+    self assert: c lastStreamId equals: 1
+
+  testReleasedReservationIsClosed =>
+    c := (H2StreamCollection default reserving: 1) releasing: 1
+    self assert: (c getPid: 1) equals: #closed
+    self assert: c openCount equals: 0
+    self assert: c count equals: 1

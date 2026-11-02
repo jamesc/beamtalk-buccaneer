@@ -45,11 +45,12 @@ sealed Object subclass: H2Client
     self expectSettings: sock
     {sock, (self tables at: 1), (self tables at: 2)}
 
-  /// Open a TLS connection offering h2: ALPN negotiates the protocol,
-  /// so (unlike cleartext) there is no PRI magic — just the settings
-  /// roundtrip. Answers {sock, encoder, decoder}.
+  /// Open a TLS connection offering h2. ALPN negotiates the protocol but
+  /// the client still sends the PRI magic (RFC 9113 §3.4), then the
+  /// settings roundtrip. Answers {sock, encoder, decoder}.
   class sealed openTls: port =>
     sock := self connectTls: port alpn: #((Binary fromBytes: #(104, 50)))
+    self sendTls: sock bytes: self magic
     self sendFrameTls: sock frame: (H2Settings new withAck: false)
     self expectSettingsTls: sock
     {sock, (self tables at: 1), (self tables at: 2)}

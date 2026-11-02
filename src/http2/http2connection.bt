@@ -148,6 +148,11 @@ sealed typed Value subclass: HTTP2Connection
   withStreamMonitored: sid :: Integer pid: pid :: Pid ref: ref :: Reference -> HTTP2Connection =>
     ((self withStreams: (self streams withInserted: sid pid: pid)) withMonitors: (self monitors at: ref put: sid))
 
+  /// Accept a stream whose process the actor has yet to spawn, so the
+  /// rest of the same read already sees it as open.
+  withStreamReserved: sid :: Integer -> HTTP2Connection =>
+    self withStreams: (self streams reserving: sid)
+
   /// Forget a stream by pid; unknown pids answer self.
   withStreamDown: pid :: Pid -> HTTP2Connection =>
     self withStreams: (self streams withDeleted: pid)

@@ -383,22 +383,51 @@ sealed typed Value subclass: HTTP2Stream
     self
 
   /// A file response; answers the next transport. Exchange resolves
-  /// #all to a byte count, so length is always an Integer here.
+  /// #all to a byte count, so length is always an Integer here. As in
+  /// Bandit, the file is read in `sendfileChunkSize` pieces from here, in
+  /// the stream process, so each piece waits on flow control in turn and
+  /// the connection actor never holds the file.
   sendfile: path :: String offset: offset :: Integer length: length :: Object -> HTTP2Stream =>
     total := length match: [
       n :: Integer -> n;
       _ -> Error signal: "sendfile: length must be an Integer byte count"
     ]
-    self
-      withConn: [:proxy :: Object |
-        proxy
-          h2Sendfile: self streamId
-          path: path
-          offset: offset
-          length: total
-          chunk: self sendfileChunkSize
+    opened := (Erlang file) open: path with: #(#raw, #binary)
+    opened isError
+      ifTrue: [
+        Error signal: ("Error opening file for sendfile: " ++ opened error printString)
       ]
+    fd := opened value
+    [
+      total =:= 0
+        ifTrue: [self sendData: (Binary fromBytes: #()) end: true]
+        ifFalse: [self sendfileLoop: fd offset: offset length: total sent: 0]
+    ] ensure: [(Erlang file) close: fd]
     self withState: #localClosed
+
+  /// Read and send the next piece; the last one carries END_STREAM.
+  sendfileLoop: fd :: Object offset: offset :: Integer length: total :: Integer sent: sent :: Integer -> Nil =>
+    sent >= total ifTrue: [^nil]
+    readSize := (total - sent) min: (self sendfileChunkSize max: 1)
+    data := self sendfileRead: fd position: offset + sent size: readSize
+    now := data size
+    now =:= 0 ifTrue: [Error signal: "Error reading file for sendfile: eof"]
+    ended := (sent + now) >= total
+    self sendData: data end: ended
+    ended ifFalse: [
+      self sendfileLoop: fd offset: offset length: total sent: sent + now
+    ]
+    nil
+
+  /// One pread; anything but data is an error.
+  sendfileRead: fd :: Object position: position :: Integer size: size :: Integer -> Binary =>
+    read := (Erlang file) pread: fd with: position with: size
+    read match: [
+      r :: Result -> r isOk
+        ifTrue: [r value]
+        ifFalse: [Error signal: ("Error reading file for sendfile: " ++ r error printString)];
+      _ -> Error signal: "Error reading file for sendfile: eof"
+    ]
 
   /// Drain an unread body within limits; answers the next transport.
   ensureCompleted -> HTTP2Stream =>

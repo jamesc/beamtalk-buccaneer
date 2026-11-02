@@ -388,6 +388,7 @@ sealed typed Value subclass: HTTP2Protocol
     c := conn withStreamForgotten: sid
     pid match: [
       p :: Pid -> c withStreams: (c streams withDeleted: p);
+      #reserved -> c withStreams: (c streams releasing: sid);
       _ -> c
     ]
 
@@ -804,18 +805,37 @@ sealed typed Value subclass: HTTP2Protocol
     sid := frame streamId
     decoded := self connection decodeHeaders: frame fragment
     decoded match: [
-      {#ok, headers, conn} -> self
-        routeDecoded: sid
-        headers: headers
-        conn: conn
-        frame: frame
-        known: known;
-      _ -> H2ConnectionError signal: "Unable to decode headers" code: 9
+      {#ok, headers, conn} -> self routeCommitted: sid headers: headers conn: conn frame: frame known: known;
+      _ -> H2ConnectionError signal: "Unable to decode headers" code: HTTP2Errors compressionError
     ]
+
+  /// Route a decoded block with the HPACK table already committed: a
+  /// stream error in validation RSTs the stream but keeps the table
+  /// (Bandit: "preserve HPAX's internal state even if we reject this
+  /// stream's header list"), or the peer's next block decodes wrongly.
+  routeCommitted: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    committed := self withConnection: (conn withFragmentFrame: nil)
+    [
+      committed routeDecoded: sid headers: headers conn: conn frame: frame known: known
+    ] on: H2StreamError do: [:e :: H2StreamError | committed streamFailed: e]
 
   routeDecoded: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     validator := HTTP2Stream new withStreamId: sid
     stringed := validator stringHeaders: headers
+    // Our own limit bounds what we accept, and is checked first, with
+    // ENHANCE_YOUR_CALM, as Bandit does.
+    limit := conn localSettings maxHeaderListSize
+    limit match: [
+      #infinity -> nil;
+      n :: Integer -> (HTTP2Connection headerListSize: stringed) > n
+        ifTrue: [
+          H2StreamError
+            signal: "Received overlong headers"
+            code: HTTP2Errors enhanceYourCalm
+            streamId: sid
+        ];
+      _ -> nil
+    ]
     // Trailers (a later HEADERS on an open stream) carry no pseudo-headers,
     // so the request-head checks apply to the first block only.
     isHead := known =:= #new
@@ -823,18 +843,6 @@ sealed typed Value subclass: HTTP2Protocol
       validator checkRequestHeaders: headers
     ] ifFalse: [{nil, nil, nil, nil}]
     contentLength := checked at: 4
-    limit := conn remoteSettings maxHeaderListSize
-    limit match: [
-      #infinity -> nil;
-      n :: Integer -> (HTTP2Connection headerListSize: stringed) > n
-        ifTrue: [
-          H2StreamError
-            signal: "Received overlong headers"
-            code: HTTP2Errors protocolError
-            streamId: sid
-        ];
-      _ -> nil
-    ]
     sized := isHead ifTrue: [
       conn withContentLength: sid length: contentLength
     ] ifFalse: [conn]
@@ -857,7 +865,7 @@ sealed typed Value subclass: HTTP2Protocol
   /// parked header reader, spawn.
   headersSpawn: sid :: Integer frame: frame :: H2Headers headers: cooked :: List(Tuple) conn: conn :: HTTP2Connection -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     checked := conn checkNewStream: sid
-    opened := checked withStreamOpened: sid
+    opened := (checked withStreamReserved: sid) withStreamOpened: sid
     buffered := opened
       withHeadersBuffered: sid
       headers: cooked

@@ -249,7 +249,7 @@ typed Handler subclass: ConnectionHandler
       data: data
       endStream: end
 
-  /// Send response data bytes (shared by h2SendData and h2Sendfile).
+  /// Send response data bytes (h2SendData's worker; HTTP2Stream sendfile: feeds it chunk by chunk).
   h2SendBinary: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Object =>
     proto := self h2Protocol
     self h2CheckLive: sid proto: proto
@@ -290,16 +290,6 @@ typed Handler subclass: ConnectionHandler
       after: HTTP2Protocol sendTimeoutMs
     nil
 
-  /// Send a file as the whole body (END_STREAM on the last byte).
-  h2Sendfile: sid :: Integer path: path :: String offset: off :: Integer length: len :: Integer chunk: _size :: Integer -> Object =>
-    bytes := (Erlang file read_file: path) ifOk: [:b :: Binary |
-      b
-    ] ifError: [:r :: Exception | TransportError signal: "sendfile failed"]
-    self
-      h2SendBinary: sid
-      data: (bytes part: off size: len)
-      endStream: true
-
   /// Drain an unread body; never parks.
   h2Drain: sid :: Integer -> Object =>
     proto := self h2Protocol
@@ -331,10 +321,13 @@ typed Handler subclass: ConnectionHandler
     acc := proto
     spawns
       do: [:sid :: Integer |
-        acc := self
-          h2SpawnOne: sid
-          proto: acc
-          socket: sock
+        // A stream reset earlier in the same read lost its reservation.
+        (acc streamState: sid) =:= #reserved ifTrue: [
+          acc := self
+            h2SpawnOne: sid
+            proto: acc
+            socket: sock
+        ]
       ]
     acc
 

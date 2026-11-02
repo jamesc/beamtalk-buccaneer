@@ -9,14 +9,28 @@ sealed typed Value subclass: H2StreamCollection
   field: streamCount :: Integer = 0
   field: idToPid :: Dictionary(Integer, Pid) = #{}
   field: pidToId :: Dictionary(Pid, Integer) = #{}
+  field: reserved :: Dictionary(Integer, Boolean) = #{}
 
   class sealed default -> H2StreamCollection => H2StreamCollection new
 
-  /// The pid for a stream, or #new / #closed / #invalid.
+  /// The pid for a stream, or #new / #reserved / #closed / #invalid.
+  /// #reserved is a stream whose HEADERS were accepted but whose process
+  /// the actor has not spawned yet (Bandit starts the process inline).
   getPid: sid :: Integer -> Pid | Symbol =>
     sid isEven ifTrue: [^#invalid]
     sid > self lastStreamId ifTrue: [^#new]
-    self idToPid at: sid ifAbsent: [#closed]
+    self idToPid at: sid ifAbsent: [
+      (self reserved includesKey: sid) ifTrue: [#reserved] ifFalse: [#closed]
+    ]
+
+  /// Accept a new stream before its process exists: the highest id
+  /// moves and the total grows, as for withInserted:pid:.
+  reserving: sid :: Integer -> H2StreamCollection =>
+    (((self withLastStreamId: sid) withStreamCount: self streamCount + 1) withReserved: (self reserved at: sid put: true))
+
+  /// Drop a reservation (the stream was reset before it was spawned).
+  releasing: sid :: Integer -> H2StreamCollection =>
+    self withReserved: (self reserved removeKey: sid)
 
   /// The stream id for a pid, or nil.
   getStreamId: pid :: Pid -> Integer | Nil =>
@@ -27,6 +41,9 @@ sealed typed Value subclass: H2StreamCollection
 
   /// Insert a new stream: the highest id moves and the total grows.
   withInserted: sid :: Integer pid: pid :: Pid -> H2StreamCollection =>
+    (self reserved includesKey: sid) ifTrue: [
+      ^(((self withReserved: (self reserved removeKey: sid)) withIdToPid: (self idToPid at: sid put: pid)) withPidToId: (self pidToId at: pid put: sid))
+    ]
     ((((self withLastStreamId: sid) withStreamCount: self streamCount + 1) withIdToPid: (self idToPid at: sid put: pid)) withPidToId: (self pidToId at: pid put: sid))
 
   /// Forget a stream by pid; unknown pids answer self.
@@ -38,4 +55,4 @@ sealed typed Value subclass: H2StreamCollection
   count -> Integer => self streamCount
 
   /// How many streams are alive now.
-  openCount -> Integer => self idToPid size
+  openCount -> Integer => self idToPid size + self reserved size

@@ -41,9 +41,10 @@ sealed typed Value subclass: H2StreamCollection
 
   /// Insert a new stream: the highest id moves and the total grows.
   withInserted: sid :: Integer pid: pid :: Pid -> H2StreamCollection =>
-    (self reserved includesKey: sid) ifTrue: [
-      ^(((self withReserved: (self reserved removeKey: sid)) withIdToPid: (self idToPid at: sid put: pid)) withPidToId: (self pidToId at: pid put: sid))
-    ]
+    (self reserved includesKey: sid)
+      ifTrue: [
+        ^(((self withReserved: (self reserved removeKey: sid)) withIdToPid: (self idToPid at: sid put: pid)) withPidToId: (self pidToId at: pid put: sid))
+      ]
     ((((self withLastStreamId: sid) withStreamCount: self streamCount + 1) withIdToPid: (self idToPid at: sid put: pid)) withPidToId: (self pidToId at: pid put: sid))
 
   /// Forget a stream by pid; unknown pids answer self.

@@ -322,12 +322,13 @@ typed Handler subclass: ConnectionHandler
     spawns
       do: [:sid :: Integer |
         // A stream reset earlier in the same read lost its reservation.
-        (acc streamState: sid) =:= #reserved ifTrue: [
-          acc := self
-            h2SpawnOne: sid
-            proto: acc
-            socket: sock
-        ]
+        (acc streamState: sid) =:= #reserved
+          ifTrue: [
+            acc := self
+              h2SpawnOne: sid
+              proto: acc
+              socket: sock
+          ]
       ]
     acc
 

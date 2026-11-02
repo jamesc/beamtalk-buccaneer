@@ -401,7 +401,13 @@ sealed typed Value subclass: HTTP2Stream
     [
       total =:= 0
         ifTrue: [self sendData: (Binary fromBytes: #()) end: true]
-        ifFalse: [self sendfileLoop: fd offset: offset length: total sent: 0]
+        ifFalse: [
+          self
+            sendfileLoop: fd
+            offset: offset
+            length: total
+            sent: 0
+        ]
     ] ensure: [(Erlang file) close: fd]
     self withState: #localClosed
 
@@ -409,23 +415,36 @@ sealed typed Value subclass: HTTP2Stream
   sendfileLoop: fd :: Object offset: offset :: Integer length: total :: Integer sent: sent :: Integer -> Nil =>
     sent >= total ifTrue: [^nil]
     readSize := (total - sent) min: (self sendfileChunkSize max: 1)
-    data := self sendfileRead: fd position: offset + sent size: readSize
+    data := self
+      sendfileRead: fd
+      position: offset + sent
+      size: readSize
     now := data size
     now =:= 0 ifTrue: [Error signal: "Error reading file for sendfile: eof"]
     ended := (sent + now) >= total
     self sendData: data end: ended
-    ended ifFalse: [
-      self sendfileLoop: fd offset: offset length: total sent: sent + now
-    ]
+    ended
+      ifFalse: [
+        self
+          sendfileLoop: fd
+          offset: offset
+          length: total
+          sent: sent + now
+      ]
     nil
 
   /// One pread; anything but data is an error.
   sendfileRead: fd :: Object position: position :: Integer size: size :: Integer -> Binary =>
-    read := (Erlang file) pread: fd with: position with: size
+    read := (Erlang file)
+      pread: fd
+      with: position
+      with: size
     read match: [
-      r :: Result -> r isOk
-        ifTrue: [r value]
-        ifFalse: [Error signal: ("Error reading file for sendfile: " ++ r error printString)];
+      r :: Result -> r isOk ifTrue: [
+        r value
+      ] ifFalse: [
+        Error signal: ("Error reading file for sendfile: " ++ r error printString)
+      ];
       _ -> Error signal: "Error reading file for sendfile: eof"
     ]
 

@@ -805,7 +805,12 @@ sealed typed Value subclass: HTTP2Protocol
     sid := frame streamId
     decoded := self connection decodeHeaders: frame fragment
     decoded match: [
-      {#ok, headers, conn} -> self routeCommitted: sid headers: headers conn: conn frame: frame known: known;
+      {#ok, headers, conn} -> self
+        routeCommitted: sid
+        headers: headers
+        conn: conn
+        frame: frame
+        known: known;
       _ -> H2ConnectionError signal: "Unable to decode headers" code: HTTP2Errors compressionError
     ]
 
@@ -816,7 +821,12 @@ sealed typed Value subclass: HTTP2Protocol
   routeCommitted: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     committed := self withConnection: (conn withFragmentFrame: nil)
     [
-      committed routeDecoded: sid headers: headers conn: conn frame: frame known: known
+      committed
+        routeDecoded: sid
+        headers: headers
+        conn: conn
+        frame: frame
+        known: known
     ] on: H2StreamError do: [:e :: H2StreamError | committed streamFailed: e]
 
   routeDecoded: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>

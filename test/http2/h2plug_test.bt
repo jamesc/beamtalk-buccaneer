@@ -393,11 +393,15 @@ TestCase subclass: H2PlugTest
     H2Client sendFrame: sock frame: (H2Ping new withPayload: (Binary fromBytes: #(9, 8, 7, 6, 5, 4, 3, 2, 1)))
     self awaitPingAck: sock
 
+  /// The PING ack, skipping frames that may legitimately precede it: a
+  /// WINDOW_UPDATE, and the NO_ERROR RST_STREAM Bandit sends when a
+  /// response completes with the request body still unread (RFC9113§8.1).
   awaitPingAck: sock =>
     frame := H2Client recvFrame: sock
     frame match: [
       p :: H2Ping -> self assert: p ack;
       w :: H2WindowUpdate -> self awaitPingAck: sock;
+      r :: H2RstStream -> self awaitPingAck: sock;
       _ -> self assert: false
     ]
 

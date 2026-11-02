@@ -412,9 +412,12 @@ sealed typed Value subclass: HTTP2Stream
     self withState: #localClosed
 
   /// Read and send the next piece; the last one carries END_STREAM.
-  sendfileLoop: fd :: Object offset: offset :: Integer length: total :: Integer sent: sent :: Integer -> Nil =>
-    sent >= total ifTrue: [^nil]
-    readSize := (total - sent) min: (self sendfileChunkSize max: 1)
+  sendfileLoop: fd :: Object offset: offset :: Integer length: total :: Integer sent: sent :: Integer -> HTTP2Stream =>
+    sent >= total ifTrue: [^self]
+    chunk := self sendfileChunkSize
+    cap := chunk < 1 ifTrue: [1] ifFalse: [chunk]
+    left := total - sent
+    readSize := left < cap ifTrue: [left] ifFalse: [cap]
     data := self
       sendfileRead: fd
       position: offset + sent
@@ -424,6 +427,7 @@ sealed typed Value subclass: HTTP2Stream
     ended := (sent + now) >= total
     self sendData: data end: ended
     ended
+      ifTrue: [self]
       ifFalse: [
         self
           sendfileLoop: fd
@@ -431,7 +435,6 @@ sealed typed Value subclass: HTTP2Stream
           length: total
           sent: sent + now
       ]
-    nil
 
   /// One pread; anything but data is an error.
   sendfileRead: fd :: Object position: position :: Integer size: size :: Integer -> Binary =>

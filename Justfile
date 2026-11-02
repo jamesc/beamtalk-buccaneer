@@ -31,6 +31,12 @@ spike-bench *ARGS:
 autobahn:
     AUTOBAHN=1 beamtalk test --warnings-as-errors
 
+# h2spec conformance over TLS/ALPN h2 (needs docker or an h2spec
+# binary): the full suite with the H2SPEC=1 gate open.
+# Non-blocking in CI until green; H2SPEC_SECTION limits the section.
+h2spec:
+    H2SPEC=1 beamtalk test --warnings-as-errors
+
 # Check formatting
 fmt:
     beamtalk fmt-check

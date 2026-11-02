@@ -1,0 +1,73 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's StreamCollection behavior (Phase 6).
+TestCase subclass: H2StreamCollectionTest
+
+  testEvenIsInvalid =>
+    c := H2StreamCollection default
+    self assert: (c getPid: 2) equals: #invalid
+    self assert: (c getPid: 0) equals: #invalid
+
+  testUnknownOddIsNew =>
+    c := H2StreamCollection default
+    self assert: (c getPid: 1) equals: #new
+    self assert: (c getPid: 99) equals: #new
+
+  testInsertFindDelete =>
+    c := H2StreamCollection default
+    me := Pid current
+    runner := OtherProcess spawn
+    other := runner pid
+    c2 := c withInserted: 1 pid: me
+    self assert: (c2 getPid: 1) equals: me
+    self assert: (c2 getStreamId: me) equals: 1
+    self assert: c2 count equals: 1
+    self assert: c2 openCount equals: 1
+    self assert: c2 lastStreamId equals: 1
+    c3 := c2 withInserted: 3 pid: other
+    self assert: (c3 getPid: 1) equals: me
+    self assert: (c3 getPid: 3) equals: other
+    self assert: c3 lastStreamId equals: 3
+    self assert: c3 count equals: 2
+    self assert: (c3 pids size) equals: 2
+    c4 := c3 withDeleted: me
+    self assert: (c4 getPid: 1) equals: #closed
+    self assert: (c4 getPid: 3) equals: other
+    self assert: (c4 getPid: 5) equals: #new
+    self assert: c4 openCount equals: 1
+    self assert: c4 count equals: 2
+    self assert: (c4 getStreamId: me) isNil
+    runner stop
+
+  testDeleteUnknownPidAnswersSelf =>
+    c := H2StreamCollection default
+    self assert: (c withDeleted: Pid current) equals: c
+
+  testOriginalUnchanged =>
+    c := H2StreamCollection default
+    c withInserted: 1 pid: Pid current
+    self assert: (c getPid: 1) equals: #new
+    self assert: c openCount equals: 0
+
+  testReservedStreamIsOpenBeforeSpawn =>
+    c := H2StreamCollection default reserving: 1
+    self assert: (c getPid: 1) equals: #reserved
+    self assert: (c getPid: 3) equals: #new
+    self assert: c lastStreamId equals: 1
+    self assert: c count equals: 1
+    self assert: c openCount equals: 1
+
+  testSpawnFulfilsReservation =>
+    me := Pid current
+    c := (H2StreamCollection default reserving: 1) withInserted: 1 pid: me
+    self assert: (c getPid: 1) equals: me
+    self assert: c count equals: 1
+    self assert: c openCount equals: 1
+    self assert: c lastStreamId equals: 1
+
+  testReleasedReservationIsClosed =>
+    c := (H2StreamCollection default reserving: 1) releasing: 1
+    self assert: (c getPid: 1) equals: #closed
+    self assert: c openCount equals: 0
+    self assert: c count equals: 1

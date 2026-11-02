@@ -1,0 +1,54 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.StreamProcess: one process per stream, running the
+/// pipeline. Spawned monitored by the connection when a stream's first
+/// HEADERS arrives; runs the pipeline in a `continueWith:` step (so
+/// spawn returns first) and stops normally when done. The connection
+/// learns of the end through the DOWN message and resets or forgets
+/// the stream there — the stream process never waits on its own
+/// mailbox. Spawn with a Dictionary: #conn (the connection actor),
+/// #transport (the HTTP2Stream), #handler, #config, #connData, #span.
+///
+/// An abnormal end (a leaked raise past the pipeline's own handling)
+/// is swallowed here the way Bandit's handle_error returns normally:
+/// the 500 already went out through sendOnError, and the connection
+/// resets the stream on the DOWN message.
+typed Server subclass: StreamProcess
+  state: conn :: ConnectionHandler | Nil = nil
+  state: transport :: HTTP2Stream | Nil = nil
+  state: handler :: ExchangeHandlerLike | Nil = nil
+  state: config :: BuccaneerConfig | Nil = nil
+  state: connData :: Tuple(Boolean, Tuple | Symbol) = {false, #unknown}
+  state: span :: CatalinaTelemetry | Nil = nil
+
+  initialize -> Nil =>
+    self continueWith: #run
+    nil
+
+  run -> Nil =>
+    [
+      Pipeline
+        runRequest: self transportValue
+        handler: self handlerValue
+        connectionSpan: self.span
+        connData: self.connData
+        options: self configValue
+    ] on: Exception do: [:e :: Exception | nil]
+    self stopWith: #normal
+    nil
+
+  transportValue -> HTTP2Stream =>
+    t := self.transport
+    t isNil ifTrue: [Error signal: "StreamProcess has no transport"]
+    t
+
+  handlerValue -> ExchangeHandlerLike =>
+    h := self.handler
+    h isNil ifTrue: [Error signal: "StreamProcess has no handler"]
+    h
+
+  configValue -> BuccaneerConfig =>
+    c := self.config
+    c isNil ifTrue: [Error signal: "StreamProcess has no config"]
+    c

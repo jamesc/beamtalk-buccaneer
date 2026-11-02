@@ -1,0 +1,999 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Handler as a Value: one per connection, held in the
+/// connection handler's userState. Feeds bytes into the frame loop,
+/// answers socket bytes and actions; the connection actor performs
+/// spawns, monitors, deferred replies and closes.
+///
+/// Actions answer {kind, detail, protocol}: #continue and #close carry
+/// no detail, #spawn carries the new stream id.
+sealed typed Value subclass: HTTP2Protocol
+  field: config :: BuccaneerConfig
+  field: handler :: ExchangeHandlerLike
+  field: connData :: Tuple(Boolean, Tuple | Symbol)
+  field: connection :: HTTP2Connection = HTTP2Connection default
+  field: buffer :: Binary = ""
+  field: peerData :: SocketAddress | Nil = nil
+  field: sockData :: SocketAddress | Nil = nil
+  field: peerCert :: Result(Binary, Object) | Nil = nil
+  field: outbox :: List(Tuple) = #()
+
+  /// Start a connection: settings come from the #http2 section. The
+  /// actor socket-sends initialSettingsBytes, then feeds wire bytes
+  /// to serve:.
+  class sealed begin: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike connData: connData :: Tuple(Boolean, Tuple | Symbol) -> HTTP2Protocol =>
+    conn := HTTP2Connection default
+    conn := conn withMaxRequests: (config http2Integer: #maxRequests default: 0)
+    conn := conn withMaxHeaderBlockSize: (config http2Integer: #maxHeaderBlockSize default: 50000)
+    conn := conn withSendfileChunkSize: (config http2Integer: #sendfileChunkSize default: 1048576)
+    conn := conn withResetIntensity: (config http2ResetIntensity)
+    conn := conn withResetPeriod: (config http2ResetPeriod)
+    local := self localSettings: config
+    conn := conn withLocalSettings: local
+    conn := conn withSendWindowSize: 65535
+    conn := conn withRecvWindowSize: 65535
+    HTTP2Protocol
+      config: config
+      handler: handler
+      connData: connData
+      connection: conn
+      buffer: ""
+      peerData: nil
+      sockData: nil
+      peerCert: nil
+      outbox: #()
+
+  /// The local settings as a wire dictionary (defaults omitted, exactly
+  /// as the frame layer's serialization skips them).
+  class sealed wireSettings: local :: HTTP2Settings -> Dictionary(Symbol, Object) =>
+    out := #{}
+    local headerTableSize =:= 4096 ifFalse: [
+      out := out at: #header_table_size put: local headerTableSize
+    ]
+    local maxConcurrentStreams match: [
+      #infinity -> nil;
+      n :: Integer -> out := out at: #max_concurrent_streams put: n;
+      _ -> nil
+    ]
+    local initialWindowSize =:= 65535 ifFalse: [
+      out := out at: #initial_window_size put: local initialWindowSize
+    ]
+    local maxFrameSize =:= 16384 ifFalse: [
+      out := out at: #max_frame_size put: local maxFrameSize
+    ]
+    local maxHeaderListSize match: [
+      #infinity -> nil;
+      n :: Integer -> out := out at: #max_header_list_size put: n;
+      _ -> nil
+    ]
+    out
+
+  /// The local settings merged over the defaults from #defaultLocalSettings.
+  class sealed localSettings: config :: BuccaneerConfig -> HTTP2Settings =>
+    base := HTTP2Settings default
+    raw := config http2 at: #defaultLocalSettings ifAbsent: [^base]
+    raw match: [
+      d :: Dictionary -> self mergeLocal: base params: d;
+      _ -> Error signal: "Invalid value for #defaultLocalSettings"
+    ]
+
+  class sealed mergeLocal: base :: HTTP2Settings params: params :: Dictionary(Symbol, Object) -> HTTP2Settings =>
+    hts := self
+      settingInt: params
+      key: #headerTableSize
+      fallback: base headerTableSize
+    mcs := self
+      settingNum: params
+      key: #maxConcurrentStreams
+      fallback: base maxConcurrentStreams
+    iws := self
+      settingInt: params
+      key: #initialWindowSize
+      fallback: base initialWindowSize
+    mfs := self
+      settingInt: params
+      key: #maxFrameSize
+      fallback: base maxFrameSize
+    mhls := self
+      settingNum: params
+      key: #maxHeaderListSize
+      fallback: base maxHeaderListSize
+    iws > 2147483647 ifTrue: [
+      Error signal: "Invalid #initialWindowSize (RFC9113§6.5)"
+    ]
+    (mfs < 16384 or: [
+      mfs > 16777215
+    ]) ifTrue: [Error signal: "Invalid #maxFrameSize (RFC9113§6.5)"]
+    (((((HTTP2Settings new withHeaderTableSize: hts) withMaxConcurrentStreams: mcs) withInitialWindowSize: iws) withMaxFrameSize: mfs) withMaxHeaderListSize: mhls)
+
+  class sealed settingInt: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer -> Integer =>
+    (params includesKey: key) ifFalse: [^fallback]
+    (params at: key) match: [
+      n :: Integer -> n;
+      _ -> Error signal: ("Invalid value for #" ++ key asString)
+    ]
+
+  class sealed settingNum: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer | Symbol -> Integer | Symbol =>
+    (params includesKey: key) ifFalse: [^fallback]
+    (params at: key) match: [
+      n :: Integer -> n;
+      s :: Symbol -> s;
+      _ -> Error signal: ("Invalid value for #" ++ key asString)
+    ]
+
+  /// Parked sends expire 15 s after (re-)queueing, in native time.
+  class sealed sendTimeoutNative -> Integer => 15 * 1000 * 1000 * 1000
+
+  /// The same 15 s budget in milliseconds, for `Timer send:to:after:`.
+  class sealed sendTimeoutMs -> Integer => 15 * 1000
+
+  /// Our connection preface: an empty SETTINGS frame for the actor to
+  /// socket-send before serving (RFC 9113 §3.4).
+  initialSettingsBytes -> Binary =>
+    H2Frame serialize: ((H2Settings new withAck: false) withSettings: (HTTP2Protocol wireSettings: self connection localSettings)) maxFrameSize: 16384
+
+  // === Frame serving ===
+  //
+  // serve:/info: answer {bytes, spawns, close, protocol}: wire bytes
+  // for the actor to send, new stream ids for it to spawn, whether to
+  // close after sending, and the updated protocol. H2StreamError here
+  // becomes RST_STREAM; H2ConnectionError becomes GOAWAY and close.
+  serve: data :: Binary -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    self
+      serveFrames: (self buffer concat: data)
+      bytes: (Binary fromBytes: #())
+      spawns: #()
+      closing: false
+
+  serveFrames: buffer :: Binary bytes: out :: Binary spawns: spawns :: List(Integer) closing: closing :: Boolean -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    closing ifTrue: [^{out, spawns, true, (self withBuffer: buffer)}]
+    deser := H2Frame deserialize: buffer maxFrameSize: self maxFrameSize
+    deser isNil ifTrue: [^{out, spawns, false, (self withBuffer: buffer)}]
+    deser match: [
+      {inner, rest} -> self
+        serveInner: inner
+        rest: rest
+        bytes: out
+        spawns: spawns;
+      _ -> self serveError: HTTP2Errors protocolError message: "Invalid frame"
+    ]
+
+  serveInner: inner :: Object rest: rest :: Binary bytes: out :: Binary spawns: spawns :: List(Integer) -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    inner match: [
+      {#more, buf} -> {out, spawns, false, (self withBuffer: buf)};
+      {#ok, frame} -> self
+        serveFrame: frame
+        rest: rest
+        bytes: out
+        spawns: spawns;
+      {#error, code, message} -> self serveFrameError: code message: message;
+      _ -> self serveError: HTTP2Errors protocolError message: "Invalid frame"
+    ]
+
+  /// One complete frame, then loop over the rest of the packet: merge
+  /// this frame's bytes and spawns, stop on close, RST-and-continue on
+  /// stream errors.
+  serveFrame: frame :: Object rest: rest :: Binary bytes: out :: Binary spawns: spawns :: List(Integer) -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    {bytes, fresh, close, proto} := [
+      self handleFrame: frame
+    ] on: H2StreamError do: [:e :: H2StreamError | self streamFailed: e]
+    merged := out concat: bytes
+    all := spawns ++ fresh
+    close ifTrue: [^{merged, all, true, (proto withBuffer: rest)}]
+    proto
+      serveFrames: rest
+      bytes: merged
+      spawns: all
+      closing: false
+
+  /// H2StreamError while handling a frame: RST the stream, log it short,
+  /// keep the connection alive (the loop continues with the rest).
+  streamFailed: e :: H2StreamError -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := self streamSid: e
+    self logStreamError: e streamId: sid
+    {rst, failed, proto} := self resetStream: sid code: (self streamCode: e)
+    proto2 := proto failAll: failed
+    // serveFrame merges this answer onto out/spawns itself: answer only
+    // this frame's contribution, or earlier bytes and spawns double up.
+    {rst, #(), false, proto2}
+
+  /// The code from a caught H2StreamError's {code, streamId} reason.
+  /// Subclass methods do not dispatch on exception instances, so the
+  /// protocol matches the reason directly.
+  streamCode: e :: H2StreamError -> Integer =>
+    e reason match: [
+      {c, _} -> c match: [
+        n :: Integer -> n;
+        _ -> HTTP2Errors protocolError
+      ];
+      _ -> HTTP2Errors protocolError
+    ]
+
+  /// The stream id from a caught H2StreamError's reason, or 0.
+  streamSid: e :: H2StreamError -> Integer =>
+    e reason match: [
+      {_, s} -> s match: [
+        n :: Integer -> n;
+        _ -> 0
+      ];
+      _ -> 0
+    ]
+
+  /// The code from a caught H2ConnectionError's reason, or protocol
+  /// error (same dispatch limitation as streamCode:).
+  connCode: e :: H2ConnectionError -> Integer =>
+    e reason match: [
+      n :: Integer -> n;
+      _ -> HTTP2Errors protocolError
+    ]
+
+  /// Queue a reply for the actor to deliver.
+  withReply: tag :: Symbol token: tok :: ReplyTo value: v :: Object -> HTTP2Protocol =>
+    self withOutbox: (self outbox add: {tag, tok, v})
+
+  /// Take every queued reply, oldest first.
+  takeOutbox -> Tuple(List(Tuple), HTTP2Protocol) =>
+    {self outbox, (self withOutbox: #())}
+
+  /// Queue TransportError failures for parked tokens.
+  failAll: tokens :: List(ReplyTo) -> HTTP2Protocol =>
+    failed := self
+    tokens
+      do: [:tok :: ReplyTo |
+        failed := failed
+          withReply: #error
+          token: tok
+          value: (self transportError: "stream reset")
+      ]
+    failed
+
+  /// A TransportError value without raising it.
+  transportError: msg :: String -> TransportError =>
+    [
+      TransportError signal: msg
+    ] on: TransportError do: [:e :: TransportError | e]
+
+  serveFrameError: code :: Object message: message :: Object -> Never =>
+    code match: [
+      n :: Integer -> message match: [
+        s :: String -> self serveError: n message: s;
+        _ -> self serveError: n message: "Invalid frame"
+      ];
+      _ -> self serveError: HTTP2Errors protocolError message: "Invalid frame"
+    ]
+
+  serveError: code :: Integer message: message :: String -> Never =>
+    H2ConnectionError signal: message code: code
+
+  // === Per-frame handlers: answer {bytes, spawns, close, protocol} ===
+
+  /// DATA: validate, account windows, buffer, wake a parked reader.
+  dataFor: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    sid =:= 0
+      ifTrue: [
+        H2ConnectionError signal: "Received DATA with zero stream_id (RFC9113§6.1)" code: HTTP2Errors protocolError
+      ]
+    (self streamState: sid) match: [
+      #new -> (self connection headersBuffer includesKey: sid)
+        ifTrue: [self dataForOpen: frame]
+        ifFalse: [
+          H2ConnectionError signal: "Received DATA in idle state" code: HTTP2Errors protocolError
+        ];
+      #invalid -> H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError;
+      #closed -> {Binary fromBytes: #(), #(), false, self};
+      _ -> self dataForOpen: frame
+    ]
+
+  /// The stream collection's verdict for a frame's stream id.
+  streamState: sid :: Integer -> Symbol | Pid =>
+    self connection streams getPid: sid
+
+  dataForOpen: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    data := frame data
+    conn := self connection
+    (data size > conn recvWindowSize)
+      ifTrue: [
+        H2ConnectionError signal: "Received DATA exceeding connection window" code: HTTP2Errors flowControlError
+      ]
+    streamWindow := conn streamRecvWindows at: sid ifAbsent: [65535]
+    (data size > streamWindow)
+      ifTrue: [
+        H2StreamError
+          signal: "Received DATA exceeding stream window"
+          code: HTTP2Errors flowControlError
+          streamId: sid
+      ]
+    content := conn contentLengthFor: sid
+    content match: [
+      n :: Integer -> (data size > n)
+        ifTrue: [
+          H2StreamError
+            signal: "Received more data than content-length"
+            code: HTTP2Errors protocolError
+            streamId: sid
+        ];
+      _ -> nil
+    ]
+    {conn2, connIncrement} := conn withConnDataReceived: data size
+    {conn3, streamIncrement} := conn2 withDataReceived: sid count: data size
+    conn4 := conn3
+      withDataBuffered: sid
+      data: data
+      endStream: frame endStream
+    conn5 := content match: [
+      n :: Integer -> conn4 withContentLength: sid length: (n - data size);
+      _ -> conn4
+    ]
+    conn6 := frame endStream ifTrue: [conn5 markReqEnded: sid] ifFalse: [conn5]
+    out := Binary fromBytes: #()
+    out := connIncrement > 0
+      ifTrue: [
+        out concat: (H2Frame serialize: ((H2WindowUpdate new withStreamId: 0) withSizeIncrement: connIncrement) maxFrameSize: self maxSendFrameSize)
+      ]
+      ifFalse: [out]
+    out := streamIncrement > 0
+      ifTrue: [
+        out concat: (H2Frame serialize: ((H2WindowUpdate new withStreamId: sid) withSizeIncrement: streamIncrement) maxFrameSize: self maxSendFrameSize)
+      ]
+      ifFalse: [out]
+    proto := (self withConnection: conn6) wakeDataReader: sid
+    cleaned := (self withConnection: (proto connectionIsComplete: sid)) keepingRepliesOf: proto
+    {out, #(), false, cleaned}
+
+  /// If a data reader is parked for the stream, answer it from the
+  /// buffer now through the outbox.
+  wakeDataReader: sid :: Integer -> HTTP2Protocol =>
+    {conn, parked} := self connection takeDataReader: sid
+    parked isNil ifTrue: [^self withConnection: conn]
+    tok := parked at: 1
+    max := parked at: 2
+    {conn2, taken} := conn
+      takeBufferedData: sid
+      maxBytes: (max match: [
+        n :: Integer -> n;
+        _ -> 8000000
+      ])
+    data := taken at: 1
+    drained := taken at: 2
+    ended := taken at: 3
+    more := (drained and: [ended]) not
+    (self withConnection: conn2)
+      withReply: #ok
+      token: tok
+      value: {data, more, ended}
+
+  /// Rebuild on a cleaned-up connection without dropping an
+  /// intermediate protocol's queued replies (a woken reader's outbox
+  /// answer would otherwise never reach its parked caller).
+  keepingRepliesOf: other :: HTTP2Protocol -> HTTP2Protocol =>
+    kept := self
+    (other outbox) do: [:entry :: Tuple |
+      kept := kept withOutbox: (kept outbox add: entry)
+    ]
+    kept
+
+  /// Forget a stream the moment both sides ended.
+  connectionIsComplete: sid :: Integer -> HTTP2Connection =>
+    conn := self connection
+    (conn isComplete: sid) ifFalse: [^conn]
+    self forgetStream: sid conn: conn
+
+  /// Drop every trace of a stream: collection entry, windows, buffers,
+  /// readers and end markers.
+  forgetStream: sid :: Integer conn: conn :: HTTP2Connection -> HTTP2Connection =>
+    pid := conn streams getPid: sid
+    c := conn withStreamForgotten: sid
+    pid match: [
+      p :: Pid -> c withStreams: (c streams withDeleted: p);
+      #reserved -> c withStreams: (c streams releasing: sid);
+      _ -> c
+    ]
+
+  /// Send RST_STREAM for a stream and forget it; answers {bytes,
+  /// parked tokens to fail, protocol}.
+  resetStream: sid :: Integer code: code :: Integer -> Tuple(Binary, List(ReplyTo), HTTP2Protocol) =>
+    {proto, failed} := self takeParked: sid
+    bytes := H2Frame serialize: ((H2RstStream new withStreamId: sid) withErrorCode: code) maxFrameSize: self maxSendFrameSize
+    {bytes, failed, (proto withConnection: (self forgetStream: sid conn: proto connection))}
+
+  /// Take every parked token for a stream: header/data readers, window
+  /// waiters and queued sends. Answers {protocol, tokens}.
+  takeParked: sid :: Integer -> Tuple(HTTP2Protocol, List(ReplyTo)) =>
+    {c1, h} := self connection takeHeaderReader: sid
+    {c2, d} := c1 takeDataReader: sid
+    {c3, send} := c2 takePendingSend: sid
+    failed := #()
+    h isNil ifFalse: [failed := failed add: h]
+    d isNil ifFalse: [failed := failed add: (d at: 1)]
+    send isNil ifFalse: [failed := failed add: (send at: 4)]
+    {(self withConnection: c3), failed}
+
+  /// HEADERS: new streams are validated, opened and spawned; trailers
+  /// on open streams are validated and ignored; anything else is a
+  /// connection error.
+  headersFor: frame :: H2Headers -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    sid =:= 0
+      ifTrue: [
+        H2ConnectionError signal: "Received HEADERS with zero stream_id (RFC9113§6.2)" code: HTTP2Errors protocolError
+      ]
+    // Priority data in HEADERS is deprecated (RFC 9113 §5.3) and
+    // ignored, as Bandit does.
+    frame endHeaders ifFalse: [^self headersFragmented: frame]
+    self routeHeaders: frame
+
+  /// A complete header block, from HEADERS or the CONTINUATION that ended
+  /// it, by the stream's state: an invalid id is a connection error; every
+  /// other state decodes the block (the HPACK table must see every block,
+  /// RFC 7541 §2.2) and then routes it (a closed stream drops it).
+  routeHeaders: frame :: H2Headers -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    state := self streamState: frame streamId
+    state =:= #invalid
+      ifTrue: [
+        H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError
+      ]
+    self finishHeaders: frame streamKnown: state
+
+  /// HEADERS without END_HEADERS: stash the fragment for CONTINUATION.
+  headersFragmented: frame :: H2Headers -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    conn := self connection withFragmentFrame: frame
+    conn checkFragmentSize: frame fragment
+    {Binary fromBytes: #(), #(), false, (self withConnection: conn)}
+
+  /// CONTINUATION: must follow a fragmented HEADERS for the same
+  /// stream; END_HEADERS decodes the whole block.
+  continuationFor: frame :: H2Continuation -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    frag := self connection fragmentFrame
+    frag isNil
+      ifTrue: [
+        H2ConnectionError signal: "Received unexpected CONTINUATION (RFC9113§6.10)" code: HTTP2Errors protocolError
+      ]
+    frag streamId =:= sid
+      ifFalse: [
+        H2ConnectionError signal: "Received CONTINUATION for another stream" code: HTTP2Errors protocolError
+      ]
+    (frag fragment size + frame fragment size) > self connection maxHeaderBlockSize
+      ifTrue: [
+        H2ConnectionError signal: "Received overlong headers" code: HTTP2Errors protocolError
+      ]
+    frame endHeaders
+      ifFalse: [
+        merged := (frag withFragment: (frag fragment concat: frame fragment)) withEndHeaders: false
+        ^(self withConnection: (self connection withFragmentFrame: merged)) continuationAck
+      ]
+    full := (frag withFragment: (frag fragment concat: frame fragment)) withEndHeaders: true
+    self routeHeaders: full
+
+  continuationAck -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    {Binary fromBytes: #(), #(), false, self}
+
+  /// RST_STREAM: reset-rate-limit, fail parked tokens, forget the stream.
+  rstReceivedFor: frame :: H2RstStream -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    (self streamState: sid) match: [
+      #new -> H2ConnectionError signal: "Received RST_STREAM in idle state" code: HTTP2Errors protocolError;
+      #invalid -> H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError;
+      #closed -> {Binary fromBytes: #(), #(), false, self};
+      _ -> self peerResetStream: sid
+    ]
+
+  peerResetStream: sid :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    conn := self connection withResetRecorded: (BuccaneerTelemetry monotonicTime)
+    {proto, failed} := (self withConnection: conn) takeParked: sid
+    proto2 := proto failAll: failed
+    {Binary fromBytes: #(), #(), false, (proto2 withConnection: (self forgetStream: sid conn: proto2 connection))}
+
+  /// SETTINGS: ack ours, apply theirs (window delta wakes parked work).
+  /// The frame layer already rejects nonzero stream ids and
+  /// ack-with-payload.
+  settingsFor: frame :: H2Settings -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    frame ack ifTrue: [^{Binary fromBytes: #(), #(), false, self}]
+    {conn, delta} := self connection applyRemoteSettings: frame settings
+    (conn streamWindowsOverflowBy: delta)
+      ifTrue: [
+        H2ConnectionError signal: "Invalid SETTINGS_INITIAL_WINDOW_SIZE: a stream window exceeds the maximum (RFC9113§6.9.2)" code: HTTP2Errors flowControlError
+      ]
+    ack := H2Frame serialize: ((H2Settings new withAck: true) withSettings: #{}) maxFrameSize: self maxSendFrameSize
+    {released, proto} := (self withConnection: (conn withAllStreamWindowsOpened: delta)) releaseFlowControl
+    {(ack concat: released), #(), false, proto}
+
+  /// Re-issue every queued send against the grown windows: frame what
+  /// fits now for the actor to socket-send, re-queue the rest under the
+  /// same token. Answers {bytes, protocol}.
+  releaseFlowControl -> Tuple(Binary, HTTP2Protocol) =>
+    {conn, sends} := self connection takePendingSends
+    proto := self withConnection: conn
+    out := Binary fromBytes: #()
+    sends
+      do: [:item :: Tuple |
+        {bytes, next} := proto
+          sendQueued: (item at: 1)
+          rest: (item at: 2)
+          endStream: (item at: 3)
+          token: (item at: 4)
+        out := out concat: bytes
+        proto := next
+      ]
+    {out, proto}
+
+  /// Re-issue one queued send: frame what fits, re-queue the rest with
+  /// the same token, fail it if the stream went away. Answers {bytes,
+  /// protocol}; a finished send replies #sent to wake the stream.
+  sendQueued: sid :: Integer rest: rest :: Binary endStream: end :: Boolean token: tok :: ReplyTo -> Tuple(Binary, HTTP2Protocol) =>
+    (self
+      sendDataFor: sid
+      data: rest
+      endStream: end) match: [
+      {#sent, bytes, proto} -> {bytes, (proto
+        withReply: #ok
+        token: tok
+        value: #sent)};
+      {#park, payload, proto} -> proto
+        parkQueued: sid
+        payload: payload
+        token: tok;
+      {#error, _reason, proto} -> {(Binary fromBytes: #()), (proto
+        withReply: #error
+        token: tok
+        value: (self transportError: "stream reset"))}
+    ]
+
+  /// Socket-send the fitted head now, re-queue the remainder under the
+  /// same token with a fresh 15 s expiry. Answers {bytes, protocol}.
+  parkQueued: sid :: Integer payload: payload :: Tuple token: tok :: ReplyTo -> Tuple(Binary, HTTP2Protocol) =>
+    conn := self connection
+      queueSend: sid
+      rest: (payload at: 2)
+      endStream: (payload at: 3)
+      replyTo: tok
+      expiresAt: (BuccaneerTelemetry monotonicTime + self class sendTimeoutNative)
+    {(payload at: 1), (self withConnection: conn)}
+
+  /// PING: answer non-acks, ignore acks.
+  pingFor: frame :: H2Ping -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    frame ack ifTrue: [^{Binary fromBytes: #(), #(), false, self}]
+    pong := H2Frame serialize: ((H2Ping new withAck: true) withPayload: frame payload) maxFrameSize: self maxSendFrameSize
+    {pong, #(), false, self}
+
+  /// GOAWAY from the peer: send ours and close.
+  goawayReceivedFor: _frame :: H2Goaway -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    {self goawayBytes: HTTP2Errors noError, #(), true, self}
+
+  /// WINDOW_UPDATE: grow a stream or the connection window, then
+  /// release parked work.
+  windowUpdateFor: frame :: H2WindowUpdate -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    sid =:= 0 ifTrue: [
+      ^self connWindowOpened: frame sizeIncrement
+    ] ifFalse: [^self streamWindowOpened: sid increment: frame sizeIncrement]
+
+  connWindowOpened: increment :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    {conn, problem} := self connection withConnWindowOpened: increment
+    problem isNil
+      ifFalse: [
+        H2ConnectionError signal: "Invalid WINDOW_UPDATE increment (RFC9113§6.9.1)" code: HTTP2Errors flowControlError
+      ]
+    {released, proto} := (self withConnection: conn) releaseFlowControl
+    {released, #(), false, proto}
+
+  streamWindowOpened: sid :: Integer increment: inc :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    (self streamState: sid) match: [
+      #new -> {Binary fromBytes: #(), #(), false, (self withConnection: (self connection withStrayWindow: sid increment: inc))};
+      #invalid -> H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError;
+      #closed -> {Binary fromBytes: #(), #(), false, self};
+      _ -> self streamWindowLive: sid increment: inc
+    ]
+
+  streamWindowLive: sid :: Integer increment: inc :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    grown := FlowControl updateSendWindow: (self connection streamSendWindows at: sid ifAbsent: [
+      0
+    ]) increment: inc
+    grown isError
+      ifTrue: [
+        H2StreamError
+          signal: grown error
+          code: HTTP2Errors flowControlError
+          streamId: sid
+      ]
+    conn := self connection withStreamWindowOpened: sid increment: inc
+    {released, proto} := (self withConnection: conn) releaseFlowControl
+    {released, #(), false, proto}
+
+  // === Stream-facing operations (called by the connection actor) ===
+  //
+  // Each answers {answer, protocol}: #park means the actor parks the
+  // caller with the deferred reply; anything else is answered at once.
+
+  /// Read headers: buffered headers or park.
+  readHeadersFor: sid :: Integer -> Tuple(Symbol, Object, HTTP2Protocol) =>
+    {conn, buffered} := self connection takeBufferedHeaders: sid
+    buffered isNil ifTrue: [
+      {#park, nil, (self withConnection: conn)}
+    ] ifFalse: [{#ok, buffered, (self withConnection: conn)}]
+
+  /// Read data: up to maxBytes from the buffer, or park. Answers
+  /// {#ok|#park, {data, more, ended} | nil, protocol}.
+  readDataFor: sid :: Integer maxBytes: max :: Integer -> Tuple(Symbol, Object, HTTP2Protocol) =>
+    (self streamState: sid) match: [
+      #closed -> {#error, "stream reset", self};
+      _ -> self readDataOpen: sid maxBytes: max
+    ]
+
+  readDataOpen: sid :: Integer maxBytes: max :: Integer -> Tuple(Symbol, Object, HTTP2Protocol) =>
+    {conn, taken} := self connection takeBufferedData: sid maxBytes: max
+    data := taken at: 1
+    drained := taken at: 2
+    ended := (taken at: 3) or: [conn reqEndedFor: sid]
+    (drained and: [data size =:= 0 and: [ended not]])
+      ifTrue: [{#park, nil, (self withConnection: conn)}]
+      ifFalse: [
+        more := (drained and: [ended]) not
+        {#ok, {data, more, ended}, (self withConnection: conn)}
+      ]
+
+  /// Send headers: encode and frame the block (never blocks).
+  /// Answers {bytes, endStream, protocol}.
+  sendHeadersFor: sid :: Integer status: status :: Integer headers: headers :: List(Tuple) endStream: end :: Boolean -> Tuple(Binary, Boolean, HTTP2Protocol) =>
+    pairs := headers collect: [:h :: Tuple | {(h at: 1), (h at: 2)}]
+    all := pairs addFirst: {":status", status printString}
+    {io, conn} := self connection encodeHeaders: all
+    hbf := Binary fromIolist: io
+    f := H2Headers new withStreamId: sid
+    f := f withEndStream: end
+    f := f withEndHeaders: true
+    f := f withExclusiveDependency: false
+    f := f withStreamDependency: nil
+    f := f withWeight: nil
+    f := f withFragment: hbf
+    bytes := H2Frame serialize: f maxFrameSize: self maxSendFrameSize
+    conn2 := end ifTrue: [conn markRespEnded: sid] ifFalse: [conn]
+    {bytes, end, (self withConnection: (self completeIfDone: sid conn: conn2))}
+
+  /// If both sides ended, forget the stream now.
+  completeIfDone: sid :: Integer conn: conn :: HTTP2Connection -> HTTP2Connection =>
+    (conn isComplete: sid) ifFalse: [^conn]
+    self forgetStream: sid conn: conn
+
+  /// Send data, splitting by flow-control allowance; the actor sends
+  /// the bytes and parks the caller with the rest, if any. Answers
+  /// {#sent, bytes, protocol} or {#park, {bytes, rest, end}, protocol}.
+  sendDataFor: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Tuple(Symbol, Object, HTTP2Protocol) =>
+    (self streamState: sid) match: [
+      #closed -> {#error, "stream reset", self};
+      _ -> self
+        sendDataOpen: sid
+        data: data
+        endStream: end
+    ]
+
+  sendDataOpen: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Tuple(Symbol, Object, HTTP2Protocol) =>
+    allowance := self connection sendAllowance: sid
+    // An empty DATA frame (the END_STREAM terminator) costs no window.
+    data size =:= 0
+      ifTrue: [
+        ^self
+          sendDataFit: sid
+          data: data
+          endStream: end
+      ]
+    allowance <= 0 ifTrue: [
+      ^{#park, {(Binary fromBytes: #()), data, end}, self}
+    ]
+    data size <= allowance
+      ifTrue: [
+        self
+          sendDataFit: sid
+          data: data
+          endStream: end
+      ]
+      ifFalse: [
+        head := data part: 0 size: allowance
+        rest := data part: allowance size: (data size - allowance)
+        {bytes, proto} := self
+          emitData: sid
+          data: head
+          endStream: false
+        {#park, {bytes, rest, end}, proto}
+      ]
+
+  /// Send a chunk that fits the windows; answers {bytes, protocol}.
+  /// The single window-claim point for data sends.
+  emitData: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Tuple(Binary, HTTP2Protocol) =>
+    conn := self connection withBytesSent: sid count: data size
+    frame := ((H2Data new withStreamId: sid) withEndStream: end) withData: data
+    bytes := H2Frame serialize: frame maxFrameSize: self maxSendFrameSize
+    conn2 := end ifTrue: [conn markRespEnded: sid] ifFalse: [conn]
+    {bytes, (self withConnection: (self completeIfDone: sid conn: conn2))}
+
+  sendDataFit: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Tuple(Symbol, Object, HTTP2Protocol) =>
+    {bytes, proto} := self
+      emitData: sid
+      data: data
+      endStream: end
+    {#sent, bytes, proto}
+
+  /// Drain an unread body without blocking: drop the buffer; when the
+  /// request is still open, reset the stream with no error (Bandit's
+  /// ensure_completed for a complete response). Answers
+  /// {#ok|#rst, rstBytes, protocol} (rstBytes empty on #ok).
+  drainFor: sid :: Integer -> Tuple(Symbol, Binary, HTTP2Protocol) =>
+    (self streamState: sid) match: [
+      #closed -> {#ok, (Binary fromBytes: #()), self};
+      _ -> self drainOpen: sid
+    ]
+
+  drainOpen: sid :: Integer -> Tuple(Symbol, Binary, HTTP2Protocol) =>
+    conn := self connection
+    (conn reqEndedFor: sid)
+      ifTrue: [
+        dropped := conn withDataBuffer: (conn dataBuffer removeKey: sid)
+        ^{#ok, (Binary fromBytes: #()), (self withConnection: (self completeIfDone: sid conn: dropped))}
+      ]
+    {rst, failed, proto} := self resetStream: sid code: HTTP2Errors noError
+    proto2 := proto failAll: failed
+    {#rst, rst, proto2}
+
+  /// Answer an error status unless the stream already answered.
+  errorFor: sid :: Integer status: status :: Integer -> Tuple(Binary, HTTP2Protocol) =>
+    live := (self streamState: sid) isKindOf: Pid
+    answered := (self connection respEndedFor: sid) or: [live not]
+    answered ifTrue: [^{Binary fromBytes: #(), self}]
+    {bytes, _ended, proto} := self
+      sendHeadersFor: sid
+      status: status
+      headers: #()
+      endStream: true
+    {bytes, proto}
+
+  /// GOAWAY and close the connection from a stream (connection error).
+  closeFor: code :: Integer -> Tuple(Binary, HTTP2Protocol) =>
+    {self goawayBytes: code, self}
+
+  // === Actor messages ===
+
+  /// DOWN, send timeouts and stream exits funnel through here. Answers
+  /// {bytes, spawns, close, protocol} like serve:.
+  info: msg :: Object -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    msg match: [
+      {#DOWN, ref, _, _, reason} -> self downFor: ref reason: reason;
+      {#h2SendTimeout, token} -> self sendTimeoutFor: token;
+      _ -> {Binary fromBytes: #(), #(), false, self}
+    ]
+
+  /// A monitored stream process went down: forget it, resetting live
+  /// streams that never finished (no_error for normal ends,
+  /// internal_error for crashes).
+  downFor: ref :: Reference reason: reason :: Object -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := self connection streamIdForRef: ref
+    sid isNil ifTrue: [^{Binary fromBytes: #(), #(), false, self}]
+    conn := self connection withMonitorForgotten: ref
+    proto := self withConnection: conn
+    (conn streams getPid: sid) match: [
+      p :: Pid -> reason =:= #normal ifTrue: [
+        proto downNormal: sid
+      ] ifFalse: [proto downAbnormal: sid reason: reason];
+      _ -> {Binary fromBytes: #(), #(), false, proto}
+    ]
+
+  downNormal: sid :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    (self connectionIsKnownComplete: sid)
+      ifTrue: [
+        {Binary fromBytes: #(), #(), false, (self withConnection: (self forgetStream: sid conn: self connection))}
+      ]
+      ifFalse: [
+        {rst, failed, proto} := self resetStream: sid code: HTTP2Errors noError
+        proto2 := proto failAll: failed
+        {rst, #(), false, proto2}
+      ]
+
+  /// A stream is completely done when both sides ended.
+  connectionIsKnownComplete: sid :: Integer -> Boolean =>
+    self connection isComplete: sid
+
+  downAbnormal: sid :: Integer reason: reason :: Object -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    self logStreamError: (self abnormalError: reason) streamId: sid
+    {rst, failed, proto} := self resetStream: sid code: HTTP2Errors internalError
+    proto2 := proto failAll: failed
+    {rst, #(), false, proto2}
+
+  abnormalError: reason :: Object -> H2StreamError =>
+    [
+      H2StreamError
+        signal: ("Stream failed: " ++ reason printString)
+        code: HTTP2Errors internalError
+        streamId: 0
+    ] on: H2StreamError do: [:e :: H2StreamError | e]
+
+  /// Parked sends expired (15 s): fail them all with a timeout error.
+  sendTimeoutFor: _token :: ReplyTo -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    {conn, expired} := self connection expireSends: (BuccaneerTelemetry monotonicTime)
+    proto := self withConnection: conn
+    proto2 := proto failAll: expired
+    {Binary fromBytes: #(), #(), false, proto2}
+
+  /// A complete header block: decode, validate and route. Raises
+  /// H2StreamError (caught by the frame loop: RST + log) or
+  /// H2ConnectionError (GOAWAY + close).
+  finishHeaders: frame :: H2Headers streamKnown: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    decoded := self connection decodeHeaders: frame fragment
+    decoded match: [
+      {#ok, headers, conn} -> self
+        routeCommitted: sid
+        headers: headers
+        conn: conn
+        frame: frame
+        known: known;
+      _ -> H2ConnectionError signal: "Unable to decode headers" code: HTTP2Errors compressionError
+    ]
+
+  /// Route a decoded block with the HPACK table already committed: a
+  /// stream error in validation RSTs the stream but keeps the table
+  /// (Bandit: "preserve HPAX's internal state even if we reject this
+  /// stream's header list"), or the peer's next block decodes wrongly.
+  routeCommitted: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    committed := self withConnection: (conn withFragmentFrame: nil)
+    known =:= #closed ifTrue: [^{Binary fromBytes: #(), #(), false, committed}]
+    [
+      committed
+        routeDecoded: sid
+        headers: headers
+        conn: conn
+        frame: frame
+        known: known
+    ] on: H2StreamError do: [:e :: H2StreamError | committed streamFailed: e]
+
+  routeDecoded: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    validator := HTTP2Stream new withStreamId: sid
+    stringed := validator stringHeaders: headers
+    // Our own limit bounds what we accept, and is checked first, with
+    // ENHANCE_YOUR_CALM, as Bandit does.
+    limit := conn localSettings maxHeaderListSize
+    limit match: [
+      #infinity -> nil;
+      n :: Integer -> (HTTP2Connection headerListSize: stringed) > n
+        ifTrue: [
+          H2StreamError
+            signal: "Received overlong headers"
+            code: HTTP2Errors enhanceYourCalm
+            streamId: sid
+        ];
+      _ -> nil
+    ]
+    // Trailers (a later HEADERS on an open stream) carry no pseudo-headers,
+    // so the request-head checks apply to the first block only.
+    isHead := known =:= #new
+    checked := isHead ifTrue: [
+      validator checkRequestHeaders: headers
+    ] ifFalse: [{nil, nil, nil, nil}]
+    contentLength := checked at: 4
+    sized := isHead ifTrue: [
+      conn withContentLength: sid length: contentLength
+    ] ifFalse: [conn]
+    conn2 := sized withFragmentFrame: nil
+    conn3 := frame endStream ifTrue: [conn2 markReqEnded: sid] ifFalse: [conn2]
+    known match: [
+      #new -> self
+        headersSpawn: sid
+        frame: frame
+        headers: stringed
+        conn: conn3;
+      _ -> self
+        headersTrailers: sid
+        headers: stringed
+        endStream: frame endStream
+        conn: conn3
+    ]
+
+  /// First HEADERS for a stream: admit, open windows, buffer, wake a
+  /// parked header reader, spawn.
+  headersSpawn: sid :: Integer frame: frame :: H2Headers headers: cooked :: List(Tuple) conn: conn :: HTTP2Connection -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    checked := conn checkNewStream: sid
+    opened := (checked withStreamReserved: sid) withStreamOpened: sid
+    buffered := opened
+      withHeadersBuffered: sid
+      headers: cooked
+      endStream: frame endStream
+    proto := (self withConnection: buffered)
+      wakeHeaderReader: sid
+      headers: cooked
+      endStream: frame endStream
+    {Binary fromBytes: #(), (#() add: sid), false, proto}
+
+  /// If a header reader parked for the stream, answer it now through
+  /// the outbox (a duplicate readHeaders; the first read never parks
+  /// because the spawn follows the buffered HEADERS).
+  wakeHeaderReader: sid :: Integer headers: cooked :: List(Tuple) endStream: end :: Boolean -> HTTP2Protocol =>
+    {conn, tok} := self connection takeHeaderReader: sid
+    tok isNil ifTrue: [^self withConnection: conn]
+    (self withConnection: conn)
+      withReply: #ok
+      token: tok
+      value: {cooked, end}
+
+  /// HEADERS on an open stream are trailers: no pseudo-headers allowed,
+  /// otherwise ignored (with END_STREAM closing our read side).
+  headersTrailers: sid :: Integer headers: cooked :: List(Tuple) endStream: end :: Boolean conn: conn :: HTTP2Connection -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    validator := HTTP2Stream new withStreamId: sid
+    {pseudo, _} := validator splitPseudo: cooked
+    pseudo isEmpty
+      ifFalse: [
+        H2StreamError
+          signal: "Received invalid pseudo header"
+          code: HTTP2Errors protocolError
+          streamId: sid
+      ]
+    conn2 := end ifTrue: [conn markReqEnded: sid] ifFalse: [conn]
+    proto := (self withConnection: conn2) wakeDataReader: sid
+    cleaned := (self withConnection: (proto connectionIsComplete: sid)) keepingRepliesOf: proto
+    {Binary fromBytes: #(), #(), false, cleaned}
+
+  handleFrame: frame :: Object -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    [
+      // While a header block is open only its CONTINUATION may arrive
+      // (RFC 9113 §6.10), whatever else the frame is; Bandit rejects the
+      // same way.
+      ((self connection fragmentFrame isNil) or: [
+        frame isKindOf: H2Continuation
+      ])
+        ifFalse: [
+          H2ConnectionError signal: "Expected CONTINUATION frame (RFC9113§6.10)" code: HTTP2Errors protocolError
+        ]
+      frame match: [
+        f :: H2Data -> self dataFor: f;
+        f :: H2Headers -> self headersFor: f;
+        f :: H2Priority -> {Binary fromBytes: #(), #(), false, self};
+        f :: H2RstStream -> self rstReceivedFor: f;
+        f :: H2Settings -> self settingsFor: f;
+        f :: H2Ping -> self pingFor: f;
+        f :: H2Goaway -> self goawayReceivedFor: f;
+        f :: H2WindowUpdate -> self windowUpdateFor: f;
+        f :: H2Continuation -> self continuationFor: f;
+        f :: H2Unknown -> {Binary fromBytes: #(), #(), false, self};
+        _ -> {Binary fromBytes: #(), #(), false, self}
+      ]
+    ] on: H2ConnectionError do: [:e :: H2ConnectionError |
+      self connectionFailed: e
+    ]
+
+  /// H2ConnectionError while handling a frame: GOAWAY and close, with a
+  /// protocol-error log line.
+  connectionFailed: e :: H2ConnectionError -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    code := self connCode: e
+    BuccaneerLogger
+      maybeLogProtocolError: e
+      stacktrace: e stackTrace
+      options: self config http
+      metadata: self logMetadata
+    {self goawayBytes: code, #(), true, self}
+
+  /// Metadata for connection-level logs.
+  logMetadata -> Dictionary(Symbol, Object) =>
+    #{#plug => self config displayHandler}
+
+  /// Log a stream error per #logStreamErrors (#short default); answers
+  /// self so Value methods stay non-void (ADR 0042).
+  logStreamError: e :: H2StreamError streamId: sid :: Integer -> HTTP2Protocol =>
+    mode := self config http2LogStreamErrors
+    mode =:= false ifTrue: [^self]
+    line := "** (H2StreamError) " ++ e message
+    meta := self logMetadata at: #stream_id put: sid
+    mode =:= #verbose ifTrue: [
+      Logger error: (line ++ "\n" ++ e stackTrace printString) metadata: meta
+    ] ifFalse: [Logger error: line metadata: meta]
+    self
+
+  /// Our advertised max frame size bounds what we parse (RFC 9113
+  /// §4.2); the peer's bounds what we send.
+  maxFrameSize -> Integer => self connection localSettings maxFrameSize
+
+  /// The peer's limit sizes what we send (RFC 9113 §6.5.2).
+  maxSendFrameSize -> Integer => self connection remoteSettings maxFrameSize
+
+  /// GOAWAY bytes for a connection error code.
+  goawayBytes: code :: Integer -> Binary =>
+    H2Frame serialize: (((H2Goaway new withLastStreamId: self connection lastStreamId) withErrorCode: code) withDebugData: (Binary fromBytes: #())) maxFrameSize: self maxSendFrameSize

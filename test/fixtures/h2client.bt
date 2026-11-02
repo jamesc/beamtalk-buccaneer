@@ -1,0 +1,410 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A minimal HTTP/2 client for tests: cleartext prior-knowledge and TLS
+/// handshakes, frame send/recv, HPACK encode/decode with caller-held
+/// tables. Mirrors Bandit's SimpleH2Client: the server under test is a
+/// real `Buccaneer start:` and the client speaks raw frames.
+///
+/// Untyped like Loopback: annotated methods in fixture classes
+/// miscompile (BT-4152), so everything here is dynamic.
+sealed Object subclass: H2Client
+
+  /// Raw TCP connect (binary, packet raw, passive).
+  class sealed connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  /// TLS connect offering `alpn` protocols (verify off, like TlsTest).
+  /// OTP takes the client protocols as `alpn_advertised_protocols`.
+  class sealed connectTls: port alpn: protocols =>
+    ((Erlang ssl)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false}, {#verify, #verify_none}, {#alpn_advertised_protocols, protocols})) unwrap
+
+  /// The negotiated ALPN protocol of a TLS socket, as a String.
+  class sealed negotiated: sock =>
+    Headers stringOrOpaque: (((Erlang ssl) negotiated_protocol: sock) unwrap)
+
+  /// The 24-byte client connection preface magic.
+  class sealed magic =>
+    Binary fromBytes: #(80, 82, 73, 32, 42, 32, 72, 84, 84, 80, 47, 50, 46, 48, 13, 10, 13, 10, 83, 77, 13, 10, 13, 10)
+
+  /// A fresh HPACK table pair: {encoder, decoder}.
+  class sealed tables => {(HPACK newTable: 4096), (HPACK newTable: 4096)}
+
+  /// Open a cleartext connection: preface, empty SETTINGS, the settings
+  /// roundtrip. Answers {sock, encoder, decoder}.
+  class sealed open: port =>
+    sock := self connect: port
+    self send: sock bytes: self magic
+    self sendFrame: sock frame: (H2Settings new withAck: false)
+    self expectSettings: sock
+    {sock, (self tables at: 1), (self tables at: 2)}
+
+  /// Open a TLS connection offering h2. ALPN negotiates the protocol but
+  /// the client still sends the PRI magic (RFC 9113 §3.4), then the
+  /// settings roundtrip. Answers {sock, encoder, decoder}.
+  class sealed openTls: port =>
+    sock := self connectTls: port alpn: #((Binary fromBytes: #(104, 50)))
+    self sendTls: sock bytes: self magic
+    self sendFrameTls: sock frame: (H2Settings new withAck: false)
+    self expectSettingsTls: sock
+    {sock, (self tables at: 1), (self tables at: 2)}
+
+  /// Read the server preface (its SETTINGS) and finish the ack roundtrip.
+  class sealed expectSettings: sock =>
+    frame := self recvFrame: sock
+    ack := H2Settings new withAck: true
+    self sendFrame: sock frame: ack
+    frame match: [
+      f :: H2Settings -> self assertNoAck: f;
+      _ -> Error signal: "expected server SETTINGS"
+    ]
+    second := self recvFrame: sock
+    second match: [
+      s :: H2Settings -> self assertAck: s;
+      _ -> Error signal: "expected SETTINGS ack"
+    ]
+    nil
+
+  class sealed expectSettingsTls: sock =>
+    frame := self recvFrameTls: sock
+    ack := H2Settings new withAck: true
+    self sendFrameTls: sock frame: ack
+    frame match: [
+      f :: H2Settings -> self assertNoAck: f;
+      _ -> Error signal: "expected server SETTINGS"
+    ]
+    second := self recvFrameTls: sock
+    second match: [
+      s :: H2Settings -> self assertAck: s;
+      _ -> Error signal: "expected SETTINGS ack"
+    ]
+    nil
+
+  class sealed assertNoAck: frame =>
+    frame ack ifTrue: [Error signal: "server preface must not ack"]
+    nil
+
+  class sealed assertAck: frame =>
+    frame ack ifFalse: [Error signal: "expected SETTINGS ack"]
+    nil
+
+  /// Send bytes over TCP (raises on a closed socket).
+  class sealed send: sock bytes: data =>
+    ((Erlang gen_tcp) send: sock with: data) unwrap
+    nil
+
+  /// Send bytes over TLS.
+  class sealed sendTls: sock bytes: data =>
+    ((Erlang ssl) send: sock with: data) unwrap
+    nil
+
+  /// Exactly n bytes over TCP (raises on timeout or close).
+  class sealed recvBytes: sock count: n =>
+    ((Erlang gen_tcp)
+      recv: sock
+      with: n
+      with: 5000) unwrap
+
+  /// Exactly n bytes over TLS.
+  class sealed recvBytesTls: sock count: n =>
+    ((Erlang ssl)
+      recv: sock
+      with: n
+      with: 5000) unwrap
+
+  /// Serialize and send one frame (splits past maxFrameSize).
+  class sealed sendFrame: sock frame: frame =>
+    self send: sock bytes: (H2Frame serialize: frame maxFrameSize: 16384)
+    nil
+
+  /// Serialize and send one frame over TLS.
+  class sealed sendFrameTls: sock frame: frame =>
+    self sendTls: sock bytes: (H2Frame serialize: frame maxFrameSize: 16384)
+    nil
+
+  /// Read exactly one frame (any buffered splits stay in the socket).
+  class sealed recvFrame: sock =>
+    head := self recvBytes: sock count: 9
+    head match: [
+      <<length:24, _kind:8, _flags:8, _r:1, _sid:31>> -> self
+        recvPayload: sock
+        head: head
+        length: length;
+      _ -> Error signal: "short frame header"
+    ]
+
+  /// Read exactly one frame over TLS.
+  class sealed recvFrameTls: sock =>
+    head := self recvBytesTls: sock count: 9
+    head match: [
+      <<length:24, _kind:8, _flags:8, _r:1, _sid:31>> -> self
+        recvPayloadTls: sock
+        head: head
+        length: length;
+      _ -> Error signal: "short frame header"
+    ]
+
+  class sealed recvPayload: sock head: head length: length =>
+    body := length =:= 0 ifTrue: [
+      Binary fromBytes: #()
+    ] ifFalse: [self recvBytes: sock count: length]
+    {parsed, rest} := H2Frame deserialize: (head concat: body) maxFrameSize: 16777216
+    rest size =:= 0 ifFalse: [Error signal: "frame overrun"]
+    parsed match: [
+      {#ok, frame} -> frame;
+      {#error, code, message} -> Error signal: ("server frame error: " ++ message);
+      _ -> Error signal: "incomplete server frame"
+    ]
+
+  class sealed recvPayloadTls: sock head: head length: length =>
+    body := length =:= 0 ifTrue: [
+      Binary fromBytes: #()
+    ] ifFalse: [self recvBytesTls: sock count: length]
+    {parsed, rest} := H2Frame deserialize: (head concat: body) maxFrameSize: 16777216
+    rest size =:= 0 ifFalse: [Error signal: "frame overrun"]
+    parsed match: [
+      {#ok, frame} -> frame;
+      {#error, code, message} -> Error signal: ("server frame error: " ++ message);
+      _ -> Error signal: "incomplete server frame"
+    ]
+
+  /// HPACK-encode headers with the encoder table: {fragment, table}.
+  class sealed encode: headers table: enc =>
+    {io, next} := HPACK
+      encode: #store
+      headers: headers
+      table: enc
+    {(Binary fromIolist: io), next}
+
+  /// Send a raw frame: 9-byte header plus payload, no validation.
+  class sealed sendRawTls: sock type: t flags: f sid: s payload: p =>
+    head := Binary fromBytes: #()
+    head := head concat: (self bytes24: (p size))
+    head := head concat: (Binary fromBytes: #(t))
+    head := head concat: (Binary fromBytes: #(f))
+    head := head concat: (self bytes31: s)
+    self sendTls: sock bytes: (head concat: p)
+    nil
+
+  class sealed bytes24: n =>
+    Binary fromBytes: #((n bitShift: -16) bitAnd: 255, (n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  class sealed bytes31: n =>
+    Binary fromBytes: #((n bitShift: -24) bitAnd: 127, (n bitShift: -16) bitAnd: 255, (n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  /// Read one frame as {type, flags, streamId, payload}.
+  class sealed recvRawTls: sock =>
+    head := self recvBytesTls: sock count: 9
+    {t, f, s, len} := self splitHead: head
+    p := len =:= 0 ifTrue: [
+      Binary fromBytes: #()
+    ] ifFalse: [self recvBytesTls: sock count: len]
+    {t, f, s, p}
+
+  class sealed splitHead: head =>
+    head match: [
+      <<length:24, type:8, flags:8, _r:1, sid:31>> -> {type, flags, sid, length};
+      _ -> Error signal: "short frame header"
+    ]
+
+  /// Expect the peer to have closed: a zero-byte read answers #closed.
+  class sealed expectClosedTls: sock =>
+    raw := Result
+      tryDo: [
+        ((Erlang ssl)
+          recv: sock
+          with: 0
+          with: 5000)
+      ]
+    res := raw isOk ifTrue: [raw value] ifFalse: [raw]
+    res match: [
+      r :: Result -> self checkClosedResult: r;
+      _ -> Error signal: "expected close"
+    ]
+    nil
+
+  class sealed checkClosedResult: r =>
+    r isError
+      ifTrue: [
+        msg := (r error) message
+        msg =:= "closed" ifFalse: [
+          Error signal: ("expected close, got " ++ msg)
+        ]
+      ]
+      ifFalse: [Error signal: "expected close, got bytes"]
+    nil
+
+  /// Expect GOAWAY then a close: answers {lastStreamId, errorCode}.
+  /// The close runs before answering so a missing close still fails.
+  class sealed recvGoawayCloseTls: sock =>
+    frame := self recvFrameTls: sock
+    pair := frame match: [
+      g :: H2Goaway -> {(g lastStreamId), (g errorCode)};
+      _ -> Error signal: ("expected GOAWAY, got " ++ frame class printString)
+    ]
+    self expectClosedTls: sock
+    pair
+
+  /// A PING roundtrip: answers true when the ack echoes the payload.
+  class sealed connectionAliveTls: sock =>
+    payload := Binary fromBytes: #(9, 8, 7, 6, 5, 4, 3, 2)
+    self sendFrameTls: sock frame: (H2Ping new withPayload: payload)
+    frame := self recvFrameTls: sock
+    frame match: [
+      p :: H2Ping -> (p ack and: [(p payload) =:= payload]);
+      _ -> false
+    ]
+
+  class sealed sendRstTls: sock sid: s code: c =>
+    self sendFrameTls: sock frame: ((H2RstStream new withStreamId: s) withErrorCode: c)
+    nil
+
+  class sealed sendWindowUpdateTls: sock sid: s inc: n =>
+    self sendFrameTls: sock frame: ((H2WindowUpdate new withStreamId: s) withSizeIncrement: n)
+    nil
+
+  class sealed sendPriorityTls: sock sid: s dep: d weight: w =>
+    self sendFrameTls: sock frame: (((H2Priority new withStreamId: s) withDependentStreamId: d) withWeight: w)
+    nil
+
+  class sealed sendGoawayTls: sock last: l code: c =>
+    self sendFrameTls: sock frame: (((H2Goaway new withLastStreamId: l) withErrorCode: c) withDebugData: (Binary fromBytes: #()))
+    nil
+
+  class sealed sendPingTls: sock payload: p =>
+    self sendFrameTls: sock frame: (H2Ping new withPayload: p)
+    nil
+
+  class sealed recvRstTls: sock =>
+    frame := self recvFrameTls: sock
+    frame match: [
+      r :: H2RstStream -> {(r streamId), (r errorCode)};
+      w :: H2WindowUpdate -> self recvRstTls: sock;
+      _ -> Error signal: ("expected RST_STREAM, got " ++ frame class printString)
+    ]
+
+  class sealed recvWindowUpdateTls: sock =>
+    frame := self recvFrameTls: sock
+    frame match: [
+      w :: H2WindowUpdate -> {(w streamId), (w sizeIncrement)};
+      _ -> Error signal: ("expected WINDOW_UPDATE, got " ++ frame class printString)
+    ]
+
+  class sealed recvPingTls: sock =>
+    frame := self recvFrameTls: sock
+    frame match: [
+      p :: H2Ping -> {(p ack), (p payload)};
+      _ -> Error signal: ("expected PING, got " ++ frame class printString)
+    ]
+
+  /// Send HEADERS with an explicit flags byte (padding, priority,
+  /// split END_HEADERS) carrying a prebuilt fragment.
+  class sealed sendHeadersRawTls: sock sid: s flags: f fragment: frag =>
+    self
+      sendRawTls: sock
+      type: 1
+      flags: f
+      sid: s
+      payload: frag
+    nil
+
+  class sealed sendContinuationTls: sock sid: s endHeaders: e fragment: frag =>
+    self
+      sendRawTls: sock
+      type: 9
+      flags: (e ifTrue: [4] ifFalse: [0])
+      sid: s
+      payload: frag
+    nil
+
+  /// Send a raw client SETTINGS payload (no ack).
+  class sealed sendSettingsRawTls: sock payload: p =>
+    self
+      sendRawTls: sock
+      type: 4
+      flags: 0
+      sid: 0
+      payload: p
+    nil
+
+  /// Read response HEADERS, skipping connection/stream WINDOW_UPDATEs.
+  /// Answers {streamId, endStream, headers, nextDecoder}.
+  class sealed recvHeadersTls: sock dec: dec =>
+    frame := self recvFrameTls: sock
+    frame match: [
+      f :: H2Headers -> self
+        decodeHeadersTls: sock
+        head: f
+        dec: dec;
+      w :: H2WindowUpdate -> self recvHeadersTls: sock dec: dec;
+      _ -> Error signal: ("expected HEADERS, got " ++ frame class printString)
+    ]
+
+  class sealed decodeHeadersTls: _sock head: f dec: dec =>
+    cooked := self decode: f fragment table: dec
+    {(f streamId), (f endStream), (cooked at: 1), (cooked at: 2)}
+
+  /// Read DATA frames until END_STREAM, concatenating. Answers {sid, data}.
+  class sealed recvBodyTls: sock =>
+    self
+      recvBodyTls: sock
+      sid: nil
+      acc: (Binary fromBytes: #())
+
+  class sealed recvBodyTls: sock sid: want acc: acc =>
+    frame := self recvFrameTls: sock
+    frame match: [
+      d :: H2Data -> self
+        bodyDataTls: sock
+        frame: d
+        want: want
+        acc: acc;
+      w :: H2WindowUpdate -> self
+        recvBodyTls: sock
+        sid: want
+        acc: acc;
+      _ -> Error signal: ("expected DATA, got " ++ frame class printString)
+    ]
+
+  class sealed bodyDataTls: sock frame: d want: want acc: acc =>
+    want isNil ifFalse: [
+      (d streamId) =:= want ifFalse: [Error signal: "DATA on unexpected stream"]
+    ]
+    got := acc concat: (d data)
+    d endStream
+      ifTrue: [^{(d streamId), got}]
+      ifFalse: [
+        self
+          recvBodyTls: sock
+          sid: (d streamId)
+          acc: got
+      ]
+
+  /// HPACK-decode a fragment with the decoder table: {headers, table}.
+  class sealed decode: fragment table: dec =>
+    (HPACK decode: fragment table: dec) match: [
+      {#ok, headers, next} -> {headers, next};
+      {#error, reason} -> Error signal: ("HPACK decode failed: " ++ reason printString)
+    ]
+
+  /// A HEADERS frame carrying a whole encoded block (no CONTINUATION).
+  class sealed headersFrame: sid hbf: fragment endStream: end =>
+    frame := H2Headers new withStreamId: sid
+    frame := frame withEndStream: end
+    frame := frame withEndHeaders: true
+    frame withFragment: fragment
+
+  /// Raw close (TCP and TLS).
+  class sealed close: sock =>
+    (Erlang gen_tcp) close: sock
+    nil
+
+  class sealed closeTls: sock =>
+    (Erlang ssl) close: sock
+    nil

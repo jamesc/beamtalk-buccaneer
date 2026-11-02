@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Bandit.HTTP2.Frame.Priority frame (RFC 9113 §6.3).
+sealed typed Value subclass: H2Priority
+  field: streamId :: Integer = 0
+  field: dependentStreamId :: Integer = 0
+  field: weight :: Integer = 0

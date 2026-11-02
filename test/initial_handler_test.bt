@@ -46,10 +46,14 @@ TestCase subclass: InitialHandlerTest
     ]
     Loopback close: pair
 
-  testPriPrefaceCloses =>
+  testPriPrefaceStartsHttp2 =>
     pair := Loopback pairWithReadTimeout: 5000
     (Erlang gen_tcp) send: (pair at: 2) with: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
-    self assert: (InitialHandler run: (pair at: 1) options: self config) equals: #close
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http2, buf} -> self assert: buf isEmpty;
+      _ -> self assert: false
+    ]
     Loopback close: pair
 
   testPriPartialFallsBack =>
@@ -85,5 +89,15 @@ TestCase subclass: InitialHandlerTest
     }
     pair := Loopback pairWithReadTimeout: 5000
     (Erlang gen_tcp) send: (pair at: 2) with: "GET / HTTP/1.1\r\n\r\n"
+    self assert: (InitialHandler run: (pair at: 1) options: config) equals: #close
+    Loopback close: pair
+
+  testHttp2DisabledCloses =>
+    config := BuccaneerConfig from: #{
+      #handler => [:ex | ex],
+      #http2 => #{#enabled => false}
+    }
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
     self assert: (InitialHandler run: (pair at: 1) options: config) equals: #close
     Loopback close: pair

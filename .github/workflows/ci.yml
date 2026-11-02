@@ -83,3 +83,33 @@ jobs:
 
       - name: Autobahn Testsuite
         run: just autobahn
+
+  # Phase 6: h2spec conformance over TLS/ALPN h2.
+  # Non-blocking until green (BT-4085), then promote by dropping
+  # continue-on-error. Needs docker (present on ubuntu-latest) or a
+  # local h2spec binary, and the H2SPEC=1 gate in
+  # test/http2/h2spec_test.bt.
+  h2spec:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+
+      - name: Install Beamtalk
+        run: |
+          curl -fsSL https://beamtalk.dev/install.sh | sudo sh -s -- --edge --prefix /usr/local
+          beamtalk --version
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: Build
+        run: just build
+
+      - name: h2spec
+        run: just h2spec

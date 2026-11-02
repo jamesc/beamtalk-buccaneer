@@ -1,0 +1,74 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// h2spec conformance against an HTTPS/ALPN-h2 server, mirroring
+/// Bandit's `h2spec_test.exs`. Needs `H2SPEC=1` and docker or a local
+/// `h2spec` binary; without the variable the test passes immediately
+/// so plain `beamtalk test` stays fast. `H2SPEC` optionally names one
+/// section (as "http2/6.5"); the suite is non-blocking in CI until
+/// green (BT-4085), then the job is promoted to blocking.
+TestCase subclass: H2SpecTest
+
+  testConformance =>
+    (self enabled) ifFalse: [^self]
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #catalina => #{
+          #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+        },
+        #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "OK"
+        ]
+      }) unwrap
+    port := (srv listenerInfo unwrap) at: 2
+    backend := self backend
+    out := backend =:= #docker ifTrue: [
+      (Erlang os) cmd: (self dockerCmd: port)
+    ] ifFalse: [(Erlang os) cmd: (self localCmd: port)]
+    self assert: (srv stop: 5000) isOk
+    self assert: (out includesSubstring: "EXIT:0") equals: true
+
+  /// Run only with H2SPEC=1.
+  enabled -> Boolean =>
+    v := (Erlang os) getenv: "H2SPEC"
+    (v =:= false or: [v isNil]) ifTrue: [^false]
+    v =:= "1"
+
+  /// One h2spec section (as "http2/6.5"), or everything.
+  section -> String =>
+    v := (Erlang os) getenv: "H2SPEC_SECTION"
+    (v =:= false or: [v isNil]) ifTrue: [^""]
+    v ++ " "
+
+  /// Pick the h2spec backend: a local binary when present, else the
+  /// summerwind/h2spec docker image. Fail fast naming both options.
+  backend -> Symbol =>
+    binFound := (((Erlang os) cmd: "command -v h2spec; echo EXIT:$?") includesSubstring: "EXIT:0")
+    dockerFound := (((Erlang os) cmd: "command -v docker; echo EXIT:$?") includesSubstring: "EXIT:0")
+    (binFound or: [dockerFound])
+      ifFalse: [
+        self fail: "h2spec needs docker or an h2spec binary (go install github.com/summerwind/h2spec) with H2SPEC=1"
+      ]
+    binFound ifTrue: [^#binary]
+    #docker
+
+  localCmd: port =>
+    "h2spec "
+      ++ self section
+      ++ "-p "
+      ++ port printString
+      ++ " --path /hello_world -tk; echo EXIT:$?"
+
+  dockerCmd: port =>
+    "docker run --network=host summerwind/h2spec h2spec "
+      ++ self section
+      ++ "-p "
+      ++ port printString
+      ++ " --path /hello_world -tk; echo EXIT:$?"

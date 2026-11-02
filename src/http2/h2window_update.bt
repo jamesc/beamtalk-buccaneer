@@ -1,0 +1,7 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Bandit.HTTP2.Frame.WindowUpdate frame (RFC 9113 §6.9).
+sealed typed Value subclass: H2WindowUpdate
+  field: streamId :: Integer = 0
+  field: sizeIncrement :: Integer = 0

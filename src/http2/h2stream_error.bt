@@ -1,0 +1,15 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Errors.StreamError: a stream-level failure (RFC 9113 §5.4.2).
+/// Carries {errorCode, streamId} as the reason; the protocol answers
+/// RST_STREAM and keeps the connection alive.
+///
+/// NOTE: methods defined here do not dispatch on signaled instances, so
+/// handlers match `e reason` directly (see `HTTP2Protocol streamCode:`)
+/// instead of calling accessors.
+typed Error subclass: H2StreamError
+
+  /// Raise with the code and stream id as the reason.
+  class sealed signal: msg :: String code: code :: Integer streamId: sid :: Integer -> Never =>
+    H2StreamError signal: msg reason: {code, sid}

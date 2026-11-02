@@ -29,6 +29,10 @@ typed Handler subclass: ConnectionHandler
           requestsProcessed: 0
           baseline: (Erlang erlang get_keys)
           connData: (SocketHelpers connData: sock));
+      {#http2, _} -> self
+        h2Start: sock
+        config: config
+        handler: handler;
       _ -> Error signal: "Unknown InitialHandler decision"
     ]
 
@@ -36,8 +40,41 @@ typed Handler subclass: ConnectionHandler
     st match: [
       h :: HTTP1Handler -> h serve: data socket: sock;
       p :: WebSocketProtocol -> p serve: data socket: sock;
+      proto :: HTTP2Protocol -> self
+        h2Serve: data
+        socket: sock
+        state: proto;
       _ -> HandlerResult close: st
     ]
+
+  /// Start HTTP/2: send our SETTINGS preface, then serve from the
+  /// protocol value.
+  h2Start: sock :: Socket config: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike -> HandlerResult =>
+    proto := HTTP2Protocol
+      begin: config
+      handler: handler
+      connData: (SocketHelpers connData: sock)
+    sock send: proto initialSettingsBytes
+    HandlerResult continue: proto
+
+  /// Feed socket bytes through the HTTP/2 protocol: socket-send the
+  /// answer, spawn stream processes, close when told.
+  h2Serve: data :: Binary socket: sock :: Socket state: proto :: HTTP2Protocol -> HandlerResult =>
+    result := [
+      proto serve: data
+    ] on: H2ConnectionError do: [:e :: H2ConnectionError |
+      proto connectionFailed: e
+    ]
+    {bytes, spawns, close, proto2} := result
+    self h2SendBytes: bytes socket: sock
+    proto3 := self
+      h2SpawnAll: spawns
+      proto: proto2
+      socket: sock
+    {outbox, clean} := proto3 takeOutbox
+    self h2Deliver: outbox
+    close ifTrue: [^HandlerResult close: clean]
+    HandlerResult continue: clean
 
   /// A message for the connection: a WebSocket protocol handles it in
   /// place (running the WebSock handle_info:); anything else is logged
@@ -47,8 +84,20 @@ typed Handler subclass: ConnectionHandler
     self userState match: [
       h :: HTTP1Handler -> self logUnknown: msg config: h config;
       p :: WebSocketProtocol -> self userInfo: msg protocol: p;
+      proto :: HTTP2Protocol -> self h2Info: msg state: proto;
       _ -> nil
     ]
+
+  /// A connection message for HTTP/2 (stream DOWNs, send timeouts):
+  /// socket-send any answer and keep or close the connection.
+  h2Info: msg :: Object state: proto :: HTTP2Protocol -> Object =>
+    {bytes, _spawns, close, proto2} := proto info: msg
+    self h2SendBytes: bytes socket: self socket
+    {outbox, clean} := proto2 takeOutbox
+    self h2Deliver: outbox
+    self.userState := clean
+    close ifTrue: [^self closeLocally]
+    nil
 
   userInfo: msg :: Object protocol: p :: WebSocketProtocol -> Object =>
     updated := p handleInfo: msg socket: self socket
@@ -79,6 +128,238 @@ typed Handler subclass: ConnectionHandler
       p :: WebSocketProtocol -> self.userState := (p handleTimeout: sock);
       _ -> nil
     ]
+
+  // === HTTP/2 (Phase 6) ===
+  //
+  // The userState holds an HTTP2Protocol value. Socket bytes feed it;
+  // streams call the h2* methods below (sync, parked with the stdlib
+  // deferred reply). Monitored StreamProcess DOWNs and send timeouts
+  // arrive as messages through h2Info:.
+
+  /// The HTTP/2 protocol for this connection, or a signal.
+  h2Protocol -> HTTP2Protocol =>
+    self userState match: [
+      p :: HTTP2Protocol -> p;
+      _ -> Error signal: "Connection is not HTTP/2"
+    ]
+
+  /// Store the protocol and deliver every queued reply (the outbox).
+  h2Store: proto :: HTTP2Protocol -> Nil =>
+    {outbox, clean} := proto takeOutbox
+    self.userState := clean
+    self h2Deliver: outbox
+    nil
+
+  /// Deliver outbox replies: #ok answers the parked caller, #error
+  /// raises in it. Stale tokens (timed-out or dead callers) are no-ops.
+  h2Deliver: outbox :: List(Tuple) -> Nil =>
+    outbox
+      do: [:entry :: Tuple |
+        tag := entry at: 1
+        tok := entry at: 2
+        val := entry at: 3
+        tag =:= #error ifTrue: [tok replyError: val] ifFalse: [tok reply: val]
+      ]
+    nil
+
+  /// Socket-send a protocol answer (empty answers send nothing). As in
+  /// Bandit, whose HTTP/2 connection discards the result of every
+  /// ThousandIsland.Socket.send, a failed send is not an error here: the
+  /// peer has gone, and the connection finds out on its next read. Raising
+  /// would crash the connection process and log a TransportError for what
+  /// is an ordinary client hang-up (for example after a GOAWAY).
+  h2SendBytes: bytes :: Binary socket: sock :: Socket -> Nil =>
+    bytes size =:= 0 ifTrue: [^nil]
+    sock send: bytes
+    nil
+
+  /// Raise a transport failure for a purged stream op.
+  h2Raise: payload :: Object -> Never =>
+    payload match: [
+      s :: String -> TransportError signal: s;
+      _ -> TransportError signal: "stream reset"
+    ]
+
+  /// Live streams answer their pid; anything else refuses stream I/O.
+  h2CheckLive: sid :: Integer proto: proto :: HTTP2Protocol -> Nil =>
+    ((proto streamState: sid) isKindOf: Pid) ifFalse: [
+      TransportError signal: "stream reset"
+    ]
+    nil
+
+  /// Read the request head: {headers, endStream}, or park the caller
+  /// until the HEADERS arrive.
+  h2ReadHeaders: sid :: Integer -> Object =>
+    proto := self h2Protocol
+    self h2CheckLive: sid proto: proto
+    {kind, payload, proto2} := proto readHeadersFor: sid
+    self h2Store: proto2
+    kind match: [
+      #park -> self h2ParkHeader: sid;
+      _ -> payload
+    ]
+
+  /// Park a header reader with the deferred reply.
+  h2ParkHeader: sid :: Integer -> Nil =>
+    tok := self deferReply
+    conn := self h2Protocol connection withHeaderReader: sid replyTo: tok
+    self.userState := (self h2Protocol withConnection: conn)
+    nil
+
+  /// Read a body part: {data, more, ended}, or park the caller.
+  h2ReadData: sid :: Integer maxBytes: max :: Integer -> Object =>
+    proto := self h2Protocol
+    self h2CheckLive: sid proto: proto
+    {kind, payload, proto2} := proto readDataFor: sid maxBytes: max
+    self h2Store: proto2
+    kind match: [
+      #park -> self h2ParkData: sid maxBytes: max;
+      #error -> self h2Raise: payload;
+      _ -> payload
+    ]
+
+  /// Park a data reader with the deferred reply.
+  h2ParkData: sid :: Integer maxBytes: max :: Integer -> Nil =>
+    tok := self deferReply
+    conn := self h2Protocol connection
+      withDataReader: sid
+      replyTo: tok
+      maxBytes: max
+    self.userState := (self h2Protocol withConnection: conn)
+    nil
+
+  /// Send the response head; answers #sent.
+  h2SendHeaders: sid :: Integer status: status :: Integer headers: headers :: List(Tuple) endStream: end :: Boolean -> Object =>
+    proto := self h2Protocol
+    self h2CheckLive: sid proto: proto
+    {bytes, _ended, proto2} := proto
+      sendHeadersFor: sid
+      status: status
+      headers: headers
+      endStream: end
+    self h2Store: proto2
+    self h2SendBytes: bytes socket: self socket
+    #sent
+
+  /// Send response data; parks the caller when the windows are empty.
+  h2SendData: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Object =>
+    self
+      h2SendBinary: sid
+      data: data
+      endStream: end
+
+  /// Send response data bytes (h2SendData's worker; HTTP2Stream sendfile: feeds it chunk by chunk).
+  h2SendBinary: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Object =>
+    proto := self h2Protocol
+    self h2CheckLive: sid proto: proto
+    {kind, payload, proto2} := proto
+      sendDataFor: sid
+      data: data
+      endStream: end
+    self h2Store: proto2
+    kind match: [
+      #sent -> self h2Sent: payload;
+      #park -> self h2ParkPartial: sid payload: payload;
+      #error -> self h2Raise: payload
+    ]
+
+  /// A fitted send: socket-send the bytes, wake the stream.
+  h2Sent: bytes :: Binary -> Symbol =>
+    self h2SendBytes: bytes socket: self socket
+    #sent
+
+  /// A split send: socket-send the head now, park the rest with the
+  /// deferred reply and a 15 s timeout.
+  h2ParkPartial: sid :: Integer payload: payload :: Tuple -> Nil =>
+    head := payload at: 1
+    rest := payload at: 2
+    flag := payload at: 3
+    self h2SendBytes: head socket: self socket
+    tok := self deferReply
+    conn := self h2Protocol connection
+      queueSend: sid
+      rest: rest
+      endStream: flag
+      replyTo: tok
+      expiresAt: (BuccaneerTelemetry monotonicTime + HTTP2Protocol sendTimeoutNative)
+    self.userState := (self h2Protocol withConnection: conn)
+    Timer
+      send: {#h2SendTimeout, tok}
+      to: self
+      after: HTTP2Protocol sendTimeoutMs
+    nil
+
+  /// Drain an unread body; never parks.
+  h2Drain: sid :: Integer -> Object =>
+    proto := self h2Protocol
+    {_kind, rst, proto2} := proto drainFor: sid
+    self h2Store: proto2
+    self h2SendBytes: rst socket: self socket
+    #ok
+
+  /// Answer an error status; never parks.
+  h2SendError: sid :: Integer status: status :: Integer -> Object =>
+    proto := self h2Protocol
+    {bytes, proto2} := proto errorFor: sid status: status
+    self h2Store: proto2
+    self h2SendBytes: bytes socket: self socket
+    nil
+
+  /// Send RST_STREAM for a stream that failed in its stream process
+  /// (e.g. a body breaking its content-length): the stream dies, the
+  /// connection lives on. Fails anything still parked on the stream.
+  h2ResetStream: sid :: Integer code: code :: Integer -> Nil =>
+    proto := self h2Protocol
+    {rst, failed, proto2} := proto resetStream: sid code: code
+    self h2SendBytes: rst socket: self socket
+    self h2Store: (proto2 failAll: failed)
+    nil
+
+  /// Spawn (monitored) a StreamProcess per new stream id.
+  h2SpawnAll: spawns :: List(Integer) proto: proto :: HTTP2Protocol socket: sock :: Socket -> HTTP2Protocol =>
+    acc := proto
+    spawns
+      do: [:sid :: Integer |
+        // A stream reset earlier in the same read lost its reservation.
+        (acc streamState: sid) =:= #reserved
+          ifTrue: [
+            acc := self
+              h2SpawnOne: sid
+              proto: acc
+              socket: sock
+          ]
+      ]
+    acc
+
+  /// Spawn one stream process and record its monitor.
+  h2SpawnOne: sid :: Integer proto: proto :: HTTP2Protocol socket: sock :: Socket -> HTTP2Protocol =>
+    conn := proto connection
+    transport := HTTP2Stream
+      init: self
+      sid: sid
+      sendWindow: (conn streamSendWindows at: sid ifAbsent: [
+        conn remoteSettings initialWindowSize
+      ])
+      recvWindow: (conn streamRecvWindows at: sid ifAbsent: [
+        conn localSettings initialWindowSize
+      ])
+      sendfileChunk: conn sendfileChunkSize
+      contentLength: (conn contentLengthFor: sid)
+    transport := transport withSocket: sock
+    args := #{
+      #conn => self,
+      #transport => transport,
+      #handler => proto handler,
+      #config => proto config,
+      #connData => proto connData,
+      #span => sock telemetrySpan
+    }
+    pair := StreamProcess spawnMonitoredWith: args
+    proto
+      withConnection: (conn
+        withStreamMonitored: sid
+        pid: ((pair at: 1) pid)
+        ref: (pair at: 2))
 
   logUnknown: msg :: Object config: config :: BuccaneerConfig -> Nil =>
     raw := config http1 at: #logUnknownMessages ifAbsent: [false]

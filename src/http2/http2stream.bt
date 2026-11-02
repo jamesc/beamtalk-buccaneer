@@ -1,0 +1,475 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Stream as a Value: the per-stream transport state and the
+/// request-head validation (RFC 9113 §8). Blocking reads, flow-controlled
+/// sends and window waits are sync calls from the stream process to the
+/// connection actor (protocol turn); everything here is pure.
+///
+/// States: #idle, #open, #localClosed, #remoteClosed, #closed.
+sealed typed Value subclass: HTTP2Stream
+  field: connection :: ConnectionHandler | Nil = nil
+  field: streamId :: Integer = 0
+  field: state :: Symbol = #idle
+  field: recvWindowSize :: Integer = 65535
+  field: sendWindowSize :: Integer = 65535
+  field: sendfileChunkSize :: Integer = 1048576
+  field: bytesRemaining :: Integer | Nil = nil
+  field: socket :: Socket | Nil = nil
+  field: pendingHeaders :: List(Tuple) | Nil = nil
+  field: readTimeout :: Integer = 15000
+  field: peerData :: SocketAddress | Nil = nil
+  field: sockData :: SocketAddress | Nil = nil
+  field: secure :: Boolean = false
+  field: peerCert :: Result(Binary, Object) | Nil = nil
+
+  /// A stream for the connection process with the negotiated windows.
+  class sealed init: conn :: ConnectionHandler | Nil sid: sid :: Integer sendWindow: sw :: Integer recvWindow: rw :: Integer sendfileChunk: chunk :: Integer contentLength: cl :: Integer | Nil -> HTTP2Stream =>
+    ((((((HTTP2Stream new withConnection: conn) withStreamId: sid) withSendWindowSize: sw) withRecvWindowSize: rw) withSendfileChunkSize: chunk) withBytesRemaining: cl)
+
+  /// Validate decoded request headers: answers {method, target, headers,
+  /// contentLength} where target is {scheme, host, port, path}.
+  /// Raises H2StreamError.
+  checkRequestHeaders: headers :: List(Tuple) -> Tuple(String, Tuple, List(Tuple), Integer | Nil) =>
+    stringed := self stringHeaders: headers
+    {pseudo, rest} := self splitPseudo: stringed
+    self checkPseudo: pseudo
+    method := self exactlyOnce: pseudo name: ":method"
+    schemeName := self exactlyOnce: pseudo name: ":scheme"
+    path := self exactlyOnce: pseudo name: ":path"
+    self atMostOnce: pseudo name: ":authority"
+    self checkRegular: rest
+    contentLength := self contentLength: rest
+    {host, port} := self hostAndPort: pseudo
+    cooked := self combineCookies: rest
+    {method, {self schemeFor: schemeName, host, port, (self checkedPath: path)}, cooked, contentLength}
+
+  /// Map the :scheme value to a Scheme (:https only for "https").
+  schemeFor: scheme :: String -> Symbol =>
+    scheme =:= "https" ifTrue: [^#https]
+    #http
+
+  /// Headers with String names and values when valid UTF-8 (HPACK
+  /// decodes to Binary); non-UTF-8 names are stream errors, other
+  /// opaque values pass through for the regular-header paths.
+  stringHeaders: headers :: List(Tuple) -> List(Tuple) =>
+    headers
+      collect: [:h :: Tuple |
+        name := Headers stringOrOpaque: (h at: 1)
+        (name isKindOf: String)
+          ifFalse: [
+            H2StreamError
+              signal: "Received invalid header name"
+              code: HTTP2Errors protocolError
+              streamId: self streamId
+          ]
+        {name, (Headers stringOrOpaque: (h at: 2))}
+      ]
+
+  /// Split leading pseudo-headers from regular ones; a pseudo-header
+  /// after a regular one is a stream error.
+  splitPseudo: headers :: List(Tuple) -> Tuple(List(Tuple), List(Tuple)) =>
+    pseudo := #()
+    rest := #()
+    seenRegular := false
+    headers
+      do: [:h :: Tuple |
+        name := h at: 1
+        (name startsWith: ":")
+          ifTrue: [
+            seenRegular
+              ifTrue: [
+                H2StreamError
+                  signal: "Received pseudo headers after regular one"
+                  code: HTTP2Errors protocolError
+                  streamId: self streamId
+              ]
+            pseudo := pseudo add: h
+          ]
+          ifFalse: [
+            seenRegular := true
+            rest := rest add: h
+          ]
+      ]
+    {pseudo, rest}
+
+  /// Only request pseudo-headers may appear.
+  checkPseudo: pseudo :: List(Tuple) -> HTTP2Stream =>
+    pseudo
+      do: [:h :: Tuple |
+        name := h at: 1
+        ((name =:= ":method" or: [
+          name =:= ":scheme"
+        ]) or: [name =:= ":authority" or: [name =:= ":path"]])
+          ifFalse: [
+            H2StreamError
+              signal: "Received invalid pseudo header"
+              code: HTTP2Errors protocolError
+              streamId: self streamId
+          ]
+      ]
+    self
+
+  /// The single value of a required pseudo-header.
+  exactlyOnce: pseudo :: List(Tuple) name: want :: String -> String =>
+    found := pseudo select: [:h :: Tuple | (h at: 1) =:= want]
+    found size =:= 1
+      ifFalse: [
+        H2StreamError
+          signal: ("Expected 1 " ++ want ++ " headers")
+          code: HTTP2Errors protocolError
+          streamId: self streamId
+      ]
+    value := found first at: 2
+    value match: [
+      s :: String -> s;
+      _ -> H2StreamError
+        signal: ("Expected 1 " ++ want ++ " headers")
+        code: HTTP2Errors protocolError
+        streamId: self streamId
+    ]
+
+  /// The :path value: "*" or an absolute path, per RFC 9113 §8.3.1.
+  checkedPath: path :: String -> String =>
+    path =:= "*" ifTrue: [^path]
+    (path startsWith: "/") ifTrue: [^path]
+    H2StreamError
+      signal: "Path does not start with /"
+      code: HTTP2Errors protocolError
+      streamId: self streamId
+
+  /// An optional pseudo-header appears at most once.
+  atMostOnce: pseudo :: List(Tuple) name: want :: String -> HTTP2Stream =>
+    found := pseudo select: [:h :: Tuple | (h at: 1) =:= want]
+    found size > 1
+      ifTrue: [
+        H2StreamError
+          signal: ("Expected at most 1 " ++ want ++ " headers")
+          code: HTTP2Errors protocolError
+          streamId: self streamId
+      ]
+    self
+
+  /// Regular header checks: lowercase names, no connection headers,
+  /// valid TE, valid field values.
+  checkRegular: headers :: List(Tuple) -> HTTP2Stream =>
+    headers
+      do: [:h :: Tuple |
+        name := h at: 1
+        (name asciiLowercase =:= name)
+          ifFalse: [
+            H2StreamError
+              signal: "Received uppercase header"
+              code: HTTP2Errors protocolError
+              streamId: self streamId
+          ]
+        (self connectionHeader: name)
+          ifTrue: [
+            H2StreamError
+              signal: "Received connection-specific header"
+              code: HTTP2Errors protocolError
+              streamId: self streamId
+          ]
+      ]
+    self checkTe: headers
+    self checkFieldValues: headers
+
+  connectionHeader: name :: String -> Boolean =>
+    (#("connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "trailers", "transfer-encoding", "upgrade") includes: name)
+
+  /// TE may be absent or exactly "trailers".
+  checkTe: headers :: List(Tuple) -> HTTP2Stream =>
+    te := Headers getHeader: headers name: "te"
+    te isNil ifTrue: [^self]
+    self checkTeValue: te
+
+  checkTeValue: te :: Object -> HTTP2Stream =>
+    teText := te match: [
+      s :: String -> s;
+      b :: Binary -> b asStringUnchecked;
+      _ -> ""
+    ]
+    teText =:= "trailers" ifTrue: [^self]
+    H2StreamError
+      signal: "Received invalid TE header"
+      code: HTTP2Errors protocolError
+      streamId: self streamId
+
+  checkFieldValues: headers :: List(Tuple) -> HTTP2Stream =>
+    headers
+      do: [:h :: Tuple |
+        (Headers fieldValueValid: (h at: 2))
+          ifFalse: [
+            H2StreamError
+              signal: "Field value contains invalid characters (RFC9113§8.2.1)"
+              code: HTTP2Errors protocolError
+              streamId: self streamId
+          ]
+      ]
+    self
+
+  /// The content-length, if any (a disagreement is a stream error).
+  contentLength: headers :: List(Tuple) -> Integer | Nil =>
+    result := Headers getContentLength: headers
+    result isOk
+      ifFalse: [
+        H2StreamError
+          signal: result error
+          code: HTTP2Errors protocolError
+          streamId: self streamId
+      ]
+    result value
+
+  /// {host, port} from :authority; a missing authority answers nils
+  /// (the pipeline then falls back to the Host header rules).
+  hostAndPort: pseudo :: List(Tuple) -> Tuple(String | Nil, Integer | Nil) =>
+    auth := pseudo select: [:h :: Tuple | (h at: 1) =:= ":authority"]
+    auth isEmpty ifTrue: [^{nil, nil}]
+    [Headers parseHostlikeHeader: (auth first at: 2)]
+      on: HTTPError
+      do: [:e :: Exception |
+        H2StreamError
+          signal: "Invalid :authority header"
+          code: HTTP2Errors protocolError
+          streamId: self streamId
+      ]
+
+  /// Combine cookie crumbs with "; ", first (Bandit parity).
+  combineCookies: headers :: List(Tuple) -> List(Tuple) =>
+    crumbs := headers select: [:h :: Tuple | (h at: 1) =:= "cookie"]
+    others := headers reject: [:h :: Tuple | (h at: 1) =:= "cookie"]
+    crumbs isEmpty ifTrue: [^others]
+    combined := self joinCrumbs: (crumbs collect: [:h :: Tuple |
+      h at: 2
+    ]) acc: ""
+    combined isEmpty ifTrue: [^others]
+    others addFirst: {"cookie", combined}
+
+  joinCrumbs: crumbs :: List(Object) acc: acc :: String -> String =>
+    crumbs isEmpty ifTrue: [^acc]
+    crumb := crumbs first match: [
+      s :: String -> s;
+      b :: Binary -> b asStringUnchecked;
+      _ -> ""
+    ]
+    sep := acc isEmpty ifTrue: [""] ifFalse: ["; "]
+    self joinCrumbs: crumbs rest acc: acc ++ sep ++ crumb
+
+  // === HTTPTransport: the connection mechanics over sync calls ===
+  //
+  // The stream process never waits on its own mailbox. Body reads,
+  // flow-controlled sends and window waits are sync calls to the
+  // connection actor, which parks each with the stdlib deferred reply
+  // until the frame or window arrives and answers out of order.
+
+  /// This stream's connection actor, or a TransportError when gone.
+  conn -> ConnectionHandler =>
+    c := self connection
+    c isNil ifTrue: [
+      TransportError signal: "Unrecoverable error: stream has no connection"
+    ]
+    c
+
+  /// Run a blocking connection call with this stream's read timeout.
+  withConn: block :: Block(Object) -> Object =>
+    proxy := self conn withTimeout: self readTimeout
+    [block value: proxy] ensure: [proxy stop]
+
+  version -> HttpVersion => #http2
+
+  /// The negotiated version (Bandit's version/1).
+  readHeaders -> Tuple(String, Tuple, HttpHeaders, HTTP2Stream) =>
+    {headers, endStream} := self conn h2ReadHeaders: self streamId
+    {method, target, cooked, contentLength} := self checkRequestHeaders: headers
+    endStream
+      ifTrue: [
+        contentLength match: [
+          n :: Integer -> n =:= 0
+            ifFalse: [
+              H2StreamError
+                signal: "Received END_STREAM with bytes remaining"
+                code: HTTP2Errors protocolError
+                streamId: self streamId
+            ];
+          _ -> nil
+        ]
+      ]
+    {method, target, cooked, ((self withBytesRemaining: contentLength) withState: #open)}
+
+  /// {#ok | #more, data, transport}: the next body part.
+  readData: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP2Stream) =>
+    max := options at: #length ifAbsent: [8000000]
+    maxBytes := max match: [
+      n :: Integer -> n;
+      _ -> 8000000
+    ]
+    {data, more, ended} := self withConn: [:proxy :: Object |
+      proxy h2ReadData: self streamId maxBytes: maxBytes
+    ]
+    // A body that breaks its framing dies here in the stream process,
+    // not in serve:: RST it like a frame-path stream error, then fail
+    // the read so the handler sees a closed body.
+    checked := [self checkData: data ended: ended]
+      on: H2StreamError
+      do: [:e :: H2StreamError |
+        // Exception-subclass methods do not dispatch on instances (as in
+        // HTTP2Protocol streamCode:), so match the {code, sid} reason.
+        code := e reason match: [
+          {c, _} -> c match: [
+            n :: Integer -> n;
+            _ -> HTTP2Errors protocolError
+          ];
+          _ -> HTTP2Errors protocolError
+        ]
+        self conn h2ResetStream: self streamId code: code
+        TransportError signal: "stream reset"
+      ]
+    status := (more or: [ended not]) ifTrue: [#more] ifFalse: [#ok]
+    {status, data, checked}
+
+  /// Account a body part against the content length.
+  checkData: data :: Binary ended: ended :: Boolean -> HTTP2Stream =>
+    left := self bytesRemaining
+    left isNil ifTrue: [^self]
+    now := left - data size
+    now < 0
+      ifTrue: [
+        H2StreamError
+          signal: "Received more data than content-length"
+          code: HTTP2Errors protocolError
+          streamId: self streamId
+      ]
+    (ended and: [now > 0])
+      ifTrue: [
+        H2StreamError
+          signal: "Received END_STREAM with bytes remaining"
+          code: HTTP2Errors protocolError
+          streamId: self streamId
+      ]
+    self withBytesRemaining: now
+
+  /// The response head; answers the next transport.
+  sendHeaders: status :: Integer headers: headers :: HttpHeaders disposition: disposition :: BodyDisposition -> HTTP2Stream =>
+    self conn
+      h2SendHeaders: self streamId
+      status: status
+      headers: headers
+      endStream: (disposition =:= #noBody)
+    self withState: (self sendStateAfter: disposition)
+
+  /// The stream state after sending a head: informational heads change
+  /// nothing; a final head closes our side unless the body follows.
+  sendStateAfter: disposition :: BodyDisposition -> Symbol =>
+    disposition =:= #inform ifTrue: [^self state]
+    disposition =:= #noBody ifTrue: [^#localClosed]
+    #open
+
+  /// Response data; answers the next transport.
+  sendData: data :: Object end: endRequest :: Boolean -> HTTP2Stream =>
+    bin := data match: [
+      b :: Binary -> b;
+      s :: String -> s asBinary;
+      l :: List -> Binary fromIolist: l;
+      _ -> Error signal: "sendData: needs Binary data"
+    ]
+    self
+      withConn: [:proxy :: Object |
+        proxy
+          h2SendData: self streamId
+          data: bin
+          endStream: endRequest
+      ]
+    endRequest ifTrue: [^self withState: #localClosed]
+    self
+
+  /// A file response; answers the next transport. Exchange resolves
+  /// #all to a byte count, so length is always an Integer here. As in
+  /// Bandit, the file is read in `sendfileChunkSize` pieces from here, in
+  /// the stream process, so each piece waits on flow control in turn and
+  /// the connection actor never holds the file.
+  sendfile: path :: String offset: offset :: Integer length: length :: Object -> HTTP2Stream =>
+    total := length match: [
+      n :: Integer -> n;
+      _ -> Error signal: "sendfile: length must be an Integer byte count"
+    ]
+    opened := (Erlang file) open: path with: #(#raw, #binary)
+    opened isError
+      ifTrue: [
+        Error signal: ("Error opening file for sendfile: " ++ opened error printString)
+      ]
+    fd := opened value
+    [
+      total =:= 0
+        ifTrue: [self sendData: (Binary fromBytes: #()) end: true]
+        ifFalse: [
+          self
+            sendfileLoop: fd
+            offset: offset
+            length: total
+            sent: 0
+        ]
+    ] ensure: [(Erlang file) close: fd]
+    self withState: #localClosed
+
+  /// Read and send the next piece; the last one carries END_STREAM.
+  sendfileLoop: fd :: Object offset: offset :: Integer length: total :: Integer sent: sent :: Integer -> HTTP2Stream =>
+    sent >= total ifTrue: [^self]
+    chunk := self sendfileChunkSize
+    cap := chunk < 1 ifTrue: [1] ifFalse: [chunk]
+    left := total - sent
+    readSize := left < cap ifTrue: [left] ifFalse: [cap]
+    data := self
+      sendfileRead: fd
+      position: offset + sent
+      size: readSize
+    now := data size
+    now =:= 0 ifTrue: [Error signal: "Error reading file for sendfile: eof"]
+    ended := (sent + now) >= total
+    self sendData: data end: ended
+    ended
+      ifTrue: [self]
+      ifFalse: [
+        self
+          sendfileLoop: fd
+          offset: offset
+          length: total
+          sent: sent + now
+      ]
+
+  /// One pread; anything but data is an error.
+  sendfileRead: fd :: Object position: position :: Integer size: size :: Integer -> Binary =>
+    read := (Erlang file)
+      pread: fd
+      with: position
+      with: size
+    read match: [
+      r :: Result -> r isOk ifTrue: [
+        r value
+      ] ifFalse: [
+        Error signal: ("Error reading file for sendfile: " ++ r error printString)
+      ];
+      _ -> Error signal: "Error reading file for sendfile: eof"
+    ]
+
+  /// Drain an unread body within limits; answers the next transport.
+  /// Bandit only messages the connection here, which cannot fail when the
+  /// connection has gone, so a call to a dead connection actor is ignored
+  /// and any other failure is re-raised.
+  ensureCompleted -> HTTP2Stream =>
+    [
+      self withConn: [:proxy :: Object | proxy h2Drain: self streamId]
+    ] on: Exception do: [:e :: Exception | self conn isAlive ifTrue: [e pass]]
+    self
+
+  /// Whether this transport can upgrade to protocol.
+  supportsUpgrade: _protocol :: Symbol -> Boolean => false
+
+  /// Answer an error status unless the handler already sent.
+  sendOnError: error :: Exception -> HTTP2Stream =>
+    [
+      status := (error isKindOf: HTTPError) ifTrue: [
+        HTTPError statusFor: error
+      ] ifFalse: [500]
+      self conn h2SendError: self streamId status: status
+    ] on: Exception do: [:e :: Exception | nil]
+    self

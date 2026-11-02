@@ -1,0 +1,52 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Errors: HTTP/2 error codes (RFC 9113 §7).
+typed Object subclass: HTTP2Errors
+
+  class sealed noError -> Integer => 0
+
+  class sealed protocolError -> Integer => 1
+
+  class sealed internalError -> Integer => 2
+
+  class sealed flowControlError -> Integer => 3
+
+  class sealed settingsTimeout -> Integer => 4
+
+  class sealed streamClosed -> Integer => 5
+
+  class sealed frameSizeError -> Integer => 6
+
+  class sealed refusedStream -> Integer => 7
+
+  class sealed cancel -> Integer => 8
+
+  class sealed compressionError -> Integer => 9
+
+  class sealed connectError -> Integer => 10
+
+  class sealed enhanceYourCalm -> Integer => 11
+
+  class sealed inadequateSecurity -> Integer => 12
+
+  class sealed http11Requires -> Integer => 13
+
+  class sealed toReason: code :: Integer -> Symbol =>
+    code match: [
+      0 -> #no_error;
+      1 -> #protocol_error;
+      2 -> #internal_error;
+      3 -> #flow_control_error;
+      4 -> #settings_timeout;
+      5 -> #stream_closed;
+      6 -> #frame_size_error;
+      7 -> #refused_stream;
+      8 -> #cancel;
+      9 -> #compression_error;
+      10 -> #connect_error;
+      11 -> #enhance_your_calm;
+      12 -> #inadequate_security;
+      13 -> #http_1_1_required;
+      _ -> #unknown
+    ]

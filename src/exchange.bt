@@ -145,6 +145,13 @@ sealed typed Value subclass: Exchange
 
   // === The response ===
 
+  /// The queued putRespHeader: headers plus the call's own headers
+  /// (Bandit merges conn.resp_headers into every response head).
+  headersWithQueued: st :: ExchangeState extra: hs :: HttpHeaders -> HttpHeaders =>
+    all := st respHeaders
+    hs do: [:h :: Tuple | all := all add: h]
+    all
+
   /// The whole response (Bandit's send_resp): content-length set from
   /// body (a String, Binary or iodata), head and body in one send. No
   /// body goes out for HEAD, 204 or 304. Raises AlreadySent on a second
@@ -158,7 +165,7 @@ sealed typed Value subclass: Exchange
     st := st withRespStartTime: BuccaneerTelemetry monotonicTime
     length := Erlang erlang iolist_size: body
     withLength := Headers
-      addContentLength: hs
+      addContentLength: (self headersWithQueued: st extra: hs)
       length: length
       status: status
       method: st method
@@ -189,7 +196,7 @@ sealed typed Value subclass: Exchange
     headed := self
       sendHeadersOn: st
       status: status
-      headers: hs
+      headers: (self headersWithQueued: st extra: hs)
       disposition: #chunkEncoded
     (self sendsBody: headed) ifTrue: [
       self store: (headed withRespState: #chunked)
@@ -258,7 +265,7 @@ sealed typed Value subclass: Exchange
             ++ " octets in length")
       ]
     withLength := Headers
-      addContentLength: hs
+      addContentLength: (self headersWithQueued: st extra: hs)
       length: total
       status: status
       method: st method
@@ -321,7 +328,8 @@ sealed typed Value subclass: Exchange
     self store: ((((st withWebsock: websock) withWebsockState: websock) withWebsocketOptions: opts) withRespState: #upgraded)
 
   /// Queue a response header (Plug.Conn.put_resp_header), sent with the
-  /// next response head — the 101 on an upgrade. Answers the exchange.
+  /// next response head — the 101 on an upgrade. Replaces any queued
+  /// header with the same name, as Plug does. Answers the exchange.
   /// Raises AlreadySent once the response went out.
   putRespHeader: name :: String value: value :: String -> Exchange =>
     st := self load
@@ -329,7 +337,10 @@ sealed typed Value subclass: Exchange
       ifTrue: [
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
-    self store: (st withRespHeaders: (st respHeaders add: {name, value}))
+    kept := st respHeaders reject: [:h :: Tuple |
+      (h at: 1) asciiLowercase =:= name asciiLowercase
+    ]
+    self store: (st withRespHeaders: (kept add: {name, value}))
 
   /// Per RFC9110§10.1.1, a client that asked for 100 Continue and never
   /// got one may never send the body: close rather than drain it.

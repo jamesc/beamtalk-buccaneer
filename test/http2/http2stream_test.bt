@@ -1,0 +1,119 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// HTTP2Stream request-head validation (Phase 6, pure part of readHeaders).
+TestCase subclass: HTTP2StreamTest
+
+  stream -> HTTP2Stream =>
+    HTTP2Stream
+      init: nil
+      sid: 1
+      sendWindow: 65535
+      recvWindow: 65535
+      sendfileChunk: 1048576
+      contentLength: nil
+
+  baseHeaders -> List(Tuple) =>
+    #({":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {":authority", "example.com"})
+
+  testValidHeaders =>
+    {method, target, cooked, length} := self stream checkRequestHeaders: self baseHeaders
+    self assert: method equals: "GET"
+    self assert: (target at: 1) equals: #https
+    self assert: (target at: 2) equals: "example.com"
+    self assert: (target at: 3) isNil
+    self assert: (target at: 4) equals: "/"
+    self assert: length isNil
+    self assert: (cooked size) equals: 0
+
+  testAuthorityPort =>
+    headers := #({":method", "GET"}, {":scheme", "http"}, {":path", "/x"}, {":authority", "example.com:8080"})
+    {_, target, _, _} := self stream checkRequestHeaders: headers
+    self assert: (target at: 2) equals: "example.com"
+    self assert: (target at: 3) equals: 8080
+
+  testMissingMethod =>
+    headers := #({":scheme", "https"}, {":path", "/"}, {":authority", "example.com"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "Expected 1 :method headers")
+
+  testPseudoAfterRegular =>
+    headers := #({":method", "GET"}, {"x-a", "b"}, {":path", "/"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "pseudo headers after regular one")
+
+  testUnknownPseudo =>
+    headers := #({":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {":custom", "x"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "invalid pseudo header")
+
+  testUppercaseHeader =>
+    headers := #({":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"X-A", "b"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "uppercase header")
+
+  testConnectionHeader =>
+    headers := #({":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"connection", "close"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "connection-specific header")
+
+  testBadTe =>
+    headers := #({":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"te", "chunked"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "invalid TE header")
+
+  testBadContentLength =>
+    headers := #({":method", "POST"}, {":scheme", "https"}, {":path", "/"}, {"content-length", "nope"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: ((caught size) > 0)
+
+  testContentLengthKept =>
+    headers := #({":method", "POST"}, {":scheme", "https"}, {":path", "/"}, {"content-length", "3"})
+    {_, _, _, length} := self stream checkRequestHeaders: headers
+    self assert: length equals: 3
+
+  testCookiesCombined =>
+    headers := #({":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"cookie", "a=1"}, {"cookie", "b=2"})
+    {_, _, cooked, _} := self stream checkRequestHeaders: headers
+    self assert: (cooked size) equals: 1
+    self assert: (cooked first at: 2) equals: "a=1; b=2"
+
+  testBadPath =>
+    headers := #({":method", "GET"}, {":scheme", "https"}, {":path", "relative"}, {":authority", "example.com"})
+    caught := [
+      self stream checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "Path does not start with /")
+
+  testAsteriskPath =>
+    headers := #({":method", "OPTIONS"}, {":scheme", "https"}, {":path", "*"}, {":authority", "example.com"})
+    {_, target, _, _} := self stream checkRequestHeaders: headers
+    self assert: (target at: 4) equals: "*"
+
+  testErrorCarriesStreamId =>
+    headers := #({":scheme", "https"}, {":path", "/"})
+    s := (HTTP2Stream
+      init: nil
+      sid: 7
+      sendWindow: 65535
+      recvWindow: 65535
+      sendfileChunk: 1048576
+      contentLength: nil)
+    caught := [
+      s checkRequestHeaders: headers
+    ] on: H2StreamError do: [:e :: H2StreamError | e reason]
+    self assert: (caught at: 2) equals: 7

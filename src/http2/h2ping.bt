@@ -1,0 +1,7 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Bandit.HTTP2.Frame.Ping frame (RFC 9113 §6.7).
+sealed typed Value subclass: H2Ping
+  field: ack :: Boolean = false
+  field: payload :: Binary = ""

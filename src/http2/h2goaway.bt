@@ -1,0 +1,8 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Bandit.HTTP2.Frame.Goaway frame (RFC 9113 §6.8).
+sealed typed Value subclass: H2Goaway
+  field: lastStreamId :: Integer = 0
+  field: errorCode :: Integer = 0
+  field: debugData :: Binary = ""

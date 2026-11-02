@@ -574,6 +574,51 @@ related, not a blocker; when it lands, links can replace monitors.
 knowledge); h2spec runs in CI as a non-blocking job, promoted to blocking
 once green. Blocked by BT-4090, Phase 5, Phase 1 and Phase 0.
 
+**Status: engine done (BT-4085; PR pending, 717 BUnit tests green,
+`just ci` green).** Ported: frame deserialization/serialization (22),
+`H2StreamCollection` (5), `HTTP2Connection` pure state (14),
+`HTTP2Stream` validation/transport (14), `H2PlugTest` end-to-end over
+real sockets (31: the original 10 plus request/response header echoes,
+empty/simple/multi body reads, unread-body cleanup, HEAD
+content-length rules, iolist and chunked bodies, 500/418/NotSent error
+paths with logs, 100-inform and 100-continue interim responses,
+peer/sock data, TLS POST echo), `HTTP2ProtocolTest` (29: framing,
+connection and stream behavior over TLS) and the `initial_handler` h2
+cases (prior-knowledge preface, disabled gate); h2spec runs in CI as a
+non-blocking job (`just h2spec`, `test/http2/h2spec_test.bt` behind
+`H2SPEC=1`). Not yet ported: most of `protocol_test.exs` (178: DATA and
+HEADERS validation blocks, RST_STREAM, SETTINGS/PING/GOAWAY/WINDOW_UPDATE,
+CONTINUATION, request-target forms, max-concurrent-streams) and the
+remaining `plug_test.exs` cases (sendfile offsets, flow-control
+blocking, upgrades, telemetry, compression — Phase 9).
+Deviations from Bandit, all with covering tests:
+- `routeDecoded:` buffers the full normalized header list, not the
+  regular-only `cooked` set, so the stream's re-validation sees
+  pseudo-headers (Bandit keeps its own copy in the stream process).
+- Socket-path `h2Serve:`/`h2Info:` drain the protocol outbox, delivering
+  parked-reader wakeups queued by `serve:` (sync handlers already did).
+- DATA for a stream with buffered-but-unspawned HEADERS (same TCP
+  segment) is buffered as open, not a `DATA in idle state` connection
+  error; only truly idle streams GOAWAY.
+- `H2PlugTest.readResponse` skips connection/stream `WINDOW_UPDATE`
+  frames before the response HEADERS (flow-control acks for the request
+  body); anything else unexpected still fails the test.
+- `Exchange sendResp:`/`sendChunked:`/`sendFile:` merge the queued
+  `putRespHeader:` headers with the call's headers (Bandit merges
+  `conn.resp_headers` into every response head); previously only the
+  WebSocket handshake saw them.
+- `Pipeline expectsContinue:` accepts a Binary `expect` value (HPACK
+  decodes h2 request values opaque); the String-only check broke
+  `100-continue` on HTTP/2.
+- `HTTP2Stream` carries the connection socket (set at spawn), so
+  `peer`/`sockData` work over h2; h2 `sendData:` accepts iodata lists.
+- `HTTP2Protocol keepingRepliesOf:` preserves a woken reader's outbox
+  reply across the `connectionIsComplete` rebuild (`dataForOpen:`,
+  trailers path); dropping it parked the stream's next read forever.
+- Exception-subclass methods (`H2StreamError errorCode`,
+  `H2ConnectionError errorCode`) do not dispatch on instances; handlers
+  match `e reason` directly, as `streamCode:`/`connCode:` already did.
+
 ### Phase 7: Release gate (L)
 
 Reuse Catalina's harness (`bench/harness`, `test/stress`, the peer-VM

@@ -93,12 +93,16 @@ TestCase subclass: H2PlugTest
     {cooked, dec2} := H2Client decode: head fragment table: dec
     {self statusOf: cooked, (self readDataTls: sock acc: (Binary fromBytes: #())), dec2}
 
+  /// Read DATA frames to END_STREAM. A connection WINDOW_UPDATE can land
+  /// between the response HEADERS and DATA (Bandit grows the receive window
+  /// on the first DATA frame), so those are skipped.
   readData: sock acc: acc =>
     frame := H2Client recvFrame: sock
     frame match: [
       d :: H2Data -> d endStream ifTrue: [
         acc concat: d data
       ] ifFalse: [self readData: sock acc: (acc concat: d data)];
+      w :: H2WindowUpdate -> self readData: sock acc: acc;
       _ -> self assert: false
     ]
 
@@ -108,6 +112,7 @@ TestCase subclass: H2PlugTest
       d :: H2Data -> d endStream ifTrue: [
         acc concat: d data
       ] ifFalse: [self readDataTls: sock acc: (acc concat: d data)];
+      w :: H2WindowUpdate -> self readDataTls: sock acc: acc;
       _ -> self assert: false
     ]
 

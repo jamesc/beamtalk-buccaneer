@@ -178,10 +178,7 @@ sealed typed Value subclass: HTTP2Protocol
     {bytes, fresh, close, proto} := [self handleFrame: frame]
       on: H2StreamError
       do: [:e :: H2StreamError |
-        self
-          streamFailed: e
-          bytes: out
-          spawns: spawns
+        self streamFailed: e
       ]
     merged := out concat: bytes
     all := spawns ++ fresh
@@ -194,7 +191,7 @@ sealed typed Value subclass: HTTP2Protocol
 
   /// H2StreamError while handling a frame: RST the stream, log it short,
   /// keep the connection alive (the loop continues with the rest).
-  streamFailed: e :: H2StreamError bytes: out :: Binary spawns: spawns :: List(Integer) -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+  streamFailed: e :: H2StreamError -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     sid := self streamSid: e
     self logStreamError: e streamId: sid
     {rst, failed, proto} := self resetStream: sid code: (self streamCode: e)

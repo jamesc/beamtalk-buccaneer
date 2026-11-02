@@ -452,8 +452,13 @@ sealed typed Value subclass: HTTP2Stream
     ]
 
   /// Drain an unread body within limits; answers the next transport.
+  /// Bandit only messages the connection here, which cannot fail when the
+  /// connection has gone, so a call to a dead connection actor is ignored
+  /// and any other failure is re-raised.
   ensureCompleted -> HTTP2Stream =>
-    self withConn: [:proxy :: Object | proxy h2Drain: self streamId]
+    [
+      self withConn: [:proxy :: Object | proxy h2Drain: self streamId]
+    ] on: Exception do: [:e :: Exception | self conn isAlive ifTrue: [e pass]]
     self
 
   /// Whether this transport can upgrade to protocol.

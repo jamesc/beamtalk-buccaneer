@@ -162,16 +162,15 @@ typed Handler subclass: ConnectionHandler
       ]
     nil
 
-  /// Socket-send a protocol answer (empty answers send nothing).
-  /// A failed send is unrecoverable: the connection crashes as in
-  /// Bandit, and terminate: closes the socket.
+  /// Socket-send a protocol answer (empty answers send nothing). As in
+  /// Bandit, whose HTTP/2 connection discards the result of every
+  /// ThousandIsland.Socket.send, a failed send is not an error here: the
+  /// peer has gone, and the connection finds out on its next read. Raising
+  /// would crash the connection process and log a TransportError for what
+  /// is an ordinary client hang-up (for example after a GOAWAY).
   h2SendBytes: bytes :: Binary socket: sock :: Socket -> Nil =>
     bytes size =:= 0 ifTrue: [^nil]
-    result := sock send: bytes
-    result isError
-      ifTrue: [
-        TransportError signal: ("Unrecoverable error: " ++ result error printString) reason: result error
-      ]
+    sock send: bytes
     nil
 
   /// Raise a transport failure for a purged stream op.

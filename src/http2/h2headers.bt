@@ -1,0 +1,12 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Bandit.HTTP2.Frame.Headers frame (RFC 9113 §6.2).
+sealed typed Value subclass: H2Headers
+  field: streamId :: Integer = 0
+  field: endStream :: Boolean = false
+  field: endHeaders :: Boolean = false
+  field: exclusiveDependency :: Boolean = false
+  field: streamDependency :: Integer | Nil = nil
+  field: weight :: Integer | Nil = nil
+  field: fragment :: Binary = ""

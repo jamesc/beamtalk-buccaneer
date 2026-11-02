@@ -1,0 +1,7 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Bandit.HTTP2.Frame.Settings frame (RFC 9113 §6.5).
+sealed typed Value subclass: H2Settings
+  field: ack :: Boolean = false
+  field: settings :: Dictionary(Symbol, Object) = #{}

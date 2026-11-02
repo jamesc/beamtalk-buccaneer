@@ -1,0 +1,9 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A Bandit.HTTP2.Frame.Continuation frame (RFC 9113 §6.10).
+/// Named H2Continuation: websocket already owns ContinuationFrame.
+sealed typed Value subclass: H2Continuation
+  field: streamId :: Integer = 0
+  field: endHeaders :: Boolean = false
+  field: fragment :: Binary = ""

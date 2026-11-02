@@ -1,0 +1,9 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A frame type Buccaneer does not implement (Bandit.Frame.Unknown).
+sealed typed Value subclass: H2Unknown
+  field: frameType :: Integer = 0
+  field: flags :: Integer = 0
+  field: streamId :: Integer = 0
+  field: payload :: Binary = ""

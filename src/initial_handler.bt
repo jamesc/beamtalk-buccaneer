@@ -4,18 +4,17 @@
 /// Bandit.InitialHandler: look at a new connection and decide what it
 /// speaks. ALPN first (TLS sockets); otherwise sniff three bytes for a
 /// TLS ClientHello, which gets a warning and a close. Anything else
-/// starts HTTP/1 with the sniffed bytes buffered. HTTP/2 (`h2` ALPN,
-/// the `PRI` preface) arrives in Phase 6: until then both close
-/// quietly, as Bandit with HTTP/2 disabled does.
+/// starts HTTP/1 with the sniffed bytes buffered; `h2` ALPN and the
+/// `PRI` preface start HTTP/2 when enabled, as Bandit does.
 typed Object subclass: InitialHandler
 
-  /// `{#http1, buffered}` or `#close`.
+  /// `{#http1, buffered}`, `{#http2, buffered}` or `#close`.
   class sealed run: sock :: Socket options: config :: BuccaneerConfig -> Symbol | Tuple =>
     alpn := sock negotiatedProtocol
     alpn isOk
       ifTrue: [
         protocol := alpn value
-        protocol =:= "h2" ifTrue: [^#close]
+        protocol =:= "h2" ifTrue: [^self http2IfEnabled: config]
         protocol =:= "http/1.1" ifTrue: [
           ^self http1IfEnabled: config data: (Binary fromBytes: #())
         ]
@@ -27,6 +26,12 @@ typed Object subclass: InitialHandler
     enabled := config http1 at: #enabled ifAbsent: [true]
     enabled =:= false ifTrue: [^#close]
     {#http1, buffer}
+
+  /// HTTP/2 if enabled, else close (as Bandit with HTTP/2 disabled).
+  class sealed http2IfEnabled: config :: BuccaneerConfig -> Symbol | Tuple =>
+    enabled := config http2 at: #enabled ifAbsent: [true]
+    enabled =:= false ifTrue: [^#close]
+    {#http2, (Binary fromBytes: #())}
 
   /// Peek at the wire: TLS gets a warning and a close, `PRI` starts
   /// the preface sniff, anything else (or a timeout, or an idle
@@ -64,9 +69,9 @@ typed Object subclass: InitialHandler
       bytes =:= (Binary fromBytes: #(22, 3, 3))
     ]
 
-  /// The 21 bytes after `PRI`: the full HTTP/2 preface closes (Phase 6
-  /// takes this arm), anything else — or a timeout — starts HTTP/1
-  /// with everything buffered.
+  /// The 21 bytes after `PRI`: the full HTTP/2 preface starts HTTP/2
+  /// (the magic is consumed, not buffered); anything else — or a
+  /// timeout — starts HTTP/1 with everything buffered.
   class sealed sniffPreface: sock :: Socket options: config :: BuccaneerConfig buffer: buffer :: Binary -> Symbol | Tuple =>
     rest := sock recv: 21 timeout: nil
     rest isError
@@ -77,6 +82,6 @@ typed Object subclass: InitialHandler
         ^#close
       ]
     rest value =:= (Binary fromIolist: #(" * HTTP/2.0\r\n\r\nSM\r\n\r\n")) ifTrue: [
-      ^#close
+      ^self http2IfEnabled: config
     ]
     self http1IfEnabled: config data: (buffer concat: rest value)

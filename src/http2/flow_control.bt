@@ -1,0 +1,27 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.FlowControl: window accounting helpers (RFC 9113 §6.9).
+typed Object subclass: FlowControl
+
+  class sealed maxWindowIncrement -> Integer => 2147483647
+
+  class sealed maxWindowSize -> Integer => 2147483647
+
+  class sealed minWindowSize -> Integer => 1073741824
+
+  /// After receiving dataSize bytes, answer {newWindow, incrementToSend}.
+  class sealed computeRecvWindow: window :: Integer dataSize: data :: Integer -> Tuple(Integer, Integer) =>
+    updated := window - data
+    updated > self minWindowSize ifTrue: [^{updated, 0}]
+    newWindow := (updated + self maxWindowIncrement) < self maxWindowSize ifTrue: [
+      updated + self maxWindowIncrement
+    ] ifFalse: [self maxWindowSize]
+    {newWindow, newWindow - updated}
+
+  /// Grow the send window, or error when it would exceed the maximum.
+  class sealed updateSendWindow: current :: Integer increment: inc :: Integer -> Result(Integer, String) =>
+    current + inc > self maxWindowSize ifTrue: [
+      ^Result error: "Invalid WINDOW_UPDATE increment RFC9113§6.9.1"
+    ]
+    Result ok: current + inc

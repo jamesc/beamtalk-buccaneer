@@ -31,15 +31,24 @@ type HttpOptions = Dictionary(Symbol, Object)
 type Http1Options = Dictionary(Symbol, Object)
 
 /// The `#http2` section: Bandit's HTTP/2 options, in camelCase.
-/// Accepted, validated and stored; no HTTP/2 engine reads them yet.
+/// Accepted, validated and stored; the HTTP/2 engine reads them.
 ///
 /// ## Options
-/// - `#enabled` (Boolean) — reserved; no HTTP/2 engine reads it yet.
-/// - `#maxHeaderBlockSize` (Integer) — reserved; no HTTP/2 engine reads it yet.
-/// - `#maxRequests` (Integer) — reserved; no HTTP/2 engine reads it yet.
-/// - `#maxResetStreamRate` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#sendfileChunkSize` (Integer) — reserved; no HTTP/2 engine reads it yet.
-/// - `#defaultLocalSettings` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#enabled` (Boolean, default `true`) — `false` refuses h2 with a
+///   connection error instead of serving it.
+/// - `#maxHeaderBlockSize` (Integer, default `50000`) — largest
+///   reassembled header block in bytes.
+/// - `#maxRequests` (Integer, default `0`) — most streams per connection;
+///   `0` means unlimited.
+/// - `#maxResetStreamRate` (`{intensity, period}`, default `{500, 10000}`;
+///   `nil` disables) — most resets per period before the connection closes.
+/// - `#sendfileChunkSize` (Integer, default `1048576`) — file bytes per
+///   DATA run when serving files.
+/// - `#defaultLocalSettings` (Dictionary, default empty) — overrides for
+///   the advertised settings (`#headerTableSize`, `#maxConcurrentStreams`,
+///   `#initialWindowSize`, `#maxFrameSize`, `#maxHeaderListSize`).
+/// - `#logStreamErrors` (`#short` default, `#verbose` or `false`) — how
+///   stream errors are logged.
 type Http2Options = Dictionary(Symbol, Object)
 
 /// The `#websocket` section: Bandit's WebSocket options, in camelCase.
@@ -174,7 +183,7 @@ typed Value subclass: BuccaneerConfig
     #(#enabled, #maxRequestLineLength, #maxHeaderLength, #maxHeaderCount, #maxRequests, #clearProcessDict, #gcEveryNKeepaliveRequests, #logUnknownMessages)
 
   class http2Keys -> List(Symbol) =>
-    #(#enabled, #maxHeaderBlockSize, #maxRequests, #maxResetStreamRate, #sendfileChunkSize, #defaultLocalSettings)
+    #(#enabled, #maxHeaderBlockSize, #maxRequests, #maxResetStreamRate, #sendfileChunkSize, #defaultLocalSettings, #logStreamErrors)
 
   class websocketKeys -> List(Symbol) =>
     #(#enabled, #maxFrameSize, #maxFragmentedMessageSize, #validateTextFrames, #compress, #deflateOptions, #maxInflateRatio, #primitiveOpsModule, #logProtocolErrors)
@@ -338,3 +347,44 @@ typed Value subclass: BuccaneerConfig
         ^dict at: k put: v
       ]
     Error signal: "Invalid transport option"
+
+  /// An Integer #http2 option or the default.
+  http2Integer: key :: Symbol default: fallback :: Integer -> Integer =>
+    raw := self http2 at: key ifAbsent: [^fallback]
+    raw match: [
+      n :: Integer -> n;
+      _ -> Error signal: ("Invalid value for #" ++ key asString)
+    ]
+
+  /// The reset intensity from #maxResetStreamRate ({intensity, period}
+  /// or nil to disable; default {500, 10000}).
+  http2ResetIntensity -> Integer =>
+    raw := self http2 at: #maxResetStreamRate ifAbsent: [^500]
+    raw isNil ifTrue: [^0]
+    raw match: [
+      {i, _} -> i match: [
+        n :: Integer -> n;
+        _ -> Error signal: "Invalid value for #maxResetStreamRate"
+      ];
+      _ -> Error signal: "Invalid value for #maxResetStreamRate"
+    ]
+
+  /// The reset period from #maxResetStreamRate.
+  http2ResetPeriod -> Integer =>
+    raw := self http2 at: #maxResetStreamRate ifAbsent: [^10000]
+    raw isNil ifTrue: [^10000]
+    raw match: [
+      {_, p} -> p match: [
+        n :: Integer -> n;
+        _ -> Error signal: "Invalid value for #maxResetStreamRate"
+      ];
+      _ -> Error signal: "Invalid value for #maxResetStreamRate"
+    ]
+
+  /// How stream errors are logged: #short (default), #verbose or false.
+  http2LogStreamErrors -> Object =>
+    raw := self http2 at: #logStreamErrors ifAbsent: [^#short]
+    (raw =:= #short or: [
+      raw =:= #verbose or: [raw =:= false]
+    ]) ifFalse: [Error signal: "Invalid value for #logStreamErrors"]
+    raw

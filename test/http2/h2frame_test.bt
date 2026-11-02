@@ -1,0 +1,140 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's http2/frame_deserialization_test.exs and
+/// frame_serialization_test.exs (Phase 6, first slice: frames).
+TestCase subclass: H2FrameTest
+
+  bytes: arr :: List(Integer) -> Binary => Binary fromBytes: arr
+
+  testEmptyIsNil =>
+    self assert: (H2Frame deserialize: (Binary fromBytes: #()) maxFrameSize: 16384) isNil
+
+  testAsksForMore =>
+    buf := self bytes: #(0, 0, 0, 4)
+    got := H2Frame deserialize: buf maxFrameSize: 16384
+    self assert: got equals: {{#more, buf}, (Binary fromBytes: #())}
+
+  testDropsOversizeFramesEarly =>
+    // 16385 in 24 bits = 0x004001
+    big := (Binary fromBytes: #(0, 64, 1, 0, 0, 0, 0, 0, 1)) concat: (Binary fromBytes: #())
+    got := H2Frame deserialize: big maxFrameSize: 16384
+    self assert: (got at: 1) equals: {#error, 6, "Payload size too large (RFC9113§4.2)"}
+
+  testReturnsExtraData =>
+    buf := self bytes: #(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 3)
+    got := H2Frame deserialize: buf maxFrameSize: 16384
+    frame := ((got at: 1) at: 2)
+    self assert: frame class equals: H2Data
+    self assert: frame streamId equals: 1
+    self assert: frame data equals: (Binary fromBytes: #())
+    self assert: (got at: 2) equals: (self bytes: #(1, 2, 3))
+
+  testUnknownFrameType =>
+    buf := self bytes: #(0, 0, 3, 254, 123, 0, 0, 0, 234, 1, 2, 3)
+    got := H2Frame deserialize: buf maxFrameSize: 16384
+    frame := ((got at: 1) at: 2)
+    self assert: frame class equals: H2Unknown
+    self assert: frame frameType equals: 254
+    self assert: frame flags equals: 123
+    self assert: frame streamId equals: 234
+    self assert: frame payload equals: (self bytes: #(1, 2, 3))
+
+  testDataWithoutPadding =>
+    buf := self bytes: #(0, 0, 3, 0, 0, 0, 0, 0, 1, 1, 2, 3)
+    got := H2Frame deserialize: buf maxFrameSize: 16384
+    frame := ((got at: 1) at: 2)
+    self assert: frame class equals: H2Data
+    self assert: frame endStream equals: false
+    self assert: frame data equals: (self bytes: #(1, 2, 3))
+
+  testDataEndStream =>
+    buf := self bytes: #(0, 0, 3, 0, 1, 0, 0, 0, 1, 1, 2, 3)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame endStream equals: true
+
+  testDataZeroStreamId =>
+    buf := self bytes: #(0, 0, 3, 0, 0, 0, 0, 0, 0, 1, 2, 3)
+    got := H2Frame deserialize: buf maxFrameSize: 16384
+    self assert: (got at: 1) equals: {#error, 1, "DATA frame with zero stream_id (RFC9113§6.1)"}
+
+  testDataWithPadding =>
+    buf := self bytes: #(0, 0, 6, 0, 8, 0, 0, 0, 1, 2, 1, 2, 3, 4, 5)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame data equals: (self bytes: #(1, 2, 3))
+
+  testRstStream =>
+    buf := (self bytes: #(0, 0, 4, 3, 0, 0, 0, 0, 1)) concat: (self bytes: #(0, 0, 0, 8))
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame class equals: H2RstStream
+    self assert: frame streamId equals: 1
+    self assert: frame errorCode equals: 8
+
+  testPing =>
+    buf := self bytes: #(0, 0, 8, 6, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame class equals: H2Ping
+    self assert: frame ack equals: false
+
+  testPingAck =>
+    buf := self bytes: #(0, 0, 8, 6, 1, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame ack equals: true
+
+  testSettingsAck =>
+    buf := self bytes: #(0, 0, 0, 4, 1, 0, 0, 0, 0)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame class equals: H2Settings
+    self assert: frame ack equals: true
+
+  testWindowUpdate =>
+    buf := self bytes: #(0, 0, 4, 8, 0, 0, 0, 0, 123, 0, 0, 0, 234)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame class equals: H2WindowUpdate
+    self assert: frame streamId equals: 123
+    self assert: frame sizeIncrement equals: 234
+
+  testWindowUpdateZeroIncrement =>
+    buf := self bytes: #(0, 0, 4, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    got := H2Frame deserialize: buf maxFrameSize: 16384
+    self assert: (got at: 1) equals: {#error, 1, "Invalid WINDOW_UPDATE size increment (RFC9113§6.9)"}
+
+  testGoaway =>
+    buf := self bytes: #(0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame class equals: H2Goaway
+    self assert: frame lastStreamId equals: 1
+    self assert: frame errorCode equals: 2
+
+  testContinuation =>
+    buf := self bytes: #(0, 0, 3, 9, 0, 0, 0, 0, 1, 1, 2, 3)
+    frame := ((H2Frame deserialize: buf maxFrameSize: 16384) at: 1) at: 2
+    self assert: frame class equals: H2Continuation
+    self assert: frame endHeaders equals: false
+
+  testPushPromiseRejected =>
+    buf := self bytes: #(0, 0, 7, 5, 0, 0, 0, 0, 1, 0, 0, 0, 3, 1, 2, 3)
+    got := H2Frame deserialize: buf maxFrameSize: 16384
+    self assert: (got at: 1) equals: {#error, 1, "PUSH_PROMISE frame received (RFC9113§8.4)"}
+
+  testSerializeData =>
+    frame := ((H2Data new withStreamId: 123) withEndStream: false) withData: (self bytes: #(1, 2, 3))
+    wire := H2Frame serialize: frame maxFrameSize: 16384
+    self assert: wire equals: ((self bytes: #(0, 0, 3, 0, 0, 0, 0, 0, 123)) concat: (self bytes: #(1, 2, 3)))
+
+  testSerializeDataSplit =>
+    frame := ((H2Data new withStreamId: 123) withEndStream: false) withData: (self bytes: #(1, 2, 3))
+    wire := H2Frame serialize: frame maxFrameSize: 2
+    expect := ((self bytes: #(0, 0, 2, 0, 0, 0, 0, 0, 123)) concat: (self bytes: #(1, 2))) concat: ((self bytes: #(0, 0, 1, 0, 0, 0, 0, 0, 123)) concat: (self bytes: #(3)))
+    self assert: wire equals: expect
+
+  testSerializePing =>
+    frame := (H2Ping new withAck: false) withPayload: (self bytes: #(1, 2, 3, 4, 5, 6, 7, 8))
+    wire := H2Frame serialize: frame maxFrameSize: 16384
+    self assert: wire equals: ((self bytes: #(0, 0, 8, 6, 0, 0, 0, 0, 0)) concat: (self bytes: #(1, 2, 3, 4, 5, 6, 7, 8)))
+
+  testSerializeRoundTrip =>
+    frame := ((H2WindowUpdate new withStreamId: 123) withSizeIncrement: 234)
+    wire := H2Frame serialize: frame maxFrameSize: 16384
+    back := ((H2Frame deserialize: wire maxFrameSize: 16384) at: 1) at: 2
+    self assert: back equals: frame

@@ -1,0 +1,189 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// HTTP2Connection pure transitions (Phase 6): settings merge and HPACK
+/// resize, stream admission, reset rate limiting, pending-send queue and
+/// expiry, header list size, fragment guard, HPACK round trip.
+TestCase subclass: HTTP2ConnectionTest
+
+  park: server :: H2ParkFixture key: key :: Symbol -> ReplyTo =>
+    [server wait: key] fork
+    100 timesRepeat: [server waitingCount < 1 ifTrue: [Timer sleep: 10]]
+    tok := server token: key
+    tok isNil ifTrue: [Error signal: "park failed"]
+    tok
+
+  testApplyRemoteSettingsMergesAndDeltas =>
+    conn := HTTP2Connection default
+    {conn2, delta} := conn applyRemoteSettings: #{
+      #initial_window_size => 100000
+    }
+    self assert: delta equals: 34465
+    self assert: conn2 remoteSettings initialWindowSize equals: 100000
+    self assert: conn2 remoteSettings maxFrameSize equals: 16384
+    {conn3, delta3} := conn2 applyRemoteSettings: #{}
+    self assert: delta3 equals: 0
+    self assert: (conn3 remoteSettings maxConcurrentStreams) equals: #infinity
+
+  testApplyRemoteSettingsUnknownIdsIgnored =>
+    conn := HTTP2Connection default
+    {conn2, _} := conn applyRemoteSettings: #{
+      #bogus => 1,
+      #header_table_size => 1024
+    }
+    self assert: conn2 remoteSettings headerTableSize equals: 1024
+    self assert: conn remoteSettings headerTableSize equals: 4096
+
+  testHpackTablesRoundTrip =>
+    conn := HTTP2Connection default
+    {io, conn2} := conn encodeHeaders: #({":method", "GET"}, {":path", "/"})
+    decoded := conn2 decodeHeaders: (Binary fromIolist: io)
+    self assert: (decoded at: 1) equals: #ok
+
+  testHpackResizeOnSettings =>
+    conn := HTTP2Connection default
+    {conn2, _} := conn applyRemoteSettings: #{#header_table_size => 512}
+    self assert: conn2 sendHpack maxTableSize equals: 512
+
+  testCheckNewStreamEvenIsConnectionError =>
+    conn := HTTP2Connection default
+    caught := [
+      conn checkNewStream: 2
+    ] on: H2ConnectionError do: [:e :: H2ConnectionError | e reason]
+    self assert: caught equals: 1
+
+  testCheckNewStreamMaxRequests =>
+    conn := ((HTTP2Connection default withMaxRequests: 1) withStreams: (H2StreamCollection default withInserted: 1 pid: Pid current))
+    caught := [
+      conn checkNewStream: 3
+    ] on: H2ConnectionError do: [:e :: H2ConnectionError | e reason]
+    self assert: caught equals: 7
+
+  testCheckNewStreamConcurrentLimit =>
+    settings := HTTP2Settings default withMaxConcurrentStreams: 1
+    conn := ((HTTP2Connection default withLocalSettings: settings) withStreams: (H2StreamCollection default withInserted: 1 pid: Pid current))
+    caught := [
+      conn checkNewStream: 3
+    ] on: H2StreamError do: [:e :: H2StreamError | e reason]
+    self assert: caught equals: {7, 3}
+    free := HTTP2Connection default checkNewStream: 3
+    self assert: (free streams openCount) equals: 0
+
+  testQueueTakePendingSend =>
+    server := H2ParkFixture spawn
+    tok := self park: server key: #a
+    conn := HTTP2Connection default
+    conn2 := conn
+      queueSend: 1
+      rest: "abc"
+      endStream: true
+      replyTo: tok
+      expiresAt: 999
+    {conn3, item} := conn2 takePendingSend: 1
+    self assert: (item at: 1) equals: 1
+    self assert: (item at: 2) equals: "abc"
+    self assert: (item at: 3) equals: true
+    self assert: (item at: 4) equals: tok
+    self assert: conn3 pendingSends isEmpty
+    {_, missing} := conn3 takePendingSend: 1
+    self assert: missing isNil
+    server release: #a with: #ok
+    server stop
+
+  testTakePendingSendsOldestFirst =>
+    server := H2ParkFixture spawn
+    t1 := self park: server key: #a
+    [server wait: #b] fork
+    100 timesRepeat: [server waitingCount < 2 ifTrue: [Timer sleep: 10]]
+    t2 := server token: #b
+    conn := (HTTP2Connection default
+      queueSend: 1
+      rest: "one"
+      endStream: false
+      replyTo: t1
+      expiresAt: 999)
+    conn := conn
+      queueSend: 3
+      rest: "three"
+      endStream: true
+      replyTo: t2
+      expiresAt: 999
+    {conn2, items} := conn takePendingSends
+    self assert: (items size) equals: 2
+    self assert: ((items at: 1) at: 1) equals: 1
+    self assert: ((items at: 2) at: 1) equals: 3
+    self assert: conn2 pendingSends isEmpty
+    server release: #a with: #ok
+    server release: #b with: #ok
+    server stop
+
+  testExpireSends =>
+    server := H2ParkFixture spawn
+    t1 := self park: server key: #a
+    [server wait: #b] fork
+    100 timesRepeat: [server waitingCount < 2 ifTrue: [Timer sleep: 10]]
+    t2 := server token: #b
+    conn := (HTTP2Connection default
+      queueSend: 1
+      rest: "old"
+      endStream: false
+      replyTo: t1
+      expiresAt: 100)
+    conn := conn
+      queueSend: 3
+      rest: "new"
+      endStream: false
+      replyTo: t2
+      expiresAt: 99999
+    {conn2, dead} := conn expireSends: 500
+    self assert: (dead size) equals: 1
+    self assert: (dead first) equals: t1
+    self assert: (conn2 pendingSends size) equals: 1
+    server release: #a with: #ok
+    server release: #b with: #ok
+    server stop
+
+  testResetRateLimit =>
+    conn := HTTP2Connection default
+    c2 := conn withResetRecorded: 1000
+    c3 := c2 withResetRecorded: 1001
+    self assert: (c3 resetTimestamps size) equals: 2
+    old := conn withResetRecorded: 0
+    kept := old withResetRecorded: 20000
+    self assert: (kept resetTimestamps size) equals: 1
+    limited := ((((HTTP2Connection default withResetIntensity: 2) withResetPeriod: 10000) withResetRecorded: 1000) withResetRecorded: 1001)
+    caught := [
+      limited withResetRecorded: 1002
+    ] on: H2ConnectionError do: [:e :: H2ConnectionError | e reason]
+    self assert: caught equals: 11
+    disabled := ((HTTP2Connection default withResetIntensity: 0) withResetRecorded: 1) withResetRecorded: 2
+    self assert: (disabled resetTimestamps size) equals: 0
+
+  testHeaderListSize =>
+    self assert: (HTTP2Connection headerListSize: #()) equals: 0
+    self assert: (HTTP2Connection headerListSize: #({":method", "GET"})) equals: 42
+    self assert: (HTTP2Connection headerListSize: #({":method", "GET"}, {"x-a", "b"})) equals: 78
+
+  testCheckFragmentSize =>
+    conn := HTTP2Connection default withMaxHeaderBlockSize: 4
+    caught := [
+      conn checkFragmentSize: "abcde"
+    ] on: H2ConnectionError do: [:e :: H2ConnectionError | e reason]
+    self assert: caught equals: 1
+    self assert: (conn checkFragmentSize: "abcd") equals: "abcd"
+
+  testMonitorTracking =>
+    conn := HTTP2Connection default
+    me := Pid current
+    ref := Erlang erlang make_ref
+    conn2 := conn
+      withStreamMonitored: 1
+      pid: me
+      ref: ref
+    self assert: (conn2 streamIdFor: me) equals: 1
+    self assert: (conn2 streamIdForRef: ref) equals: 1
+    conn3 := conn2 withMonitorForgotten: ref
+    self assert: (conn3 streamIdForRef: ref) isNil
+    conn4 := conn3 withStreamDown: me
+    self assert: (conn4 streamIdFor: me) isNil
+    self assert: conn4 lastStreamId equals: 1

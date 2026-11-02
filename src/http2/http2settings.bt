@@ -1,0 +1,19 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Settings: the connection settings (RFC 9113 §6.5.2).
+/// Both the defaults and the peer's values thread through as Values.
+sealed typed Value subclass: HTTP2Settings
+  field: headerTableSize :: Integer = 4096
+  field: maxConcurrentStreams :: Integer | Symbol = #infinity
+  field: initialWindowSize :: Integer = 65535
+  field: maxFrameSize :: Integer = 16384
+  field: maxHeaderListSize :: Integer | Symbol = #infinity
+
+  class sealed default -> HTTP2Settings => HTTP2Settings new
+
+  class sealed maxWindowSize -> Integer => 2147483647
+
+  class sealed minFrameSize -> Integer => 16384
+
+  class sealed maxFrameSizeLimit -> Integer => 16777215

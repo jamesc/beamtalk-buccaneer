@@ -1,0 +1,966 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http2/plug_test.exs`: the request fields a handler
+/// sees, served over cleartext prior-knowledge HTTP/2 (and once over
+/// TLS with ALPN `h2`). Each test drives one stream on a real server
+/// with the H2Client fixture speaking raw frames.
+TestCase subclass: H2PlugTest
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  text: v =>
+    (v isKindOf: Binary) ifTrue: [^v asStringUnchecked]
+    v
+
+  statusOf: headers =>
+    found := nil
+    headers
+      do: [:h |
+        (self text: (h at: 1)) =:= ":status" ifTrue: [
+          found := self text: (h at: 2)
+        ]
+      ]
+    found
+
+  fieldsServer =>
+    (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          q := ex query isNil ifTrue: ["-"] ifFalse: [ex query]
+          ex
+            sendResp: 200
+            headers: #()
+            body: (ex scheme printString
+              ++ "|"
+              ++ ex host
+              ++ "|"
+              ++ ex port printString
+              ++ "|"
+              ++ ex path
+              ++ "|"
+              ++ q)
+        ]}) unwrap
+
+  get: sock path: path authority: auth enc: enc dec: dec =>
+    {frag, enc2} := H2Client encode: #({":method", "GET"}, {":scheme", "http"}, {":path", path}, {":authority", auth}) table: enc
+    H2Client
+      sendFrame: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: true)
+    {status, body, dec2} := self readResponse: sock dec: dec
+    {status, body, enc2, dec2}
+
+  getTls: sock path: path authority: auth enc: enc dec: dec =>
+    {frag, enc2} := H2Client encode: #({":method", "GET"}, {":scheme", "https"}, {":path", path}, {":authority", auth}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: true)
+    {status, body, dec2} := self readResponseTls: sock dec: dec
+    {status, body, enc2, dec2}
+
+  readResponse: sock dec: dec =>
+    head := H2Client recvFrame: sock
+    head match: [
+      f :: H2Headers -> self
+        responseBody: sock
+        head: f
+        dec: dec;
+      w :: H2WindowUpdate -> self readResponse: sock dec: dec;
+      _ -> self assert: false
+    ]
+
+  readResponseTls: sock dec: dec =>
+    head := H2Client recvFrameTls: sock
+    head match: [
+      f :: H2Headers -> self
+        responseBodyTls: sock
+        head: f
+        dec: dec;
+      w :: H2WindowUpdate -> self readResponseTls: sock dec: dec;
+      _ -> self assert: false
+    ]
+
+  responseBody: sock head: head dec: dec =>
+    {cooked, dec2} := H2Client decode: head fragment table: dec
+    {self statusOf: cooked, (self readData: sock acc: (Binary fromBytes: #())), dec2}
+
+  responseBodyTls: sock head: head dec: dec =>
+    {cooked, dec2} := H2Client decode: head fragment table: dec
+    {self statusOf: cooked, (self readDataTls: sock acc: (Binary fromBytes: #())), dec2}
+
+  readData: sock acc: acc =>
+    frame := H2Client recvFrame: sock
+    frame match: [
+      d :: H2Data -> d endStream ifTrue: [
+        acc concat: d data
+      ] ifFalse: [self readData: sock acc: (acc concat: d data)];
+      _ -> self assert: false
+    ]
+
+  readDataTls: sock acc: acc =>
+    frame := H2Client recvFrameTls: sock
+    frame match: [
+      d :: H2Data -> d endStream ifTrue: [
+        acc concat: d data
+      ] ifFalse: [self readDataTls: sock acc: (acc concat: d data)];
+      _ -> self assert: false
+    ]
+
+  testSchemeHostPortPathQuery =>
+    srv := self fieldsServer
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/s?q=1&r=2"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked endsWith: "#http|x|80|/s|q=1&r=2")
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testQueryNilWhenAbsent =>
+    srv := self fieldsServer
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/plain"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked endsWith: "#http|x|80|/plain|-")
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testExplicitPort =>
+    srv := self fieldsServer
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/"
+      authority: "x:4000"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked endsWith: "#http|x|4000|/|-")
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testVersionIsHttp2 =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: ex httpProtocol printString
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {_s, body, _e, _d} := self
+      get: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: (body asStringUnchecked) equals: "#http2"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testPostEcho =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          read := ex readBody
+          read isOk
+            ifTrue: [
+              ex
+                sendResp: 200
+                headers: #()
+                body: (read value) data
+            ]
+            ifFalse: [
+              ex
+                sendResp: 400
+                headers: #()
+                body: "no body"
+            ]
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {frag, _} := H2Client encode: #({":method", "POST"}, {":scheme", "http"}, {":path", "/echo"}, {":authority", "x"}) table: enc
+    H2Client
+      sendFrame: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: false)
+    data := H2Data new withStreamId: 1
+    data := data withEndStream: true
+    H2Client sendFrame: sock frame: (data withData: (Binary fromBytes: #(104, 105)))
+    {status, body, _d} := self readResponse: sock dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "hi"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testSendfile =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendFile: 200
+            headers: #()
+            path: "test/fixtures/sendfile"
+            offset: 0
+            length: #all
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/send_full_file"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "ABCDEF"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testErrorStatus =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 404
+            headers: #()
+            body: "not here"
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/missing"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "404"
+    self assert: (body asStringUnchecked) equals: "not here"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testGoawayOnIdleData =>
+    srv := self fieldsServer
+    {sock, _e, _d} := H2Client open: (self portOf: srv)
+    data := H2Data new withStreamId: 1
+    H2Client sendFrame: sock frame: (data withData: (Binary fromBytes: #(1, 2, 3)))
+    frame := H2Client recvFrame: sock
+    frame match: [
+      g :: H2Goaway -> self assert: g errorCode equals: 1;
+      _ -> self assert: false
+    ]
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testUnknownFrameIgnored =>
+    srv := self fieldsServer
+    {sock, _e, _d} := H2Client open: (self portOf: srv)
+    H2Client sendFrame: sock frame: (H2Unknown new withFrameType: 254)
+    ping := H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8))
+    H2Client sendFrame: sock frame: ping
+    frame := H2Client recvFrame: sock
+    frame match: [
+      p :: H2Ping -> self assert: (p payload) equals: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8));
+      _ -> self assert: false
+    ]
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testTlsAlpnH2 =>
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #catalina => #{
+          #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+        },
+        #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: (ex scheme printString ++ "|" ++ ex path)
+        ]
+      }) unwrap
+    {sock, enc, dec} := H2Client openTls: (self portOf: srv)
+    self assert: (H2Client negotiated: sock) equals: "h2"
+    {status, body, _e, _d} := self
+      getTls: sock
+      path: "/tls"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "#https|/tls"
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  headerValue: headers name: want =>
+    found := nil
+    lower := want asciiLowercase
+    headers
+      do: [:h |
+        n := self text: (h at: 1)
+        ((n isKindOf: String) ifTrue: [
+          n asciiLowercase
+        ] ifFalse: [n]) =:= lower ifTrue: [found := self text: (h at: 2)]
+      ]
+    found
+
+  /// A full response: {status, headers, body, decoder}.
+  readFull: sock dec: dec =>
+    head := H2Client recvFrame: sock
+    head match: [
+      f :: H2Headers -> self
+        responseFull: sock
+        head: f
+        dec: dec;
+      w :: H2WindowUpdate -> self readFull: sock dec: dec;
+      _ -> self assert: false
+    ]
+
+  responseFull: sock head: head dec: dec =>
+    {cooked, dec2} := H2Client decode: head fragment table: dec
+    {self statusOf: cooked, cooked, (self readData: sock acc: (Binary fromBytes: #())), dec2}
+
+  fullTls: sock dec: dec =>
+    head := H2Client recvFrameTls: sock
+    head match: [
+      f :: H2Headers -> self
+        responseFullTls: sock
+        head: f
+        dec: dec;
+      w :: H2WindowUpdate -> self fullTls: sock dec: dec;
+      _ -> self assert: false
+    ]
+
+  responseFullTls: sock head: head dec: dec =>
+    {cooked, dec2} := H2Client decode: head fragment table: dec
+    {self statusOf: cooked, cooked, (self readDataTls: sock acc: (Binary fromBytes: #())), dec2}
+
+  /// HEADERS only (HEAD responses carry no DATA): {status, headers, endStream, decoder}.
+  headOnly: sock dec: dec =>
+    frame := H2Client recvFrame: sock
+    frame match: [
+      f :: H2Headers -> self headCooked: f dec: dec;
+      w :: H2WindowUpdate -> self headOnly: sock dec: dec;
+      _ -> self assert: false
+    ]
+
+  headCooked: head dec: dec =>
+    {cooked, dec2} := H2Client decode: head fragment table: dec
+    {self statusOf: cooked, cooked, head endStream, dec2}
+
+  /// POST one DATA frame, then read the full response.
+  post: sock body: bytes path: path authority: auth enc: enc dec: dec =>
+    {frag, enc2} := H2Client encode: #({":method", "POST"}, {":scheme", "http"}, {":path", path}, {":authority", auth}) table: enc
+    H2Client
+      sendFrame: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: false)
+    data := H2Data new withStreamId: 1
+    data := data withEndStream: true
+    H2Client sendFrame: sock frame: (data withData: bytes)
+    {status, cooked, body, dec2} := self readFull: sock dec: dec
+    {status, cooked, body, enc2, dec2}
+
+  /// Assert a 1xx interim HEADERS has status 100; answer the next decoder.
+  interimStatus: head dec: dec =>
+    {cooked, dec2} := H2Client decode: head fragment table: dec
+    self assert: (self statusOf: cooked) equals: "100"
+    dec2
+
+  /// A PING roundtrip over cleartext: the connection is still alive.
+  pingAlive: sock =>
+    H2Client sendFrame: sock frame: (H2Ping new withPayload: (Binary fromBytes: #(9, 8, 7, 6, 5, 4, 3, 2, 1)))
+    self awaitPingAck: sock
+
+  awaitPingAck: sock =>
+    frame := H2Client recvFrame: sock
+    frame match: [
+      p :: H2Ping -> self assert: p ack;
+      w :: H2WindowUpdate -> self awaitPingAck: sock;
+      _ -> self assert: false
+    ]
+
+  testReadRequestHeader =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          v := ex header: "x-request-header"
+          ex
+            sendResp: 200
+            headers: #()
+            body: (v isNil ifTrue: ["-"] ifFalse: [v])
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {frag, _e} := H2Client encode: #({":method", "GET"}, {":scheme", "http"}, {":path", "/h"}, {":authority", "x"}, {"x-request-header", "Request"}) table: enc
+    H2Client
+      sendFrame: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: true)
+    {status, _c, body, _d} := self readFull: sock dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "Request"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testNoPseudoHeaders =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          seen := false
+          ex headers
+            do: [:h |
+              n := h at: 1
+              (n =:= ":method" or: [
+                n =:= ":scheme" or: [n =:= ":path" or: [n =:= ":authority"]]
+              ]) ifTrue: [seen := true]
+            ]
+          ex
+            sendResp: 200
+            headers: #()
+            body: (seen ifTrue: ["seen"] ifFalse: ["clean"])
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "clean"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testEmptyBodyRead =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          read := ex readBody
+          read isOk
+            ifTrue: [
+              ex
+                sendResp: 200
+                headers: #()
+                body: (read value) data
+            ]
+            ifFalse: [
+              ex
+                sendResp: 400
+                headers: #()
+                body: "unreadable"
+            ]
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/empty"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: ""
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testSimpleBodyRead =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          read := ex readAll: 8000000
+          read isOk
+            ifTrue: [
+              ex
+                sendResp: 200
+                headers: #()
+                body: (read value)
+            ]
+            ifFalse: [
+              ex
+                sendResp: 400
+                headers: #()
+                body: "unreadable"
+            ]
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, _c, body, _e, _d} := self
+      post: sock
+      body: (Binary fromBytes: #(79, 75))
+      path: "/echo"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "OK"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testMultipleBodyReads =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          first := ex readBody
+          second := ex readBody
+          both := first isOk and: [second isOk]
+          // NOTE: concat: is a keyword send; chained concat:s parse as
+          // one multi-keyword send (concat:concat:), so parenthesize.
+          body := both
+            ifTrue: [
+              ((first value) data concat: (Binary fromBytes: #(124))) concat: (second value) data
+            ]
+            ifFalse: ["unreadable"]
+          ex
+            sendResp: 200
+            headers: #()
+            body: body
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, _c, body, _e, _d} := self
+      post: sock
+      body: (Binary fromBytes: #(79, 75))
+      path: "/echo"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "OK|"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testUnreadBodyRespondsCleanly =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: "done"
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, _c, body, _e, _d} := self
+      post: sock
+      body: (Binary fromBytes: #(65, 66, 67))
+      path: "/noread"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "done"
+    self pingAlive: sock
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testWriteResponseHeaders =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          headed := ex putRespHeader: "X-Response-Header" value: "Response"
+          headed
+            sendResp: 200
+            headers: #()
+            body: ""
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, cooked, _b, _e, _d} := self
+      post: sock
+      body: (Binary fromBytes: #())
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (self headerValue: cooked name: "X-Response-Header") equals: "Response"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testUserDateHeader =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          headed := ex putRespHeader: "date" value: "Tue, 27 Sep 2022 07:17:32 GMT"
+          headed
+            sendResp: 200
+            headers: #()
+            body: ""
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, cooked, _b, _e, _d} := self
+      post: sock
+      body: (Binary fromBytes: #())
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (self headerValue: cooked name: "date") equals: "Tue, 27 Sep 2022 07:17:32 GMT"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testPutRespHeaderReplaces =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          once := ex putRespHeader: "X-Dup" value: "a"
+          twice := once putRespHeader: "x-dup" value: "b"
+          twice
+            sendResp: 200
+            headers: #()
+            body: ""
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, cooked, _b, _e, _d} := self
+      post: sock
+      body: (Binary fromBytes: #())
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (self headerValue: cooked name: "X-Dup") equals: "b"
+    self assert: (self headerValue: cooked name: "x-dup") equals: "b"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  headReq: sock path: path authority: auth enc: enc =>
+    {frag, enc2} := H2Client encode: #({":method", "HEAD"}, {":scheme", "http"}, {":path", path}, {":authority", auth}) table: enc
+    H2Client
+      sendFrame: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: true)
+    enc2
+
+  testHeadOmitsContentLength =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: ""
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    self
+      headReq: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+    {status, cooked, ended, _d} := self headOnly: sock dec: dec
+    self assert: status equals: "200"
+    self assert: (self headerValue: cooked name: "content-length") equals: nil
+    self assert: ended equals: true
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testHeadPreservesContentLength =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          headed := ex putRespHeader: "content-length" value: "6"
+          headed
+            sendResp: 200
+            headers: #()
+            body: ""
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    self
+      headReq: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+    {status, cooked, _e, _d} := self headOnly: sock dec: dec
+    self assert: status equals: "200"
+    self assert: (self headerValue: cooked name: "content-length") equals: "6"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testHeadPreservesZeroContentLength =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          headed := ex putRespHeader: "content-length" value: "0"
+          headed
+            sendResp: 200
+            headers: #()
+            body: ""
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    self
+      headReq: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+    {status, cooked, _e, _d} := self headOnly: sock dec: dec
+    self assert: status equals: "200"
+    self assert: (self headerValue: cooked name: "content-length") equals: "0"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testHeadOverridesContentLength =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          headed := ex putRespHeader: "content-length" value: "6"
+          headed
+            sendResp: 200
+            headers: #()
+            body: "OK"
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    self
+      headReq: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+    {status, cooked, _e, _d} := self headOnly: sock dec: dec
+    self assert: status equals: "200"
+    self assert: (self headerValue: cooked name: "content-length") equals: "2"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testSendIolistBody =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex
+            sendResp: 200
+            headers: #()
+            body: #("O", "K")
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "OK"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testChunkedBody =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          chunked := ex sendChunked: 200 headers: #()
+          chunked chunk: "OK"
+          chunked chunk: "OK"
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "OKOK"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testUnknownException500 =>
+    path := LogCapture attach: #h2crash
+    srv := (Buccaneer start: #{
+      #port => 0,
+      #handler => [:ex | Error signal: "boom"]
+    }) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    self
+      headReq: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+    {status, _c, ended, _d} := self headOnly: sock dec: dec
+    self assert: status equals: "500"
+    self assert: ended equals: true
+    logged := LogCapture await: "boom" in: path
+    self assert: (logged includesSubstring: "** (Error)") equals: true
+    LogCapture detach: #h2crash
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testKnownExceptionStatus =>
+    srv := (Buccaneer start: #{
+      #port => 0,
+      #handler => [:ex | HTTPError signal: "teapot" reason: 418]
+    }) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    self
+      headReq: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+    {status, _c, ended, _d} := self headOnly: sock dec: dec
+    self assert: status equals: "418"
+    self assert: ended equals: true
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testNotSent500 =>
+    path := LogCapture attach: #h2nosent
+    srv := (Buccaneer start: #{#port => 0, #handler => [:ex | nil]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    self
+      headReq: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+    {status, _c, ended, _d} := self headOnly: sock dec: dec
+    self assert: status equals: "500"
+    self assert: ended equals: true
+    logged := LogCapture await: "neither set nor sent" in: path
+    self assert: (logged includesSubstring: "NotSentError") equals: true
+    LogCapture detach: #h2nosent
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testInformational =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          ex inform: 100 headers: #({"x-from", "inform"})
+          ex
+            sendResp: 200
+            headers: #()
+            body: "Informer"
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {frag, _e} := H2Client encode: #({":method", "GET"}, {":scheme", "http"}, {":path", "/inform"}, {":authority", "x"}) table: enc
+    H2Client
+      sendFrame: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: true)
+    interim := H2Client recvFrame: sock
+    dec2 := interim match: [
+      f :: H2Headers -> self interimStatus: f dec: dec;
+      _ -> self assert: false
+    ]
+    {status, _c, body, _d} := self readFull: sock dec: dec2
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "Informer"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testContinueInterim =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          read := ex readAll: 8000000
+          read isOk
+            ifTrue: [
+              ex
+                sendResp: 200
+                headers: #()
+                body: (read value)
+            ]
+            ifFalse: [
+              ex
+                sendResp: 400
+                headers: #()
+                body: "unreadable"
+            ]
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {frag, _e} := H2Client encode: #({":method", "POST"}, {":scheme", "http"}, {":path", "/cont"}, {":authority", "x"}, {"expect", "100-continue"}) table: enc
+    H2Client
+      sendFrame: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: false)
+    interim := H2Client recvFrame: sock
+    dec2 := interim match: [
+      f :: H2Headers -> self interimStatus: f dec: dec;
+      _ -> self assert: false
+    ]
+    data := H2Data new withStreamId: 1
+    data := data withEndStream: true
+    H2Client sendFrame: sock frame: (data withData: (Binary fromBytes: #(104, 105)))
+    {status, _c, body, _d} := self readFull: sock dec: dec2
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "hi"
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testPeerAndSock =>
+    srv := (Buccaneer
+      start: #{#port => 0, #handler => [:ex |
+          p := ex peer
+          addr := p isNil ifTrue: [nil] ifFalse: [p at: 1]
+          ips := addr isNil
+            ifTrue: ["no-peer"]
+            ifFalse: [
+              (addr at: 1) printString
+                ++ "."
+                ++ (addr at: 2) printString
+                ++ "."
+                ++ (addr at: 3) printString
+                ++ "."
+                ++ (addr at: 4) printString
+            ]
+          s := ex sockData
+          body := ips ++ "|" ++ (s at: 2) printString
+          ex
+            sendResp: 200
+            headers: #()
+            body: body
+        ]}) unwrap
+    {sock, enc, dec} := H2Client open: (self portOf: srv)
+    {status, body, _e, _d} := self
+      get: sock
+      path: "/"
+      authority: "x"
+      enc: enc
+      dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: ("127.0.0.1|" ++ (self portOf: srv) printString)
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testTlsPostEcho =>
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #catalina => #{
+          #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+        },
+        #handler => [:ex |
+          read := ex readAll: 8000000
+          read isOk
+            ifTrue: [
+              ex
+                sendResp: 200
+                headers: #()
+                body: (read value)
+            ]
+            ifFalse: [
+              ex
+                sendResp: 400
+                headers: #()
+                body: "unreadable"
+            ]
+        ]
+      }) unwrap
+    {sock, enc, dec} := H2Client openTls: (self portOf: srv)
+    {frag, _enc2} := H2Client encode: #({":method", "POST"}, {":scheme", "https"}, {":path", "/echo"}, {":authority", "x"}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: false)
+    data := H2Data new withStreamId: 1
+    data := data withEndStream: true
+    H2Client sendFrameTls: sock frame: (data withData: (Binary fromBytes: #(104, 105)))
+    {status, _c, body, _d} := self fullTls: sock dec: dec
+    self assert: status equals: "200"
+    self assert: (body asStringUnchecked) equals: "hi"
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk

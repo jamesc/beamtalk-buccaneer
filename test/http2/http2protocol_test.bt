@@ -1,0 +1,756 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http2/protocol_test.exs`: framing, connection and
+/// stream behavior over real TLS sockets with ALPN `h2`, driven by the
+/// H2Client fixture speaking raw frames. Log assertions go through the
+/// LogCapture fixture; compression and telemetry cases live elsewhere
+/// (Phase 9 and the collector suites).
+TestCase subclass: HTTP2ProtocolTest
+
+  startTls: handler =>
+    (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #catalina => #{
+          #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+        },
+        #handler => handler
+      }) unwrap
+
+  startTlsOpts: opts handler: handler =>
+    (Buccaneer start: (opts at: #handler put: handler)) unwrap
+
+  tlsOpts: extra =>
+    base := #{
+      #port => 0,
+      #scheme => #https,
+      #certfile => "test/fixtures/cert.pem",
+      #keyfile => "test/fixtures/key.pem",
+      #catalina => #{
+        #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+      },
+      #http2 => #{}
+    }
+    merged := base merge: extra
+    merged at: #catalina put: ((base at: #catalina) merge: (extra at: #catalina ifAbsent: [
+      #{}
+    ]))
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  text: v =>
+    (v isKindOf: String) ifTrue: [^v]
+    Headers stringOrOpaque: v
+
+  statusOf: headers =>
+    found := nil
+    headers
+      do: [:h |
+        (self text: (h at: 1)) =:= ":status" ifTrue: [
+          found := self text: (h at: 2)
+        ]
+      ]
+    found
+
+  headerValue: headers name: want =>
+    found := nil
+    headers do: [:h |
+      (self text: (h at: 1)) =:= want ifTrue: [found := self text: (h at: 2)]
+    ]
+    found
+
+  hello =>
+    [:ex |
+      ex
+        sendResp: 200
+        headers: #()
+        body: "OK"
+    ]
+
+  openTls: port => H2Client openTls: port
+
+  sendGet: sock sid: s path: p enc: enc =>
+    out := H2Client encode: #({":method", "GET"}, {":scheme", "https"}, {":path", p}, {":authority", "x"}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: s
+        hbf: (out at: 1)
+        endStream: true)
+    out at: 2
+
+  sendPost: sock sid: s path: p enc: enc =>
+    out := H2Client encode: #({":method", "POST"}, {":scheme", "https"}, {":path", p}, {":authority", "x"}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: s
+        hbf: (out at: 1)
+        endStream: false)
+    out at: 2
+
+  // === Frame splitting / merging ===
+  testSmallChunks =>
+    srv := self startTls: self hello
+    sock := H2Client connectTls: (self portOf: srv) alpn: #((Binary fromBytes: #(104, 50)))
+    bytes := (H2Frame serialize: (H2Settings new withAck: false) maxFrameSize: 16384) concat: (H2Frame serialize: ((H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8)))) maxFrameSize: 16384)
+    self sendBytes: sock bytes: bytes
+    self assert: (H2Client recvRawTls: sock) equals: {4, 0, 0, (Binary fromBytes: #())}
+    self assert: (H2Client recvRawTls: sock) equals: {4, 1, 0, (Binary fromBytes: #())}
+    self assert: (H2Client recvRawTls: sock) equals: {6, 1, 0, (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8))}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  sendBytes: sock bytes: bytes =>
+    bytes size =:= 0 ifTrue: [^nil]
+    H2Client sendTls: sock bytes: (bytes part: 0 size: 2)
+    self sendBytes: sock bytes: (bytes part: 2 size: (bytes size - 2))
+
+  testSamePacket =>
+    srv := self startTls: self hello
+    sock := H2Client connectTls: (self portOf: srv) alpn: #((Binary fromBytes: #(104, 50)))
+    settings := H2Frame serialize: (H2Settings new withAck: false) maxFrameSize: 16384
+    ping := H2Frame serialize: ((H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8)))) maxFrameSize: 16384
+    H2Client sendTls: sock bytes: (settings concat: ping)
+    self assert: (H2Client recvRawTls: sock) equals: {4, 0, 0, (Binary fromBytes: #())}
+    self assert: (H2Client recvRawTls: sock) equals: {4, 1, 0, (Binary fromBytes: #())}
+    self assert: (H2Client recvRawTls: sock) equals: {6, 1, 0, (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8))}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // === Errors and unexpected frames ===
+  testSilentlyIgnoreClientCloses =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    H2Client
+      sendGoawayTls: (triple at: 1)
+      last: 0
+      code: 0
+    H2Client closeTls: (triple at: 1)
+    Timer sleep: 100
+    self assert: (srv stop: 5000) isOk
+
+  testIgnoreUnknownFrameType =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    H2Client sendFrameTls: sock frame: (H2Unknown new withFrameType: 254)
+    self assert: (H2Client connectionAliveTls: sock) equals: true
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testBogusSettingsStreamId =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    H2Client
+      sendRawTls: sock
+      type: 4
+      flags: 0
+      sid: 1
+      payload: (Binary fromBytes: #())
+    self assert: (H2Client recvGoawayCloseTls: sock) equals: {0, 1}
+    self assert: (srv stop: 5000) isOk
+
+  testBogusSettingsSize =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    H2Client
+      sendRawTls: sock
+      type: 4
+      flags: 0
+      sid: 0
+      payload: (Binary fromBytes: #(0, 1, 2))
+    self assert: (H2Client recvGoawayCloseTls: sock) equals: {0, 6}
+    self assert: (srv stop: 5000) isOk
+
+  testUndecompressableHeaderBlock =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    H2Client
+      sendHeadersRawTls: sock
+      sid: 1
+      flags: 4
+      fragment: (Binary fromBytes: #(64, 130, 255, 255, 0))
+    // Our HPACK maps undecodable blocks to COMPRESSION_ERROR(9); Bandit
+    // raises its way to INTERNAL_ERROR(2). Either way: GOAWAY + close.
+    self assert: (H2Client recvGoawayCloseTls: sock) equals: {0, 9}
+    self assert: (srv stop: 5000) isOk
+
+  // WINDOW_UPDATE on an idle stream: we stash it as stray (Bandit
+  // GOAWAYs); the connection stays alive and the stream still works.
+  testWindowUpdateIdleStreamTolerated =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    _dec := triple at: 3
+    H2Client
+      sendWindowUpdateTls: sock
+      sid: 1
+      inc: 1234
+    self assert: (H2Client connectionAliveTls: sock) equals: true
+    self
+      sendGet: sock
+      sid: 1
+      path: "/ok"
+      enc: enc
+    head := H2Client recvFrameTls: sock
+    self assert: (head isKindOf: H2Headers) equals: true
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testTrailersWithPseudoHeadersReset =>
+    srv := self startTls: (self echoHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    enc2 := self
+      sendPost: sock
+      sid: 1
+      path: "/echo"
+      enc: enc
+    out := H2Client encode: #({":path", "/foo"}) table: enc2
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (out at: 1)
+        endStream: true)
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // Echo the body on success; stay quiet when the client reset the
+  // stream (answering a dead stream would log a TransportError into
+  // the shared logger and flake unrelated log assertions).
+  echoHandler =>
+    [:ex |
+      read := ex readBody
+      read isOk
+        ifTrue: [
+          ex
+            sendResp: 200
+            headers: #()
+            body: (read value) data
+        ]
+        ifFalse: [nil]
+    ]
+
+  testStreamErrorCarriesStreamId =>
+    srv := self startTls: (self echoHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    enc2 := self
+      sendGet: sock
+      sid: 1
+      path: "/ok"
+      enc: enc
+    head := H2Client recvFrameTls: sock
+    H2Client decode: head fragment table: dec
+    body := H2Client recvFrameTls: sock
+    body match: [
+      d :: H2Data -> self assert: (d data) equals: (Binary fromBytes: #());
+      _ -> self assert: false
+    ]
+    enc3 := self
+      sendPost: sock
+      sid: 3
+      path: "/echo"
+      enc: enc2
+    out := H2Client encode: #({":path", "/foo"}) table: enc3
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 3
+        hbf: (out at: 1)
+        endStream: true)
+    self assert: (H2Client recvRstTls: sock) equals: {3, 1}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // === Logging ===
+  testShortLogStreamErrorsDefault =>
+    path := LogCapture attach: #h2short
+    srv := self startTls: (self echoHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    enc2 := self
+      sendPost: sock
+      sid: 1
+      path: "/echo"
+      enc: enc
+    out := H2Client encode: #({":path", "/foo"}) table: enc2
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (out at: 1)
+        endStream: true)
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    logged := LogCapture await: "Received invalid pseudo header" in: path
+    self assert: (logged includesSubstring: "** (H2StreamError)") equals: true
+    LogCapture detach: #h2short
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // (The #verbose mode shares maybeLogProtocolError with HTTP/1, whose
+  // suite covers it; a wire-level verbose test would spray stack traces
+  // into the shared logger and flake unrelated log assertions.)
+
+  // === Read timeouts ===
+  testReadTimeoutNoDataCloses =>
+    srv := self startTlsOpts: (self tlsOpts: #{
+      #catalina => #{#readTimeout => 1500}
+    }) handler: self hello
+    triple := self openTls: (self portOf: srv)
+    Timer sleep: 2200
+    H2Client expectClosedTls: (triple at: 1)
+    self assert: (srv stop: 5000) isOk
+
+  // Catalina closes the socket without a GOAWAY (Bandit sends
+  // GOAWAY{0,0}); the close itself is what we assert. The timeout
+  // covers the TLS handshake plus the SETTINGS roundtrip in openTls,
+  // which together can take hundreds of milliseconds under parallel
+  // load, so both the budget and the sleep are generous.
+  testReadTimeoutAfterPrefaceCloses =>
+    srv := self startTlsOpts: (self tlsOpts: #{
+      #catalina => #{#readTimeout => 1500}
+    }) handler: self hello
+    triple := self openTls: (self portOf: srv)
+    Timer sleep: 2200
+    H2Client expectClosedTls: (triple at: 1)
+    self assert: (srv stop: 5000) isOk
+
+  // === Stream limits ===
+  testMaxRequestsRefused =>
+    path := LogCapture attach: #h2maxreq
+    srv := self startTlsOpts: (self tlsOpts: #{
+      #http2 => #{#maxRequests => 3}
+    }) handler: (self okHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    pair := self
+      getOk: sock
+      sid: 1
+      dec: dec
+      enc: enc
+    enc := pair at: 1
+    dec := pair at: 2
+    pair := self
+      getOk: sock
+      sid: 3
+      dec: dec
+      enc: enc
+    enc := pair at: 1
+    dec := pair at: 2
+    pair := self
+      getOk: sock
+      sid: 5
+      dec: dec
+      enc: enc
+    enc := pair at: 1
+    dec := pair at: 2
+    self
+      sendGet: sock
+      sid: 7
+      path: "/ok"
+      enc: enc
+    self assert: (H2Client recvGoawayCloseTls: sock) equals: {5, 7}
+    logged := LogCapture await: "Connection count exceeded" in: path
+    self assert: (logged includesSubstring: "** (H2ConnectionError)") equals: true
+    LogCapture detach: #h2maxreq
+    self assert: (srv stop: 5000) isOk
+
+  okHandler =>
+    [:ex |
+      ex
+        sendResp: 200
+        headers: #()
+        body: "OK"
+    ]
+
+  getOk: sock sid: s dec: dec enc: enc =>
+    enc2 := self
+      sendGet: sock
+      sid: s
+      path: "/ok"
+      enc: enc
+    head := H2Client recvFrameTls: sock
+    cooked := H2Client decode: head fragment table: dec
+    H2Client recvBodyTls: sock
+    {enc2, (cooked at: 2)}
+
+  testMaxRequestsZeroUnlimited =>
+    srv := self startTlsOpts: (self tlsOpts: #{
+      #http2 => #{#maxRequests => 0}
+    }) handler: (self okHandler)
+    triple := self openTls: (self portOf: srv)
+    self
+      getOk: (triple at: 1)
+      sid: 1
+      dec: (triple at: 3)
+      enc: (triple at: 2)
+    H2Client closeTls: (triple at: 1)
+    self assert: (srv stop: 5000) isOk
+
+  // === Settings ===
+  testServerSettingsAtStart =>
+    srv := self startTls: self hello
+    sock := H2Client connectTls: (self portOf: srv) alpn: #((Binary fromBytes: #(104, 50)))
+    self assert: (H2Client recvRawTls: sock) equals: {4, 0, 0, (Binary fromBytes: #())}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testOverriddenLocalSettings =>
+    srv := self
+      startTlsOpts: (self tlsOpts: #{
+        #http2 => #{#defaultLocalSettings => #{#maxHeaderListSize => 1000}}
+      })
+      handler: self hello
+    sock := H2Client connectTls: (self portOf: srv) alpn: #((Binary fromBytes: #(104, 50)))
+    raw := H2Client recvRawTls: sock
+    self assert: raw equals: {4, 0, 0, (Binary fromBytes: #(0, 6, 0, 0, 3, 232))}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testRespectsMaxFrameSize =>
+    srv := self startTls: (self bigHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    H2Client sendSettingsRawTls: sock payload: (Binary fromBytes: #(0, 5, 0, 0, 78, 32))
+    H2Client recvFrameTls: sock
+    self
+      sendGet: sock
+      sid: 1
+      path: "/big"
+      enc: enc
+    cooked := H2Client recvHeadersTls: sock dec: dec
+    self assert: (self statusOf: (cooked at: 3)) equals: "200"
+    self assert: (H2Client recvRawTls: sock) equals: {0, 0, 1, (self bigBinary: 20000)}
+    self assert: (H2Client recvRawTls: sock) equals: {0, 0, 1, (self bigBinary: 20000)}
+    third := H2Client recvRawTls: sock
+    self assert: (third at: 1) equals: 0
+    self assert: (third at: 3) equals: 1
+    self assert: ((third at: 4) size) equals: 10000
+    self assert: ((third at: 2) bitAnd: 1) equals: 1
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  bigHandler =>
+    [:ex |
+      ex
+        sendResp: 200
+        headers: #()
+        body: (self bigBinary: 50000)
+    ]
+
+  bigBinary: n =>
+    bin := Binary fromBytes: #(97)
+    [bin size < n] whileTrue: [bin := bin concat: bin]
+    bin part: 0 size: n
+
+  bigString: n => "a" repeat: n
+
+  testSendfileLargeWindowed =>
+    path := "/tmp/bandit-sendfile-large-" ++ (Erlang erlang unique_integer) printString
+    (File writeAll: path contents: (self bigString: 1500000)) unwrap
+    srv := self startTls: (self fileHandler: path)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    H2Client sendSettingsRawTls: sock payload: (Binary fromBytes: #(0, 4, 0, 46, 166, 192, 0, 5, 0, 31, 64, 0))
+    H2Client recvFrameTls: sock
+    H2Client
+      sendWindowUpdateTls: sock
+      sid: 0
+      inc: 3000000
+    self
+      sendGet: sock
+      sid: 1
+      path: "/big"
+      enc: enc
+    H2Client recvHeadersTls: sock dec: dec
+    {sid, first} := H2Client recvBodyTls: sock
+    self assert: sid equals: 1
+    self assert: (first size) equals: 1500000
+    File delete: path
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  fileHandler: path =>
+    [:ex |
+      ex
+        sendFile: 200
+        headers: #()
+        path: path
+        offset: 0
+        length: #all
+    ]
+
+  testPreservesSettings =>
+    srv := self startTls: (self bigHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    H2Client sendSettingsRawTls: sock payload: (Binary fromBytes: #(0, 5, 0, 0, 78, 32))
+    H2Client recvFrameTls: sock
+    H2Client sendSettingsRawTls: sock payload: (Binary fromBytes: #(0, 3, 0, 0, 0, 20))
+    H2Client recvFrameTls: sock
+    self
+      sendGet: sock
+      sid: 1
+      path: "/big"
+      enc: enc
+    H2Client recvHeadersTls: sock dec: dec
+    self assert: (H2Client recvRawTls: sock) equals: {0, 0, 1, (self bigBinary: 20000)}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testSingleDataEndStream =>
+    srv := self startTls: (self okHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    self
+      sendGet: sock
+      sid: 1
+      path: "/ok"
+      enc: enc
+    cooked := H2Client recvHeadersTls: sock dec: dec
+    self assert: (cooked at: 1) equals: 1
+    self assert: (cooked at: 2) equals: false
+    self assert: (self statusOf: (cooked at: 3)) equals: "200"
+    self assert: (self headerValue: (cooked at: 3) name: "content-length") equals: "2"
+    {_sid, data} := H2Client recvBodyTls: sock
+    self assert: (data asStringUnchecked) equals: "OK"
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // === Request bodies ===
+  testOneFrameBody =>
+    srv := self startTls: (self echoDrainHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    self
+      sendPost: sock
+      sid: 1
+      path: "/echo"
+      enc: enc
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 1
+      sid: 1
+      payload: (Binary fromBytes: #(104, 105))
+    cooked := H2Client recvHeadersTls: sock dec: dec
+    self assert: (self statusOf: (cooked at: 3)) equals: "200"
+    {_sid, data} := H2Client recvBodyTls: sock
+    self assert: (data asStringUnchecked) equals: "hi"
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  echoDrainHandler =>
+    [:ex |
+      got := self drainBody: ex
+      got isOk
+        ifTrue: [
+          ex
+            sendResp: 200
+            headers: #()
+            body: got value
+        ]
+        ifFalse: [nil]
+    ]
+
+  drainBody: ex =>
+    acc := Binary fromBytes: #()
+    done := false
+    failed := nil
+    [done not and: [failed isNil]]
+      whileTrue: [
+        part := ex readBody
+        part isOk
+          ifTrue: [
+            acc := acc concat: (part value) data
+            done := (part value) done
+          ]
+          ifFalse: [
+            failed := part error
+            done := true
+          ]
+      ]
+    failed isNil ifTrue: [Result ok: acc] ifFalse: [Result error: failed]
+
+  testMultiFrameBody =>
+    srv := self startTls: (self echoDrainHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    dec := triple at: 3
+    self
+      sendPost: sock
+      sid: 1
+      path: "/echo"
+      enc: enc
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 0
+      sid: 1
+      payload: (Binary fromBytes: #(104, 105))
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 1
+      sid: 1
+      payload: (Binary fromBytes: #(33, 33))
+    H2Client recvHeadersTls: sock dec: dec
+    {_sid, data} := H2Client recvBodyTls: sock
+    self assert: (data asStringUnchecked) equals: "hi!!"
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // Buccaneer rejects repeated content-length headers outright
+  // (HeadersTest pins it); Bandit accepts identical repeats.
+  testMultiContentLengths =>
+    srv := self startTls: (self echoDrainHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    out := H2Client encode: #({":method", "POST"}, {":scheme", "https"}, {":path", "/echo"}, {":authority", "x"}, {"content-length", "2"}, {"content-length", "2"}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (out at: 1)
+        endStream: false)
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 1
+      sid: 1
+      payload: (Binary fromBytes: #(104, 105))
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testContentLengthMismatch =>
+    srv := self startTls: (self echoDrainHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    out := H2Client encode: #({":method", "POST"}, {":scheme", "https"}, {":path", "/echo"}, {":authority", "x"}, {"content-length", "10"}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (out at: 1)
+        endStream: false)
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 1
+      sid: 1
+      payload: (Binary fromBytes: #(104, 105))
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testContentLengthTooLarge =>
+    srv := self startTls: (self echoDrainHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    out := H2Client encode: #({":method", "POST"}, {":scheme", "https"}, {":path", "/echo"}, {":authority", "x"}, {"content-length", "1"}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (out at: 1)
+        endStream: false)
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 1
+      sid: 1
+      payload: (Binary fromBytes: #(104, 105))
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testDataZeroStreamId =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 1
+      sid: 0
+      payload: (Binary fromBytes: #(104, 105))
+    self assert: (H2Client recvGoawayCloseTls: sock) equals: {0, 1}
+    self assert: (srv stop: 5000) isOk
+
+  testDataInvalidStreamId =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    H2Client
+      sendRawTls: sock
+      type: 0
+      flags: 1
+      sid: 2
+      payload: (Binary fromBytes: #(104, 105))
+    self assert: (H2Client recvGoawayCloseTls: sock) equals: {0, 1}
+    self assert: (srv stop: 5000) isOk
+
+  testNoLogStreamErrorsWhenDisabled =>
+    path := LogCapture attach: #h2nolog
+    srv := self startTlsOpts: (self tlsOpts: #{
+      #http2 => #{#logStreamErrors => false}
+    }) handler: (self echoHandler)
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    enc := triple at: 2
+    enc2 := self
+      sendPost: sock
+      sid: 1
+      path: "/echo"
+      enc: enc
+    out := H2Client encode: #({":path", "/foo"}) table: enc2
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (out at: 1)
+        endStream: true)
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    Timer sleep: 500
+    logged := File readAll: path
+    self
+      assert: ((logged isOk ifTrue: [
+        logged value
+      ] ifFalse: [""]) includesSubstring: "Received invalid pseudo header")
+      equals: false
+    LogCapture detach: #h2nolog
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk

@@ -1,0 +1,41 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.StreamCollection: the live streams of one connection.
+/// Stream ids are odd (client-initiated); an even id is #invalid, an id
+/// past the highest seen is #new, a vanished one is #closed.
+sealed typed Value subclass: H2StreamCollection
+  field: lastStreamId :: Integer = 0
+  field: streamCount :: Integer = 0
+  field: idToPid :: Dictionary(Integer, Pid) = #{}
+  field: pidToId :: Dictionary(Pid, Integer) = #{}
+
+  class sealed default -> H2StreamCollection => H2StreamCollection new
+
+  /// The pid for a stream, or #new / #closed / #invalid.
+  getPid: sid :: Integer -> Pid | Symbol =>
+    sid isEven ifTrue: [^#invalid]
+    sid > self lastStreamId ifTrue: [^#new]
+    self idToPid at: sid ifAbsent: [#closed]
+
+  /// The stream id for a pid, or nil.
+  getStreamId: pid :: Pid -> Integer | Nil =>
+    self pidToId at: pid ifAbsent: [nil]
+
+  /// All live stream pids.
+  pids -> List(Pid) => self idToPid values
+
+  /// Insert a new stream: the highest id moves and the total grows.
+  withInserted: sid :: Integer pid: pid :: Pid -> H2StreamCollection =>
+    ((((self withLastStreamId: sid) withStreamCount: self streamCount + 1) withIdToPid: (self idToPid at: sid put: pid)) withPidToId: (self pidToId at: pid put: sid))
+
+  /// Forget a stream by pid; unknown pids answer self.
+  withDeleted: pid :: Pid -> H2StreamCollection =>
+    sid := self pidToId at: pid ifAbsent: [^self]
+    ((self withIdToPid: (self idToPid removeKey: sid)) withPidToId: (self pidToId removeKey: pid))
+
+  /// How many streams have ever existed here.
+  count -> Integer => self streamCount
+
+  /// How many streams are alive now.
+  openCount -> Integer => self idToPid size

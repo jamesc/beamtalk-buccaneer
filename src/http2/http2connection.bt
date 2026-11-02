@@ -1,0 +1,404 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Connection as process-free state: settings, HPACK tables,
+/// flow-control windows, the stream collection, pending sends parked on
+/// the connection window, and reset-stream timestamps.
+///
+/// Socket I/O and ReplyTo parking live in the connection actor; every
+/// method here is pure. Pending sends hold ReplyTo tokens:
+/// {streamId, rest, endStream, replyTo, expiresAt}, newest first.
+sealed typed Value subclass: HTTP2Connection
+  field: localSettings :: HTTP2Settings = (HTTP2Settings default)
+  field: remoteSettings :: HTTP2Settings = (HTTP2Settings default)
+  field: fragmentFrame :: H2Headers | Nil = nil
+  field: sendHpack :: HPACKTable = (HPACK newTable: 4096)
+  field: recvHpack :: HPACKTable = (HPACK newTable: 4096)
+  field: sendWindowSize :: Integer = 65535
+  field: recvWindowSize :: Integer = 65535
+  field: streams :: H2StreamCollection = (H2StreamCollection default)
+  field: pendingSends :: List(Tuple) = #()
+  field: resetTimestamps :: List(Integer) = #()
+  field: monitors :: Dictionary(Reference, Integer) = #{}
+  field: maxRequests :: Integer = 0
+  field: maxHeaderBlockSize :: Integer = 50000
+  field: resetIntensity :: Integer = 500
+  field: resetPeriod :: Integer = 10000
+  field: sendfileChunkSize :: Integer = 1048576
+  // === Stream buffers, parked readers and per-stream windows ===
+  //
+  // The stream process never waits on its own mailbox: body reads,
+  // flow-controlled sends and window waits are sync calls to the
+  // connection actor, which parks each with the stdlib deferred reply
+  // until the frame or window arrives and answers out of order.
+  field: headersBuffer :: Dictionary(Integer, Tuple) = #{}
+  field: dataBuffer :: Dictionary(Integer, Tuple) = #{}
+  field: headerReaders :: Dictionary(Integer, ReplyTo) = #{}
+  field: dataReaders :: Dictionary(Integer, Tuple) = #{}
+  field: streamSendWindows :: Dictionary(Integer, Integer) = #{}
+  field: streamRecvWindows :: Dictionary(Integer, Integer) = #{}
+  field: reqEnded :: Dictionary(Integer, Boolean) = #{}
+  field: respEnded :: Dictionary(Integer, Boolean) = #{}
+  field: contentLengths :: Dictionary(Integer, Integer | Nil) = #{}
+  field: strayWindows :: Dictionary(Integer, Integer) = #{}
+
+  /// Bandit's defaults: 65535 windows, HPACK 4096, limits as configured.
+  class sealed default -> HTTP2Connection => HTTP2Connection new
+
+  /// The header list size (RFC 9113 §6.5.2): name plus value plus 32
+  /// per entry, in bytes.
+  class sealed headerListSize: headers :: List(Tuple) -> Integer =>
+    total := 0
+    headers
+      do: [:h :: Tuple |
+        total := total + (self entryBytes: (h at: 1)) + (self entryBytes: (h at: 2)) + 32
+      ]
+    total
+
+  class sealed entryBytes: value :: Object -> Integer =>
+    value match: [
+      b :: Binary -> b size;
+      s :: String -> Erlang erlang byte_size: s;
+      _ -> 0
+    ]
+
+  /// Merge the peer's SETTINGS: answer {connection, sendWindowDelta}.
+  /// Unknown ids were already dropped by the frame layer.
+  applyRemoteSettings: params :: Dictionary(Symbol, Object) -> Tuple(HTTP2Connection, Integer) =>
+    old := self remoteSettings initialWindowSize
+    merged := self mergedRemote: params
+    conn := (self withRemoteSettings: merged) withSendHpack: (HPACK resize: self sendHpack newMax: (merged headerTableSize))
+    {conn, (merged initialWindowSize) - old}
+
+  /// Fold one params dict over the current remote settings.
+  mergedRemote: params :: Dictionary(Symbol, Object) -> HTTP2Settings =>
+    cur := self remoteSettings
+    hts := self
+      intParam: params
+      key: #header_table_size
+      fallback: cur headerTableSize
+    mcs := self
+      numParam: params
+      key: #max_concurrent_streams
+      fallback: cur maxConcurrentStreams
+    iws := self
+      intParam: params
+      key: #initial_window_size
+      fallback: cur initialWindowSize
+    mfs := self
+      intParam: params
+      key: #max_frame_size
+      fallback: cur maxFrameSize
+    mhls := self
+      numParam: params
+      key: #max_header_list_size
+      fallback: cur maxHeaderListSize
+    (((((HTTP2Settings new withHeaderTableSize: hts) withMaxConcurrentStreams: mcs) withInitialWindowSize: iws) withMaxFrameSize: mfs) withMaxHeaderListSize: mhls)
+
+  /// An Integer param or the fallback (the frame layer only stores Integers).
+  intParam: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer -> Integer =>
+    (params includesKey: key) ifFalse: [^fallback]
+    raw := params at: key
+    raw match: [
+      n :: Integer -> n;
+      _ -> fallback
+    ]
+
+  /// An Integer-or-Symbol param or the fallback.
+  numParam: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer | Symbol -> Integer | Symbol =>
+    (params includesKey: key) ifFalse: [^fallback]
+    raw := params at: key
+    raw match: [
+      n :: Integer -> n;
+      s :: Symbol -> s;
+      _ -> fallback
+    ]
+
+  /// Admit a new stream id: raises H2ConnectionError for an even id or
+  /// a maxRequests breach, H2StreamError when maxConcurrentStreams
+  /// is reached. Answers self when the stream may start.
+  checkNewStream: sid :: Integer -> HTTP2Connection =>
+    sid isEven
+      ifTrue: [
+        H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError
+      ]
+    (self maxRequests =:= 0)
+      ifFalse: [
+        self streams count >= self maxRequests
+          ifTrue: [
+            H2ConnectionError signal: "Connection count exceeded" code: HTTP2Errors refusedStream
+          ]
+      ]
+    limit := self localSettings maxConcurrentStreams
+    overLimit := limit match: [
+      #infinity -> false;
+      n :: Integer -> self streams openCount >= n;
+      _ -> false
+    ]
+    overLimit
+      ifTrue: [
+        H2StreamError
+          signal: "Concurrent stream count exceeded"
+          code: HTTP2Errors refusedStream
+          streamId: sid
+      ]
+    self
+
+  /// Record a stream process: insert the id and remember its monitor.
+  withStreamMonitored: sid :: Integer pid: pid :: Pid ref: ref :: Reference -> HTTP2Connection =>
+    ((self withStreams: (self streams withInserted: sid pid: pid)) withMonitors: (self monitors at: ref put: sid))
+
+  /// Forget a stream by pid; unknown pids answer self.
+  withStreamDown: pid :: Pid -> HTTP2Connection =>
+    self withStreams: (self streams withDeleted: pid)
+
+  /// The stream id for a pid, or nil.
+  streamIdFor: pid :: Pid -> Integer | Nil => self streams getStreamId: pid
+
+  /// The stream id for a monitor ref, or nil.
+  streamIdForRef: ref :: Reference -> Integer | Nil =>
+    self monitors at: ref ifAbsent: [nil]
+
+  /// Forget a monitor ref (after its DOWN was handled).
+  withMonitorForgotten: ref :: Reference -> HTTP2Connection =>
+    self withMonitors: (self monitors removeKey: ref)
+
+  /// Reject an overlong header block (RFC 9113 §6.10 guard).
+  /// Answers the fragment when it fits.
+  checkFragmentSize: fragment :: Binary -> Binary =>
+    fragment size > self maxHeaderBlockSize
+      ifTrue: [
+        H2ConnectionError signal: "Received overlong headers" code: HTTP2Errors protocolError
+      ]
+    fragment
+
+  /// Queue a send blocked on the connection window: answers the
+  /// connection with {streamId, rest, endStream, replyTo, expiresAt}
+  /// newest first (Bandit prepends; release takes oldest first).
+  queueSend: sid :: Integer rest: rest :: Binary endStream: end :: Boolean replyTo: r :: ReplyTo expiresAt: expiry :: Integer -> HTTP2Connection =>
+    self withPendingSends: (self pendingSends addFirst: {sid, rest, end, r, expiry})
+
+  /// Take every queued send, oldest first; the queue is emptied and
+  /// the actor re-issues each against the current window.
+  takePendingSends -> Tuple(HTTP2Connection, List(Tuple)) =>
+    {(self withPendingSends: #()), self pendingSends reversed}
+
+  /// Take the queued send for one stream, if any.
+  takePendingSend: sid :: Integer -> Tuple(HTTP2Connection, Tuple | Nil) =>
+    found := nil
+    left := #()
+    self pendingSends
+      do: [:item :: Tuple |
+        ((item at: 1) =:= sid and: [
+          found isNil
+        ]) ifTrue: [found := item] ifFalse: [left := left add: item]
+      ]
+    {(self withPendingSends: left), found}
+
+  /// Split expired sends (expiresAt <= now) from live ones: answers
+  /// {connection, expiredReplyTos oldest first}; live stays newest first.
+  expireSends: now :: Integer -> Tuple(HTTP2Connection, List(ReplyTo)) =>
+    live := #()
+    dead := #()
+    self pendingSends
+      do: [:item :: Tuple |
+        ((item at: 5) <= now) ifTrue: [
+          dead := dead add: (item at: 4)
+        ] ifFalse: [live := live add: item]
+      ]
+    {(self withPendingSends: live), dead reversed}
+
+  /// Record a reset at now; raises H2ConnectionError when intensity
+  /// resets arrive within period ms (0 intensity disables).
+  withResetRecorded: now :: Integer -> HTTP2Connection =>
+    self resetIntensity =:= 0 ifTrue: [^self]
+    cutoff := now - self resetPeriod
+    recent := #()
+    self resetTimestamps do: [:t :: Integer |
+      t < cutoff ifFalse: [recent := recent add: t]
+    ]
+    recent size >= self resetIntensity
+      ifTrue: [
+        H2ConnectionError signal: "Stream resets rate exceeded" code: HTTP2Errors enhanceYourCalm
+      ]
+    self withResetTimestamps: (recent addFirst: now)
+
+  /// Decode one header block through the receive table: answers
+  /// {#ok, headers, connection} or {#error, reason}.
+  decodeHeaders: fragment :: Binary -> Tuple =>
+    (HPACK decode: fragment table: self recvHpack) match: [
+      {#ok, headers, table} -> {#ok, headers, (self withRecvHpack: table)};
+      {#error, reason} -> {#error, reason}
+    ]
+
+  /// Encode response headers through the send table: answers
+  /// {iodata, connection}.
+  encodeHeaders: headers :: List(Tuple) -> Tuple =>
+    {io, table} := HPACK
+      encode: #store
+      headers: headers
+      table: self sendHpack
+    {io, (self withSendHpack: table)}
+
+  /// The last stream id for GOAWAY.
+  lastStreamId -> Integer => self streams lastStreamId
+
+  /// Open stream state when its first HEADERS arrives: seed both
+  /// windows from the negotiated settings plus any stray WINDOW_UPDATE
+  /// that arrived before the stream.
+  withStreamOpened: sid :: Integer -> HTTP2Connection =>
+    {c, stray} := self takeStrayWindow: sid
+    send := c remoteSettings initialWindowSize + stray
+    ((c withStreamSendWindows: (c streamSendWindows at: sid put: send)) withStreamRecvWindows: (c streamRecvWindows at: sid put: (c localSettings initialWindowSize)))
+
+  /// Forget a stream's windows, buffers and parked readers.
+  withStreamForgotten: sid :: Integer -> HTTP2Connection =>
+    c := self withStreamSendWindows: (self streamSendWindows removeKey: sid)
+    c := c withStreamRecvWindows: (c streamRecvWindows removeKey: sid)
+    c := c withHeadersBuffer: (c headersBuffer removeKey: sid)
+    c := c withDataBuffer: (c dataBuffer removeKey: sid)
+    c := c withHeaderReaders: (c headerReaders removeKey: sid)
+    c := c withDataReaders: (c dataReaders removeKey: sid)
+    c := c withReqEnded: (c reqEnded removeKey: sid)
+    c := c withRespEnded: (c respEnded removeKey: sid)
+    c withContentLengths: (c contentLengths removeKey: sid)
+
+  /// Remember request/response END_STREAM per stream; both ended means
+  /// the stream is complete and can be forgotten.
+  markReqEnded: sid :: Integer -> HTTP2Connection =>
+    self withReqEnded: (self reqEnded at: sid put: true)
+
+  markRespEnded: sid :: Integer -> HTTP2Connection =>
+    self withRespEnded: (self respEnded at: sid put: true)
+
+  reqEndedFor: sid :: Integer -> Boolean =>
+    self reqEnded at: sid ifAbsent: [false]
+
+  respEndedFor: sid :: Integer -> Boolean =>
+    self respEnded at: sid ifAbsent: [false]
+
+  /// Both sides ended: the stream is complete.
+  isComplete: sid :: Integer -> Boolean =>
+    (self reqEndedFor: sid) and: [self respEndedFor: sid]
+
+  withContentLength: sid :: Integer length: n :: Integer | Nil -> HTTP2Connection =>
+    self withContentLengths: (self contentLengths at: sid put: n)
+
+  contentLengthFor: sid :: Integer -> Integer | Nil =>
+    self contentLengths at: sid ifAbsent: [nil]
+
+  /// Stash a window increment that arrived before its stream.
+  withStrayWindow: sid :: Integer increment: n :: Integer -> HTTP2Connection =>
+    self withStrayWindows: (self strayWindows at: sid put: ((self strayWindows at: sid ifAbsent: [
+      0
+    ]) + n))
+
+  takeStrayWindow: sid :: Integer -> Tuple(HTTP2Connection, Integer) =>
+    n := self strayWindows at: sid ifAbsent: [0]
+    {(self withStrayWindows: (self strayWindows removeKey: sid)), n}
+
+  /// Buffer HEADERS for a stream: {headers, endStream}.
+  withHeadersBuffered: sid :: Integer headers: h :: List(Tuple) endStream: end :: Boolean -> HTTP2Connection =>
+    self withHeadersBuffer: (self headersBuffer at: sid put: {h, end})
+
+  /// Take buffered HEADERS, or nil.
+  takeBufferedHeaders: sid :: Integer -> Tuple(HTTP2Connection, Tuple | Nil) =>
+    buffered := self headersBuffer at: sid ifAbsent: [nil]
+    buffered isNil ifTrue: [^{self, nil}]
+    {(self withHeadersBuffer: (self headersBuffer removeKey: sid)), buffered}
+
+  /// Append DATA to a stream's buffer: {bytes, endStream}.
+  withDataBuffered: sid :: Integer data: d :: Binary endStream: end :: Boolean -> HTTP2Connection =>
+    prior := self dataBuffer at: sid ifAbsent: [
+      {(Binary fromBytes: #()), false}
+    ]
+    merged := {(prior at: 1) concat: d, (prior at: 2) or: [end]}
+    self withDataBuffer: (self dataBuffer at: sid put: merged)
+
+  /// Take up to maxBytes from a stream's buffer: {conn, {data, drained,
+  /// endStream}} where drained means the buffer is empty.
+  takeBufferedData: sid :: Integer maxBytes: max :: Integer -> Tuple(HTTP2Connection, Tuple) =>
+    prior := self dataBuffer at: sid ifAbsent: [
+      {(Binary fromBytes: #()), false}
+    ]
+    bytes := prior at: 1
+    done := prior at: 2
+    bytes size <= max
+      ifTrue: [
+        ^{(self withDataBuffer: (self dataBuffer removeKey: sid)), {bytes, true, done}}
+      ]
+    head := bytes part: 0 size: max
+    tail := bytes part: max size: (bytes size - max)
+    {(self withDataBuffer: (self dataBuffer at: sid put: {tail, done})), {head, false, done}}
+
+  /// Park a header reader; answer whether one was already parked.
+  hasHeaderReader: sid :: Integer -> Boolean =>
+    self headerReaders includesKey: sid
+
+  /// Park a reader or waiter token.
+  withHeaderReader: sid :: Integer replyTo: r :: ReplyTo -> HTTP2Connection =>
+    self withHeaderReaders: (self headerReaders at: sid put: r)
+
+  withDataReader: sid :: Integer replyTo: r :: ReplyTo maxBytes: n :: Integer -> HTTP2Connection =>
+    self withDataReaders: (self dataReaders at: sid put: {r, n})
+
+  /// Take a parked token, or nil.
+  takeHeaderReader: sid :: Integer -> Tuple(HTTP2Connection, ReplyTo | Nil) =>
+    tok := self headerReaders at: sid ifAbsent: [nil]
+    {(self withHeaderReaders: (self headerReaders removeKey: sid)), tok}
+
+  takeDataReader: sid :: Integer -> Tuple(HTTP2Connection, Tuple | Nil) =>
+    tok := self dataReaders at: sid ifAbsent: [nil]
+    {(self withDataReaders: (self dataReaders removeKey: sid)), tok}
+
+  /// A stream's send allowance: the connection and stream windows' minimum.
+  sendAllowance: sid :: Integer -> Integer =>
+    stream := self streamSendWindows at: sid ifAbsent: [0]
+    self sendWindowSize < stream ifTrue: [^self sendWindowSize]
+    stream
+
+  /// Account bytes sent on both windows.
+  withBytesSent: sid :: Integer count: n :: Integer -> HTTP2Connection =>
+    c := self withSendWindowSize: self sendWindowSize - n
+    c
+      withStreamSendWindows: (c streamSendWindows at: sid put: ((c streamSendWindows at: sid ifAbsent: [
+        0
+      ]) - n))
+
+  /// Grow a stream's send window (WINDOW_UPDATE or SETTINGS delta).
+  withStreamWindowOpened: sid :: Integer increment: n :: Integer -> HTTP2Connection =>
+    self
+      withStreamSendWindows: (self streamSendWindows at: sid put: ((self streamSendWindows at: sid ifAbsent: [
+        0
+      ]) + n))
+
+  /// Grow every live stream's send window (remote SETTINGS delta).
+  withAllStreamWindowsOpened: delta :: Integer -> HTTP2Connection =>
+    grown := self streamSendWindows
+    self streamSendWindows keys do: [:sid :: Integer |
+      grown := grown at: sid put: ((grown at: sid) + delta)
+    ]
+    self withStreamSendWindows: grown
+
+  /// Shrink a stream's receive window after DATA arrived; answers
+  /// {connection, incrementToSend} via the flow-control helper.
+  withDataReceived: sid :: Integer count: n :: Integer -> Tuple(HTTP2Connection, Integer) =>
+    window := (self streamRecvWindows at: sid ifAbsent: [65535]) - n
+    {grown, increment} := FlowControl computeRecvWindow: window dataSize: 0
+    {(self withStreamRecvWindows: (self streamRecvWindows at: sid put: grown)), increment}
+
+  /// Shrink the connection receive window after DATA arrived; answers
+  /// {connection, incrementToSend} via the flow-control helper.
+  withConnDataReceived: n :: Integer -> Tuple(HTTP2Connection, Integer) =>
+    {grown, increment} := FlowControl computeRecvWindow: self recvWindowSize dataSize: n
+    {(self withRecvWindowSize: grown), increment}
+
+  /// Grow the connection send window (WINDOW_UPDATE); answers an error
+  /// string when it would exceed the maximum, nil when applied.
+  withConnWindowOpened: n :: Integer -> Tuple(HTTP2Connection, String | Nil) =>
+    (FlowControl updateSendWindow: self sendWindowSize increment: n) match: [
+      r :: Result -> r isOk ifTrue: [
+        {(self withSendWindowSize: r value), nil}
+      ] ifFalse: [{self, r error}];
+      _ -> {self, "Invalid WINDOW_UPDATE increment (RFC9113§6.9.1)"}
+    ]

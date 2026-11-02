@@ -303,8 +303,14 @@ typed Object subclass: Pipeline
     (ver =:= #http11 or: [ver =:= #http2]) ifFalse: [^false]
     expect := Headers getHeader: headers name: "expect"
     expect isNil ifTrue: [^false]
-    (expect isKindOf: String) ifFalse: [^false]
-    expect asciiLowercase =:= "100-continue"
+    // HTTP/2 request values stay Binary (HPACK decodes opaque); HTTP/1
+    // parses them to String. Accept both spellings of 100-continue.
+    text := expect match: [
+      s :: String -> s;
+      b :: Binary -> b asStringUnchecked;
+      _ -> ^false
+    ]
+    text asciiLowercase =:= "100-continue"
 
   /// {host, port} from an absolute target, else the Host header
   /// (Bandit's determine_host_and_port!).

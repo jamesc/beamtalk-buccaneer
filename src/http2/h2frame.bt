@@ -1,0 +1,580 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Frame: the 9-byte frame header plus per-type bodies.
+/// Deserialize answers `{result, rest}` where result is {#ok, frame},
+/// {#more, buffered} or {#error, code, message}; nil for empty input.
+typed Object subclass: H2Frame
+
+  class sealed flagSet: flags :: Integer bit: bit :: Integer -> Boolean =>
+    (flags bitAnd: (1 bitShift: bit)) =:= 0 ifTrue: [^false]
+    true
+
+  class sealed flags: bits :: List(Integer) -> Integer =>
+    out := 0
+    bits do: [:b | out := out bitOr: (1 bitShift: b)]
+    out
+
+  class sealed deserialize: buffer :: Binary maxFrameSize: max :: Integer -> Object =>
+    buffer size =:= 0 ifTrue: [^nil]
+    buffer match: [
+      <<length:24, _type:8, _flags:8, _reserved:1, _streamId:31, _rest/binary>> -> self
+        deserializeSized: buffer
+        length: length
+        maxFrameSize: max;
+      _ -> self more: buffer
+    ]
+
+  class sealed more: buffer :: Binary -> Tuple(Object, Binary) =>
+    {{#more, buffer}, (Binary fromBytes: #())}
+
+  class sealed deserializeSized: buffer :: Binary length: length :: Integer maxFrameSize: max :: Integer -> Object =>
+    length > max
+      ifTrue: [
+        tail := buffer part: 9 size: (buffer size - 9)
+        ^{{#error, HTTP2Errors frameSizeError, "Payload size too large (RFC9113§4.2)"}, tail}
+      ]
+    buffer match: [
+      <<_len:24, _t:8, _f:8, _r:1, _s:31, _partial/binary>> -> self deserializeKnown: buffer maxFrameSize: max;
+      _ -> self more: buffer
+    ]
+
+  class sealed deserializeKnown: buffer :: Binary maxFrameSize: _max :: Integer -> Object =>
+    buffer match: [
+      <<length:24, type:8, flags:8, _reserved:1, streamId:31, payload:length/binary, rest/binary>> -> self
+        dispatch: type
+        flags: flags
+        streamId: streamId
+        payload: payload
+        rest: rest;
+      _ -> self more: buffer
+    ]
+
+  class sealed dispatch: type :: Integer flags: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    type match: [
+      0 -> self
+        withData: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      1 -> self
+        withHeaders: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      2 -> self
+        withPriority: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      3 -> self
+        withRstStream: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      4 -> self
+        withSettings: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      5 -> {{#error, HTTP2Errors protocolError, "PUSH_PROMISE frame received (RFC9113§8.4)"}, rest};
+      6 -> self
+        withPing: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      7 -> self
+        withGoaway: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      8 -> self
+        withWindowUpdate: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      9 -> self
+        withContinuation: flags
+        streamId: sid
+        payload: payload
+        rest: rest;
+      _ -> {{#ok, (self
+        unknownFrame: type
+        flags: flags
+        streamId: sid
+        payload: payload)}, rest}
+    ]
+
+  class sealed unknownFrame: type :: Integer flags: flags :: Integer streamId: sid :: Integer payload: payload :: Binary -> H2Unknown =>
+    u := H2Unknown new withFrameType: type
+    u := u withFlags: flags
+    u := u withStreamId: sid
+    u withPayload: payload
+
+  class sealed withData: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    sid =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors protocolError, "DATA frame with zero stream_id (RFC9113§6.1)"}, rest}
+      ]
+    (self flagSet: flags bit: 3)
+      ifTrue: [
+        ^self
+          withPaddedData: flags
+          streamId: sid
+          payload: payload
+          rest: rest
+      ]
+    frame := ((H2Data new withStreamId: sid) withEndStream: (self flagSet: flags bit: 0)) withData: payload
+    {{#ok, frame}, rest}
+
+  class sealed withPaddedData: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    payload size =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors frameSizeError, "DATA frame with insufficient padding data (RFC9113§6.1)"}, rest}
+      ]
+    payload match: [
+      <<padLength:8, body/binary>> -> body size >= padLength
+        ifTrue: [
+          data := body part: 0 size: (body size - padLength)
+          frame := ((H2Data new withStreamId: sid) withEndStream: (self flagSet: flags bit: 0)) withData: data
+          {{#ok, frame}, rest}
+        ]
+        ifFalse: [
+          {{#error, HTTP2Errors protocolError, "DATA frame with invalid padding length (RFC9113§6.1)"}, rest}
+        ];
+      _ -> {{#error, HTTP2Errors frameSizeError, "DATA frame with insufficient padding data (RFC9113§6.1)"}, rest}
+    ]
+
+  class sealed withHeaders: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    sid =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors protocolError, "HEADERS frame with zero stream_id (RFC9113§6.2)"}, rest}
+      ]
+    padded := self flagSet: flags bit: 3
+    hasPriority := self flagSet: flags bit: 5
+    padded
+      ifTrue: [
+        hasPriority
+          ifTrue: [
+            ^self
+              withPaddedPriorityHeaders: flags
+              streamId: sid
+              payload: payload
+              rest: rest
+          ]
+          ifFalse: [
+            ^self
+              withPaddedHeaders: flags
+              streamId: sid
+              payload: payload
+              rest: rest
+          ]
+      ]
+    hasPriority
+      ifTrue: [
+        ^self
+          withPriorityHeaders: flags
+          streamId: sid
+          payload: payload
+          rest: rest
+      ]
+    frame := ((((H2Headers new withStreamId: sid) withEndStream: (self flagSet: flags bit: 0)) withEndHeaders: (self flagSet: flags bit: 2)) withFragment: payload)
+    {{#ok, frame}, rest}
+
+  class sealed withPaddedHeaders: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    payload size =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors frameSizeError, "HEADERS frame with insufficient data for its flags (RFC9113§6.2)"}, rest}
+      ]
+    payload match: [
+      <<padLength:8, body/binary>> -> body size >= padLength
+        ifTrue: [
+          fragment := body part: 0 size: (body size - padLength)
+          frame := ((((H2Headers new withStreamId: sid) withEndStream: (self flagSet: flags bit: 0)) withEndHeaders: (self flagSet: flags bit: 2)) withFragment: fragment)
+          {{#ok, frame}, rest}
+        ]
+        ifFalse: [
+          {{#error, HTTP2Errors protocolError, "HEADERS frame with invalid padding length (RFC9113§6.2)"}, rest}
+        ];
+      _ -> {{#error, HTTP2Errors frameSizeError, "HEADERS frame with insufficient data for its flags (RFC9113§6.2)"}, rest}
+    ]
+
+  class sealed withPaddedPriorityHeaders: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    payload size =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors frameSizeError, "HEADERS frame with insufficient data for its flags (RFC9113§6.2)"}, rest}
+      ]
+    payload match: [
+      <<padLength:8, exclusive:1, dependency:31, weight:8, body/binary>> -> body size >= padLength
+        ifTrue: [
+          fragment := body part: 0 size: (body size - padLength)
+          frame := ((((((H2Headers new withStreamId: sid) withEndStream: (self flagSet: flags bit: 0)) withEndHeaders: (self flagSet: flags bit: 2)) withExclusiveDependency: exclusive =:= 1) withStreamDependency: dependency) withWeight: weight) withFragment: fragment
+          {{#ok, frame}, rest}
+        ]
+        ifFalse: [
+          {{#error, HTTP2Errors protocolError, "HEADERS frame with invalid padding length (RFC9113§6.2)"}, rest}
+        ];
+      <<_pad:8, _body/binary>> -> {{#error, HTTP2Errors protocolError, "HEADERS frame with invalid padding length (RFC9113§6.2)"}, rest};
+      _ -> {{#error, HTTP2Errors frameSizeError, "HEADERS frame with insufficient data for its flags (RFC9113§6.2)"}, rest}
+    ]
+
+  class sealed withPriorityHeaders: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    payload match: [
+      <<exclusive:1, dependency:31, weight:8, fragment/binary>> -> {{#ok, (self
+        priorityHeaders: flags
+        sid: sid
+        exclusive: exclusive
+        dependency: dependency
+        weight: weight
+        fragment: fragment)}, rest};
+      _ -> {{#error, HTTP2Errors frameSizeError, "HEADERS frame with insufficient data for its flags (RFC9113§6.2)"}, rest}
+    ]
+
+  class sealed priorityHeaders: flags :: Integer sid: sid :: Integer exclusive: exclusive :: Integer dependency: dependency :: Integer weight: weight :: Integer fragment: fragment :: Binary -> H2Headers =>
+    h := H2Headers new withStreamId: sid
+    h := h withEndStream: (self flagSet: flags bit: 0)
+    h := h withEndHeaders: (self flagSet: flags bit: 2)
+    h := h withExclusiveDependency: exclusive =:= 1
+    h := h withStreamDependency: dependency
+    h := h withWeight: weight
+    h withFragment: fragment
+
+  class sealed withPriority: _flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    sid =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors protocolError, "PRIORITY frame with zero stream_id (RFC9113§6.3)"}, rest}
+      ]
+    payload match: [
+      <<_reserved:1, dep:31, weight:8>> -> {{#ok, ((H2Priority new withStreamId: sid) withDependentStreamId: dep) withWeight: weight}, rest};
+      _ -> {{#error, HTTP2Errors frameSizeError, "Invalid payload size in PRIORITY frame (RFC9113§6.3)"}, rest}
+    ]
+
+  class sealed withRstStream: _flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    sid =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors protocolError, "RST_STREAM frame with zero stream_id (RFC9113§6.4)"}, rest}
+      ]
+    payload match: [
+      <<code:32>> -> {{#ok, (H2RstStream new withStreamId: sid) withErrorCode: code}, rest};
+      _ -> {{#error, HTTP2Errors frameSizeError, "Invalid payload size in RST_STREAM frame (RFC9113§6.4)"}, rest}
+    ]
+
+  class sealed withPing: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    sid =:= 0
+      ifFalse: [
+        ^{{#error, HTTP2Errors protocolError, "Invalid stream ID in PING frame (RFC9113§6.7)"}, rest}
+      ]
+    payload size =:= 8
+      ifTrue: [
+        frame := (H2Ping new withAck: (self flagSet: flags bit: 0)) withPayload: payload
+        {{#ok, frame}, rest}
+      ]
+      ifFalse: [
+        {{#error, HTTP2Errors frameSizeError, "PING frame with invalid payload size (RFC9113§6.7)"}, rest}
+      ]
+
+  class sealed withGoaway: _flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    sid =:= 0
+      ifFalse: [
+        ^{{#error, HTTP2Errors protocolError, "Invalid stream ID in GOAWAY frame (RFC9113§6.8)"}, rest}
+      ]
+    payload match: [
+      <<_reserved:1, last:31, code:32, debug/binary>> -> {{#ok, (((H2Goaway new withLastStreamId: last) withErrorCode: code) withDebugData: debug)}, rest};
+      _ -> {{#error, HTTP2Errors frameSizeError, "GOAWAY frame with invalid payload size (RFC9113§6.8)"}, rest}
+    ]
+
+  class sealed withWindowUpdate: _flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    payload match: [
+      <<_reserved:1, 0:31>> -> {{#error, HTTP2Errors protocolError, "Invalid WINDOW_UPDATE size increment (RFC9113§6.9)"}, rest};
+      <<_r:1, inc:31>> -> {{#ok, (H2WindowUpdate new withStreamId: sid) withSizeIncrement: inc}, rest};
+      _ -> {{#error, HTTP2Errors frameSizeError, "Invalid WINDOW_UPDATE frame (RFC9113§6.9)"}, rest}
+    ]
+
+  class sealed withContinuation: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    sid =:= 0
+      ifTrue: [
+        ^{{#error, HTTP2Errors protocolError, "CONTINUATION frame with zero stream_id (RFC9113§6.10)"}, rest}
+      ]
+    frame := ((H2Continuation new withStreamId: sid) withEndHeaders: (self flagSet: flags bit: 2)) withFragment: payload
+    {{#ok, frame}, rest}
+
+  class sealed withSettings: flags :: Integer streamId: sid :: Integer payload: payload :: Binary rest: rest :: Binary -> Object =>
+    ack := self flagSet: flags bit: 0
+    sid =:= 0
+      ifFalse: [
+        ^{{#error, HTTP2Errors protocolError, "Invalid SETTINGS frame (RFC9113§6.5)"}, rest}
+      ]
+    ack
+      ifTrue: [
+        payload size =:= 0
+          ifTrue: [
+            ^{{#ok, (H2Settings new withAck: true) withSettings: #{}}, rest}
+          ]
+          ifFalse: [
+            ^{{#error, HTTP2Errors frameSizeError, "SETTINGS ack frame with non-empty payload (RFC9113§6.5)"}, rest}
+          ]
+      ]
+    self
+      withSettingParams: payload
+      acc: #{}
+      rest: rest
+
+  class sealed withSettingParams: payload :: Binary acc: acc :: Dictionary(Symbol, Object) rest: rest :: Binary -> Object =>
+    payload size =:= 0
+      ifTrue: [
+        frame := (H2Settings new withAck: false) withSettings: acc
+        ^{{#ok, frame}, rest}
+      ]
+    payload match: [
+      <<id:16, value:32, tail/binary>> -> self
+        withSettingParam: id
+        value: value
+        tail: tail
+        acc: acc
+        rest: rest;
+      _ -> {{#error, HTTP2Errors frameSizeError, "Invalid SETTINGS size (RFC9113§6.5)"}, rest}
+    ]
+
+  class sealed serialize: frame :: Object maxFrameSize: max :: Integer -> Binary =>
+    frame match: [
+      f :: H2Data -> self serializeData: f maxFrameSize: max;
+      f :: H2Headers -> self serializeHeaders: f maxFrameSize: max;
+      f :: H2Priority -> self serializePriority: f;
+      f :: H2RstStream -> self serializeRstStream: f;
+      f :: H2Settings -> self serializeSettings: f;
+      f :: H2Ping -> self serializePing: f;
+      f :: H2Goaway -> self serializeGoaway: f;
+      f :: H2WindowUpdate -> self serializeWindowUpdate: f;
+      f :: H2Continuation -> self serializeContinuation: f maxFrameSize: max;
+      f :: H2Unknown -> self serializeUnknown: f;
+      _ -> Error signal: "H2Frame cannot serialize this value"
+    ]
+
+  class sealed serializeData: frame :: H2Data maxFrameSize: max :: Integer -> Binary =>
+    data := frame data
+    size := data size
+    size <= max
+      ifTrue: [
+        flags := frame endStream ifTrue: [1] ifFalse: [0]
+        ^(self
+          header: size
+          type: 0
+          flags: flags
+          streamId: frame streamId) concat: data
+      ]
+    first := data part: 0 size: max
+    rest := data part: max size: size - max
+    next := ((H2Data new withStreamId: frame streamId) withEndStream: frame endStream) withData: rest
+    (self
+      header: max
+      type: 0
+      flags: 0
+      streamId: frame streamId) concat: (first concat: (self serializeData: next maxFrameSize: max))
+
+  class sealed serializeHeaders: frame :: H2Headers maxFrameSize: max :: Integer -> Binary =>
+    fragment := frame fragment
+    size := fragment size
+    base := frame endStream ifTrue: [1] ifFalse: [0]
+    size <= max
+      ifTrue: [
+        ^(self
+          header: size
+          type: 1
+          flags: base + 4
+          streamId: frame streamId) concat: fragment
+      ]
+    first := fragment part: 0 size: max
+    rest := fragment part: max size: size - max
+    cont := (H2Continuation new withStreamId: frame streamId) withFragment: rest
+    (self
+      header: max
+      type: 1
+      flags: base
+      streamId: frame streamId) concat: (first concat: (self serializeContinuation: cont maxFrameSize: max))
+
+  class sealed serializePriority: frame :: H2Priority -> Binary =>
+    body := (self bytes31: frame dependentStreamId) concat: (Binary fromBytes: #(frame weight bitAnd: 255))
+    (self
+      header: 5
+      type: 2
+      flags: 0
+      streamId: frame streamId) concat: body
+
+  class sealed serializeRstStream: frame :: H2RstStream -> Binary =>
+    (self
+      header: 4
+      type: 3
+      flags: 0
+      streamId: frame streamId) concat: (self bytes32: frame errorCode)
+
+  class sealed serializeSettings: frame :: H2Settings -> Binary =>
+    frame ack
+      ifTrue: [
+        ^(self
+          header: 0
+          type: 4
+          flags: 1
+          streamId: 0)
+      ]
+    self
+      settingsPayload: (frame settings keys)
+      settings: frame settings
+      acc: (Binary fromBytes: #())
+
+  class sealed settingsPayload: keys :: List(Symbol) settings: settings :: Dictionary(Symbol, Object) acc: acc :: Binary -> Binary =>
+    keys isEmpty
+      ifTrue: [
+        ^(self
+          header: (acc size)
+          type: 4
+          flags: 0
+          streamId: 0) concat: acc
+      ]
+    key := keys first
+    self
+      settingsPayload: keys rest
+      settings: settings
+      acc: (acc concat: (self settingsEntry: key value: (settings at: key)))
+
+  class sealed settingsEntry: key :: Symbol value: value :: Object -> Binary =>
+    value match: [
+      #infinity -> Binary fromBytes: #();
+      n :: Integer -> self intSettingEntry: key value: n;
+      _ -> Binary fromBytes: #()
+    ]
+
+  class sealed intSettingEntry: key :: Symbol value: n :: Integer -> Binary =>
+    key =:= #header_table_size
+      ifTrue: [
+        n =:= 4096 ifTrue: [^Binary fromBytes: #()]
+        ^(self bytes16: 1) concat: (self bytes32: n)
+      ]
+    key =:= #max_concurrent_streams ifTrue: [
+      ^(self bytes16: 3) concat: (self bytes32: n)
+    ]
+    key =:= #initial_window_size
+      ifTrue: [
+        n =:= 65535 ifTrue: [^Binary fromBytes: #()]
+        ^(self bytes16: 4) concat: (self bytes32: n)
+      ]
+    key =:= #max_frame_size
+      ifTrue: [
+        n =:= 16384 ifTrue: [^Binary fromBytes: #()]
+        ^(self bytes16: 5) concat: (self bytes32: n)
+      ]
+    key =:= #max_header_list_size ifTrue: [
+      ^(self bytes16: 6) concat: (self bytes32: n)
+    ]
+    Binary fromBytes: #()
+
+  class sealed serializePing: frame :: H2Ping -> Binary =>
+    flags := frame ack ifTrue: [1] ifFalse: [0]
+    (self
+      header: 8
+      type: 6
+      flags: flags
+      streamId: 0) concat: frame payload
+
+  class sealed serializeGoaway: frame :: H2Goaway -> Binary =>
+    body := (self bytes31: frame lastStreamId) concat: ((self bytes32: frame errorCode) concat: frame debugData)
+    (self
+      header: (body size)
+      type: 7
+      flags: 0
+      streamId: 0) concat: body
+
+  class sealed serializeWindowUpdate: frame :: H2WindowUpdate -> Binary =>
+    (self
+      header: 4
+      type: 8
+      flags: 0
+      streamId: frame streamId) concat: (self bytes31: frame sizeIncrement)
+
+  class sealed serializeContinuation: frame :: H2Continuation maxFrameSize: max :: Integer -> Binary =>
+    fragment := frame fragment
+    size := fragment size
+    size <= max
+      ifTrue: [
+        ^(self
+          header: size
+          type: 9
+          flags: 4
+          streamId: frame streamId) concat: fragment
+      ]
+    first := fragment part: 0 size: max
+    rest := fragment part: max size: size - max
+    cont := (H2Continuation new withStreamId: frame streamId) withFragment: rest
+    (self
+      header: max
+      type: 9
+      flags: 0
+      streamId: frame streamId) concat: (first concat: (self serializeContinuation: cont maxFrameSize: max))
+
+  class sealed serializeUnknown: frame :: H2Unknown -> Binary =>
+    (self
+      header: (frame payload size)
+      type: frame frameType
+      flags: frame flags
+      streamId: frame streamId) concat: frame payload
+
+  class sealed header: length :: Integer type: type :: Integer flags: flags :: Integer streamId: sid :: Integer -> Binary =>
+    Binary fromBytes: #((length bitShift: -16) bitAnd: 255, (length bitShift: -8) bitAnd: 255, length bitAnd: 255, type, flags, (sid bitShift: -24) bitAnd: 127, (sid bitShift: -16) bitAnd: 255, (sid bitShift: -8) bitAnd: 255, sid bitAnd: 255)
+
+  class sealed bytes16: n :: Integer -> Binary =>
+    Binary fromBytes: #((n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  class sealed bytes32: n :: Integer -> Binary =>
+    Binary fromBytes: #((n bitShift: -24) bitAnd: 255, (n bitShift: -16) bitAnd: 255, (n bitShift: -8) bitAnd: 255, n bitAnd: 255)
+
+  class sealed bytes31: n :: Integer -> Binary =>
+    self bytes32: (n bitAnd: 2147483647)
+
+  class sealed withSettingParam: id :: Integer value: value :: Integer tail: tail :: Binary acc: acc :: Dictionary(Symbol, Object) rest: rest :: Binary -> Object =>
+    id match: [
+      1 -> self
+        withSettingParams: tail
+        acc: (acc at: #header_table_size put: value)
+        rest: rest;
+      2 -> (value =:= 0 or: [value =:= 1])
+        ifTrue: [
+          self
+            withSettingParams: tail
+            acc: acc
+            rest: rest
+        ]
+        ifFalse: [
+          {{#error, HTTP2Errors protocolError, "Invalid enable_push value (RFC9113§6.5)"}, rest}
+        ];
+      3 -> self
+        withSettingParams: tail
+        acc: (acc at: #max_concurrent_streams put: value)
+        rest: rest;
+      4 -> value > 2147483647
+        ifTrue: [
+          {{#error, HTTP2Errors flowControlError, "Invalid window_size (RFC9113§6.5)"}, rest}
+        ]
+        ifFalse: [
+          self
+            withSettingParams: tail
+            acc: (acc at: #initial_window_size put: value)
+            rest: rest
+        ];
+      5 -> (value < 16384 or: [value > 16777215])
+        ifTrue: [
+          {{#error, HTTP2Errors frameSizeError, "Invalid max_frame_size (RFC9113§6.5)"}, rest}
+        ]
+        ifFalse: [
+          self
+            withSettingParams: tail
+            acc: (acc at: #max_frame_size put: value)
+            rest: rest
+        ];
+      6 -> self
+        withSettingParams: tail
+        acc: (acc at: #max_header_list_size put: value)
+        rest: rest;
+      _ -> self
+        withSettingParams: tail
+        acc: acc
+        rest: rest
+    ]

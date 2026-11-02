@@ -1,0 +1,15 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Bandit.HTTP2.Errors.ConnectionError: a connection-level failure
+/// (RFC 9113 §5.4.3). Carries the error code as the reason; the protocol
+/// answers GOAWAY and closes the connection.
+///
+/// NOTE: methods defined here do not dispatch on signaled instances, so
+/// handlers match `e reason` directly (see `HTTP2Protocol connCode:`)
+/// instead of calling accessors.
+typed Error subclass: H2ConnectionError
+
+  /// Raise with the code as the reason.
+  class sealed signal: msg :: String code: code :: Integer -> Never =>
+    H2ConnectionError signal: msg reason: code

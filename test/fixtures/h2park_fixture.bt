@@ -1,0 +1,26 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Test-only Server that parks sync callers with the stdlib deferred
+/// reply, so HTTP/2 connection queue tests can hold real ReplyTo tokens.
+/// Untyped, as the stdlib deferred-reply fixture: fixture mode
+/// miscompiles sealed self-sends in typed classes (BT-4152).
+Server subclass: H2ParkFixture
+  state: parked = #{}
+
+  /// Park the caller under key; answers #parked only when released.
+  wait: key =>
+    self.parked := self.parked at: key put: self deferReply
+    #parked
+
+  /// The parked token for key, or nil.
+  token: key => self.parked at: key ifAbsent: [nil]
+
+  waitingCount => self.parked size
+
+  /// Release one parked caller with a value.
+  release: key with: value =>
+    tok := self.parked at: key ifAbsent: [^#missing]
+    tok reply: value
+    self.parked := self.parked removeKey: key
+    #ok

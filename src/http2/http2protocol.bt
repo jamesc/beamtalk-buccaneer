@@ -175,11 +175,9 @@ sealed typed Value subclass: HTTP2Protocol
   /// this frame's bytes and spawns, stop on close, RST-and-continue on
   /// stream errors.
   serveFrame: frame :: Object rest: rest :: Binary bytes: out :: Binary spawns: spawns :: List(Integer) -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
-    {bytes, fresh, close, proto} := [self handleFrame: frame]
-      on: H2StreamError
-      do: [:e :: H2StreamError |
-        self streamFailed: e
-      ]
+    {bytes, fresh, close, proto} := [
+      self handleFrame: frame
+    ] on: H2StreamError do: [:e :: H2StreamError | self streamFailed: e]
     merged := out concat: bytes
     all := spawns ++ fresh
     close ifTrue: [^{merged, all, true, (proto withBuffer: rest)}]

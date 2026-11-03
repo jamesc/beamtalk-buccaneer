@@ -536,6 +536,56 @@ TestCase subclass: ProtocolTest
     self assert: ((LogCapture await: "inflating too much" in: log) includesSubstring: "inflating too much")
     self assert: (srv2 stop: 5000) isOk
 
+  /// The ratio budget is checked before each further round, as Bandit's
+  /// safe_inflate: a round that crosses the budget is accepted when the
+  /// next round finishes (Autobahn 12.4.7/8/12/13). 100000 zero bytes
+  /// inflate as six 16384-byte #continue rounds plus a short #finished
+  /// one, so a ~90000-byte budget lies past five rounds (81920) but
+  /// short of six (98304): accepted, while ~75000 (under five) is not.
+  testMaxInflateRatioChecksBeforeRound =>
+    payload := (Erlang binary) copy: (Binary fromBytes: #(0)) with: 100000
+    deflated := WebSocketClient deflateRaw: payload
+    srv := self
+      serverWith: self echoSock
+      config: #{
+        #websocket => #{
+          #compress => true,
+          #maxInflateRatio => ((90000 div: deflated size) + 1)
+        }
+      }
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shakeDeflate: client
+    WebSocketClient
+      sendFrame: client
+      flags: 12
+      opcode: 2
+      data: deflated
+    self assert: (WebSocketClient inflateRaw: (WebSocketClient recvDeflatedBinary: client)) equals: payload
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk
+    self drainTerm
+    srv2 := self
+      serverWith: self termSock
+      config: #{
+        #websocket => #{
+          #compress => true,
+          #maxInflateRatio => ((75000 div: deflated size) + 1)
+        }
+      }
+      upgrade: #{}
+    client2 := WebSocketClient connect: (self portOf: srv2)
+    self shakeDeflate: client2
+    WebSocketClient
+      sendFrame: client2
+      flags: 12
+      opcode: 2
+      data: deflated
+    self assert: self awaitTerm equals: {#error, "Received compressed frame inflating too much"}
+    self assert: (WebSocketClient recvClose: client2) equals: (self closeBytes: 1009)
+    self assert: (self awaitClosed: client2) equals: true
+    self assert: (srv2 stop: 5000) isOk
+
   testDeflateOptions =>
     srv := self
       serverWith: self echoSock
@@ -689,6 +739,24 @@ TestCase subclass: ProtocolTest
     self assert: (self awaitClosed: client) equals: true
     Timer sleep: 500
     self deny: (self isAlive: pid)
+    self assert: (srv stop: 5000) isOk
+
+  /// A close frame with no payload (no status code) is a normal close:
+  /// answered 1000, as Bandit does (Autobahn 7.3.1).
+  testCloseWithoutCode =>
+    srv := self
+      serverWith: self termSock
+      config: #{}
+      upgrade: #{}
+    client := WebSocketClient connect: (self portOf: srv)
+    self shake: client
+    WebSocketClient
+      sendFrame: client
+      flags: 8
+      opcode: 8
+      data: (Binary fromBytes: #())
+    self assert: (WebSocketClient recvClose: client) equals: (self closeBytes: 1000)
+    self assert: (self awaitClosed: client) equals: true
     self assert: (srv stop: 5000) isOk
 
   // ===== error handling =====

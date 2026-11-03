@@ -604,6 +604,103 @@ TestCase subclass: HTTP2ProtocolTest
     H2Client closeTls: sock
     self assert: (srv stop: 5000) isOk
 
+  /// sendfile streams the file in sendfileChunkSize pieces and parks on
+  /// flow control (BT-4364): with 4096-byte chunks and the default
+  /// 65535-byte windows, the server stops at exactly 65535 bytes until
+  /// the client opens the windows, and the whole patterned file still
+  /// arrives in order.
+  testSendfileChunkedParksOnWindow =>
+    path := File tempDirectory
+      ++ "/buccaneer-sendfile-chunked-"
+      ++ (Erlang erlang unique_integer: #(#positive)) printString
+    block := Binary fromBytes: ((0 to: 250) collect: [:i | i])
+    contents := ((Erlang binary) copy: block with: 800) part: 0 size: 200000
+    self assert: ((Erlang file) write_file: path with: contents) isOk
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #catalina => #{
+          #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+        },
+        #http2 => #{#sendfileChunkSize => 4096},
+        #handler => (self fileHandler: path)
+      }) unwrap
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    self
+      sendGet: sock
+      sid: 1
+      path: "/file"
+      enc: (triple at: 2)
+    H2Client recvHeadersTls: sock dec: (triple at: 3)
+    {parked, _done} := self
+      readData: sock
+      upTo: 65535
+      acc: (Binary fromBytes: #())
+      replenish: false
+    self assert: parked size equals: 65535
+    H2Client
+      sendWindowUpdateTls: sock
+      sid: 0
+      inc: 65535
+    H2Client
+      sendWindowUpdateTls: sock
+      sid: 1
+      inc: 65535
+    {body, done} := self
+      readData: sock
+      upTo: 200000
+      acc: parked
+      replenish: true
+    self assert: done equals: true
+    self assert: body equals: contents
+    File delete: path
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  /// Read stream 1's DATA until `limit` bytes or END_STREAM, skipping
+  /// other frames. With `replenish`, each DATA frame's size is handed
+  /// back on the connection and stream windows. Answers {body, endStream}.
+  readData: sock upTo: limit acc: acc replenish: replenish =>
+    (acc size >= limit) ifTrue: [^{acc, false}]
+    frame := H2Client recvFrameTls: sock
+    frame match: [
+      d :: H2Data -> self
+        dataFrame: d
+        sock: sock
+        upTo: limit
+        acc: acc
+        replenish: replenish;
+      _ -> self
+        readData: sock
+        upTo: limit
+        acc: acc
+        replenish: replenish
+    ]
+
+  dataFrame: d sock: sock upTo: limit acc: acc replenish: replenish =>
+    got := acc concat: d data
+    (replenish and: [d data size > 0])
+      ifTrue: [
+        H2Client
+          sendWindowUpdateTls: sock
+          sid: 0
+          inc: d data size
+        H2Client
+          sendWindowUpdateTls: sock
+          sid: 1
+          inc: d data size
+      ]
+    d endStream ifTrue: [^{got, true}]
+    self
+      readData: sock
+      upTo: limit
+      acc: got
+      replenish: replenish
+
   fileHandler: path =>
     [:ex |
       ex

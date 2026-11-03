@@ -147,13 +147,16 @@ sealed typed Value subclass: WebSocketConnection
     ]
 
   /// The peer went away: answer our close and end with #close (RFC6455§7.4.1-2).
+  /// A close with no status code is answered 1000: Bandit's guard
+  /// `code > 2999` holds for `nil` (Erlang term order puts atoms
+  /// above numbers), and RFC6455§7.1.5 treats it as 1005, a normal close.
   handleRemoteClose: frame :: ConnectionCloseFrame socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     code := frame code
     reply := code match: [
       n :: Integer -> ((n between: 1000 and: 1003) or: [
         (n between: 1007 and: 1011) or: [n > 2999]
       ]) ifTrue: [1000] ifFalse: [1002];
-      _ -> 1002
+      _ -> 1000
     ]
     {conn, _} := self
       doStop: reply

@@ -19,7 +19,7 @@ jobs:
         uses: erlef/setup-beam@v1
         with:
           otp-version: "28.5"
-          # For the Bandit baseline of the spike bench smoke step.
+          # For the Bandit baseline of the bench and stress smoke steps.
           elixir-version: "1.20.1"
 
       - name: Install Beamtalk
@@ -49,10 +49,15 @@ jobs:
       - name: Spikes
         run: just spikes
 
-      # Spike 1's three-way bench, one short round. Shared runners make the
-      # numbers noisy, so this is informational only.
-      - name: Spike bench smoke
-        run: just spike-bench --rows smoke
+      # BT-4086: short versions of `just bench` and `just stress` (the
+      # release gate's harness). Shared runners make the numbers noisy and
+      # the timing-bound stress checks flaky, so both are informational.
+      - name: Bench smoke
+        run: just bench-smoke
+        continue-on-error: true
+
+      - name: Stress smoke
+        run: just stress-smoke
         continue-on-error: true
 
   # Phase 4: Autobahn Testsuite fuzzingclient against the echo server.

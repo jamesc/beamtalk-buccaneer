@@ -1,0 +1,16 @@
+# Copyright 2026 James Casey
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "http_node"
+version = "0.1.0"
+description = "The release gate's servers: beamtalk-http on Buccaneer and on cowboy, and Buccaneer standalone (not published)"
+
+[dependencies]
+http = { path = "../../_build/bench/beamtalk-http" }
+buccaneer = { path = "../.." }
+
+[diagnostics]
+type = "error"
+type-annotation = "error"
+dnu = "error"

@@ -14,7 +14,7 @@ regression test.
 ```bash
 just spikes                                    # every spike (both packages), then the numbers
 beamtalk test spikes/engine_spikes/test/exchange_state_spike_test.bt
-just spike-bench                               # spike 1's three-way HTTP bench (bench/README.md)
+just spike-bench                               # spike 1's three-way HTTP bench (bench/SPIKE.md)
 (cd bench/bandit && elixir ../../spikes/codec_baseline.exs)   # spike 4's Elixir baseline
 ```
 
@@ -58,7 +58,7 @@ bytes):
 | One bare `Erlang erlang decode_packet:` FFI call | 180-203 (160-198 on 9b6ce88eb) |
 | Erlang `decode_packet` to `http_eoh` with lowercased names (bench) | 2,280 (2,272 on 9b6ce88eb) |
 
-End to end (`bench/README.md` has the method, caveats and per-round data):
+End to end (`bench/SPIKE.md` has the method, caveats and per-round data):
 keep-alive `GET /` answering `hello world`, 5 interleaved rounds × 5 s,
 2026-10-21 20:47-20:55 UTC, 1-minute load 11-35. Medians:
 
@@ -111,7 +111,7 @@ cowboy on throughput at every row. p99 is at parity with cowboy
 The Beamtalk parse is 3.3 µs, 1.44× Erlang's 2.3 µs. Request time is now
 in the socket calls and FFI coercion (`apply_with_coercion` on 57% of
 sampled request stacks, BT-4153); the parse, in the header lowercase and
-the remaining dynamic sends. `bench/README.md` has the method and the
+the remaining dynamic sends. `bench/SPIKE.md` has the method and the
 full per-round data.
 
 ## Spike 2: the exchange state model

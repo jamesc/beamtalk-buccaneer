@@ -40,3 +40,14 @@ sealed typed Value subclass: ExchangeState
   /// Response headers the handler set before answering (putRespHeader:),
   /// sent with the next response head — the 101 on an upgrade.
   field: respHeaders :: HttpHeaders = #()
+  /// The server's `#http` options (compression settings).
+  field: httpOptions :: HttpOptions = #{}
+  /// The coding negotiated from `accept-encoding`, or nil (Bandit's
+  /// content_encoding).
+  field: contentEncoding :: String | Nil = nil
+  /// The chunked response's compression context, while one streams.
+  field: compression :: Compression | Nil = nil
+  /// Bandit's resp_compression_method and resp_uncompressed_body_bytes
+  /// metrics: nil unless the response was encoded.
+  field: respCompressionMethod :: String | Nil = nil
+  field: respUncompressedBodyBytes :: Integer | Nil = nil

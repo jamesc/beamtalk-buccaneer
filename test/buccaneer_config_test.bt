@@ -84,6 +84,34 @@ TestCase subclass: BuccaneerConfigTest
       ]
       message: "Invalid value for #logExceptionsWithStatusCodes"
 
+  testRejectsBadCompressionOptions =>
+    #(#{
+      #compress => #yes
+    }, #{
+      #responseEncodings => "gzip"
+    }, #{
+      #responseEncodings => #(#gzip)
+    }, #{#deflateOptions => #(#level)}, #{#zstdOptions => 3})
+      do: [:http |
+        self assertRaises: [
+          BuccaneerConfig from: #{#handler => self handlerBlock, #http => http}
+        ] message: "Invalid value for #" ++ http keys first asString
+      ]
+
+  testAcceptsCompressionOptions =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #http => #{
+          #compress => false,
+          #responseEncodings => #("gzip"),
+          #deflateOptions => #{#level => 0},
+          #zstdOptions => #{#checksumFlag => true}
+        }
+      }
+    self assert: (config http at: #compress) equals: false
+    self assert: (config http at: #responseEncodings) equals: #("gzip")
+
   testAcceptsLoggingOptions =>
     config := BuccaneerConfig
       from: #{

@@ -445,6 +445,7 @@ TestCase subclass: PipelineTest
       target: {nil, nil, nil, "/p"}
       headers: #({"host", "x"})
       connData: {true, {127, 0, 0, 1}}
+      http: #{}
     self assert: st scheme equals: #https
     self assert: st host equals: "x"
     self assert: st port equals: 443

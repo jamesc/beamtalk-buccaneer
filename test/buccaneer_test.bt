@@ -91,3 +91,20 @@ TestCase subclass: BuccaneerTest
         self assert: (e message includesSubstring: "Unsupported key(s)")
       ]
     self assert: caught
+
+  /// BT-4349: a mistyped #websocket value raises at start.
+  testMistypedWebSocketValueRaises =>
+    caught := false
+    [
+      Buccaneer start: #{
+        #port => 0,
+        #handler => [:ex | ex],
+        #websocket => #{#maxFrameSize => "8000000"}
+      }
+    ]
+      on: Error
+      do: [:e |
+        caught := true
+        self assert: e message equals: "Invalid value for #maxFrameSize"
+      ]
+    self assert: caught

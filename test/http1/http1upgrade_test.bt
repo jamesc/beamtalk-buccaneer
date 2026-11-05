@@ -177,3 +177,41 @@ TestCase subclass: HTTP1UpgradeTest
     (Erlang gen_tcp) close: client
     self assert: (head includesSubstring: "500") equals: true
     self assert: (srv stop: 5000) isOk
+
+  /// One per-upgrade options case (BT-4349): bad `opts` raise in
+  /// upgradeToWebSocket:options:, before the 101, so the client sees a
+  /// 500 with `expected` in the log; the server stays healthy and the
+  /// next connection still upgrades.
+  badUpgradeOptions: opts :: Dictionary log: expected :: String =>
+    log := LogCapture attach: #http1UpgradeBadOpts
+    srv := (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        upgradeOpts := (ex path =:= "/bad") ifTrue: [opts] ifFalse: [#{}]
+        ex upgradeToWebSocket: (TestSock new withTable: self termTable) options: upgradeOpts
+      ]) unwrap
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: client with: "GET /bad HTTP/1.1\r\nhost: x\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
+    head := self headOf: client
+    (Erlang gen_tcp) close: client
+    self assert: (head includesSubstring: "500") equals: true
+    self deny: (head includesSubstring: "101")
+    self assert: ((LogCapture await: expected in: log) includesSubstring: expected) equals: true
+    good := self connect: (self portOf: srv)
+    (Erlang gen_tcp) send: good with: self upgradeRequest
+    goodHead := self headOf: good
+    (Erlang gen_tcp) close: good
+    self assert: (goodHead includesSubstring: "101 Switching Protocols") equals: true
+    self assert: (srv stop: 5000) isOk
+
+  testUnknownUpgradeOption500s =>
+    self badUpgradeOptions: #{#timout => 100} log: "Unsupported key(s) in websocket upgrade config"
+
+  testMistypedUpgradeTimeout500s =>
+    self badUpgradeOptions: #{#timeout => "100"} log: "Invalid value for #timeout"
+
+  testMistypedUpgradeCompress500s =>
+    self badUpgradeOptions: #{#compress => "yes"} log: "Invalid value for #compress"
+
+  testMistypedUpgradeDeflateLevel500s =>
+    self badUpgradeOptions: #{#level => 99} log: "Invalid value for #level"

@@ -24,6 +24,49 @@ sealed typed Value subclass: BuccaneerTelemetry
   field: telemetrySpanContext :: Reference | Nil = nil
   field: startTime :: Integer = 0
   field: startMetadata :: Dictionary(Symbol, Object) = #{}
+  /// False for a span nobody listens to (see `requestsTraced`): its
+  /// events are skipped, and so is the work of building them.
+  field: enabled :: Boolean = true
+
+  /// The process-dictionary key of the connection's `requestsTraced` flag.
+  class sealed tracedKey -> Symbol => #buccaneerRequestsTraced
+
+  /// Record, once at connection start, whether any `telemetry` handler
+  /// listens to `[buccaneer, request, *]`. Handlers attached later reach
+  /// the connections opened after them.
+  class sealed noteRequestsTraced -> Nil =>
+    ProcessDictionary at: self tracedKey put: self requestHandlersAttached
+    nil
+
+  /// Whether `[buccaneer, request, *]` has a handler: false when the
+  /// `telemetry` module is not loaded (the stdlib facade then drops every
+  /// event), true when the lookup fails, so a doubt keeps the spans. The
+  /// call goes through `apply`: `telemetry` ships with the runtime but is
+  /// not a package dependency, and the stdlib `Telemetry` facade has no
+  /// handler query.
+  class sealed requestHandlersAttached -> Boolean =>
+    (Erlang erlang
+      function_exported: #telemetry
+      with: #list_handlers
+      with: 1) ifFalse: [^false]
+    [
+      handlers :: List(Object) := Erlang erlang
+        apply: #telemetry
+        with: #list_handlers
+        with: #(#(#buccaneer, #request))
+      handlers isEmpty not
+    ] on: Error do: [:e | true]
+
+  /// Whether this process's requests emit spans: the connection's flag,
+  /// true when none was recorded (HTTP/2 streams, tests).
+  class sealed requestsTraced -> Boolean =>
+    (ProcessDictionary at: self tracedKey) =:= false ifTrue: [
+      false
+    ] ifFalse: [true]
+
+  /// A span that emits nothing.
+  class sealed silent -> BuccaneerTelemetry =>
+    BuccaneerTelemetry new withEnabled: false
 
   /// Native monotonic time, as `telemetry` expects.
   class sealed monotonicTime -> Integer => Erlang erlang monotonic_time
@@ -56,12 +99,14 @@ sealed typed Value subclass: BuccaneerTelemetry
       telemetrySpanContext: context
       startTime: startTime
       startMetadata: start
+      enabled: true
 
   /// Emit `stop` with `#duration`, merging the start metadata under the
   /// given one. Answers the span, as every event method does. Unlike
   /// Catalina's spans there is no exception marker to honour: the
   /// pipeline emits either `stop` or `exception`, never both.
   stopWith: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> BuccaneerTelemetry =>
+    self.enabled ifFalse: [^self]
     now :: Integer := (measurements at: #monotonic_time ifAbsent: [
       nil
     ]) ifNil: [BuccaneerTelemetry monotonicTime]
@@ -75,6 +120,7 @@ sealed typed Value subclass: BuccaneerTelemetry
   /// in Bandit (`Bandit.Telemetry.span_exception`, kept for pre-1.5.7
   /// compatibility), an `#error` kind is reported as `#exit`.
   exceptionKind: kind :: Symbol reason: reason :: Object stacktrace: stacktrace :: Object -> BuccaneerTelemetry =>
+    self.enabled ifFalse: [^self]
     mapped := kind =:= #error ifTrue: [#exit] ifFalse: [kind]
     metadata := self.startMetadata merge: #{
       #kind => mapped,

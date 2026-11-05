@@ -9,7 +9,7 @@
 /// ALPN is `#h2` or absent (the client sends it over TLS too, RFC 9113
 /// §3.4), other bytes start HTTP/1 with the sniffed bytes buffered when
 /// ALPN is `#http1` or absent, and any other pairing closes.
-typed Object subclass: InitialHandler
+sealed typed Object subclass: InitialHandler
 
   /// `{#http1, buffered}`, `{#http2, buffered}` or `#close`.
   class sealed run: sock :: Socket options: config :: BuccaneerConfig -> Symbol | Tuple =>

@@ -530,7 +530,9 @@ sealed typed Value subclass: Exchange
   /// Forget the state, then drain an unread body (ensureCompleted) and
   /// answer the transport for the next keepalive request. The state goes
   /// first so a raising drain cannot leak it into the next request.
-  finish -> HTTP1Socket =>
-    st := self load
+  finish -> HTTP1Socket => self finish: self load
+
+  /// finish, given the state the caller just loaded (the pipeline).
+  finish: st :: ExchangeState -> HTTP1Socket =>
     ProcessDictionary erase: self key
     st transport ensureCompleted

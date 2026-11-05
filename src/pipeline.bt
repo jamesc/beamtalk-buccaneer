@@ -105,7 +105,10 @@ sealed typed Object subclass: Pipeline
   class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     [
       self callHandler: handler with: ex
-      ex state =:= #upgraded
+      // One load for the common case: a response already sent needs no
+      // commit, and finishing reuses the state just loaded.
+      answered := ex load
+      answered respState =:= #upgraded
         ifTrue: [
           ^self
             upgrade: ex
@@ -114,9 +117,13 @@ sealed typed Object subclass: Pipeline
             metadata: meta
             options: config
         ]
-      ex commit
-      final := ex load
-      done := ex finish
+      final := answered respState =:= #sent
+        ifTrue: [answered]
+        ifFalse: [
+          ex commit
+          ex load
+        ]
+      done := ex finish: final
       span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
       Result ok: done
     ]

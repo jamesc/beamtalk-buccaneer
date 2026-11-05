@@ -43,6 +43,16 @@ typed Object subclass: Headers
     (value includesSubstring: "\0") ifTrue: [^false]
     true
 
+  /// A header value as text: a String as it is, opaque bytes (HTTP/2
+  /// values stay Binary after HPACK; non-UTF-8 HTTP/1 values) read
+  /// unchecked, anything else (nil included) nil.
+  class text: value :: Object -> String | Nil =>
+    value match: [
+      s :: String -> s;
+      b :: Binary -> b asStringUnchecked;
+      _ -> nil
+    ]
+
   /// The first value for name, or nil. Values are Binaries when the
   /// bytes are not valid UTF-8 (String is a Binary, so one type covers both).
   class getHeader: headers :: HttpHeaders name: header :: String -> Binary | Nil =>

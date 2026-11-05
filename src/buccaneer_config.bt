@@ -11,10 +11,10 @@ type ConfigOptions = Dictionary(Symbol, Object)
 /// - `#logProtocolErrors` (`#short` | `#verbose` | `False`, default `#short`) — how much to log on a protocol error.
 /// - `#logClientClosures` (`#short` | `#verbose` | `False`, default `false`) — how much to log when the client went away first.
 /// - `#logExceptionsWithStatusCodes` (Integer, List, or anything answering `includes:`, default `500-599`) — which statuses log on an internal error.
-/// - `#compress` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#responseEncodings` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#deflateOptions` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#zstdOptions` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#compress` (Boolean, default `true`) — negotiate response content-encoding from `accept-encoding` and add `vary: accept-encoding`; `false` sends every body identity-encoded.
+/// - `#responseEncodings` (List of String, default `zstd` (OTP 28+), `gzip`, `x-gzip`, `deflate`) — the codings offered, in preference order; unsupported names are ignored.
+/// - `#deflateOptions` (Dictionary, default empty) — zlib settings for deflate: `#level`, `#windowBits`, `#memLevel`, `#strategy`.
+/// - `#zstdOptions` (Dictionary, default empty) — zstd compression parameters, passed to `zstd:context/2` (e.g. `#checksumFlag`).
 type HttpOptions = Dictionary(Symbol, Object)
 
 /// The `#http1` section: Bandit's HTTP/1 options, in camelCase.
@@ -52,6 +52,8 @@ type Http1Options = Dictionary(Symbol, Object)
 type Http2Options = Dictionary(Symbol, Object)
 
 /// The `#websocket` section: Bandit's WebSocket options, in camelCase.
+/// Values are type-checked when the server starts: Integers must be
+/// positive, flags Booleans.
 ///
 /// ## Options
 /// - `#maxFrameSize` (Integer, default `8000000`) — largest accepted frame in bytes.
@@ -59,8 +61,8 @@ type Http2Options = Dictionary(Symbol, Object)
 /// - `#validateTextFrames` (Boolean, default `true`) — reject non-UTF-8 text frames.
 /// - `#compress` (Boolean, default `false`) — offer permessage-deflate; the upgrade must opt in too.
 /// - `#maxInflateRatio` (Integer, default `25`) — largest allowed inflation ratio for compressed messages.
-/// - `#enabled` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#deflateOptions` (reserved) — accepted for Bandit parity; per-upgrade options carry these instead.
+/// - `#enabled` (Boolean, default `true`) — `false` 500s every upgrade.
+/// - `#deflateOptions` (Dictionary, default empty) — server-wide `#level`, `#memLevel` and `#strategy` for permessage-deflate; per-upgrade options override them.
 /// - `#primitiveOpsModule` (reserved) — accepted for Bandit parity, currently unused.
 /// - `#logProtocolErrors` (reserved) — accepted for Bandit parity; `#http` logging covers WebSocket errors.
 type WebSocketOptions = Dictionary(Symbol, Object)
@@ -143,6 +145,7 @@ typed Value subclass: BuccaneerConfig
       name: #http
       keys: self httpKeys
     self checkHttpLoggingOptions: http
+    self checkCompressionOptions: http
     http1 := self
       section: options
       name: #http1
@@ -155,6 +158,7 @@ typed Value subclass: BuccaneerConfig
       section: options
       name: #websocket
       keys: self websocketKeys
+    self checkWebSocketOptions: websocket
     catalina := self
       catalinaSection: options
       port: port
@@ -220,6 +224,27 @@ typed Value subclass: BuccaneerConfig
       nil
     ])
 
+  /// Fail fast on compression option typos: they are read per response.
+  class checkCompressionOptions: http :: HttpOptions -> Nil =>
+    (http at: #compress ifAbsent: [true]) match: [
+      _b :: Boolean -> nil;
+      _ -> Error signal: "Invalid value for #compress"
+    ]
+    (http at: #responseEncodings ifAbsent: [#()]) match: [
+      l :: List -> (l allSatisfy: [:e :: Object |
+        e isKindOf: String
+      ]) ifFalse: [Error signal: "Invalid value for #responseEncodings"];
+      _ -> Error signal: "Invalid value for #responseEncodings"
+    ]
+    #(#deflateOptions, #zstdOptions)
+      do: [:key :: Symbol |
+        (http at: key ifAbsent: [#{}]) match: [
+          _d :: Dictionary -> nil;
+          _ -> Error signal: "Invalid value for #" ++ key asString
+        ]
+      ]
+    nil
+
   class checkVerbosity: raw :: Object name: name :: String -> Nil =>
     raw isNil ifTrue: [^nil]
     raw match: [
@@ -235,6 +260,120 @@ typed Value subclass: BuccaneerConfig
     (raw isKindOf: List) ifTrue: [^nil]
     (raw respondsTo: #includes:) ifTrue: [^nil]
     Error signal: "Invalid value for #logExceptionsWithStatusCodes"
+
+  /// Fail fast on mistyped #websocket values: they are read per
+  /// connection, where a bad one would crash or silently misbehave.
+  /// The `#deflateOptions` contents are checked when zlib opens them.
+  class checkWebSocketOptions: ws :: WebSocketOptions -> Nil =>
+    #(#maxFrameSize, #maxFragmentedMessageSize, #maxInflateRatio) do: [:key |
+      self checkPositiveInteger: ws key: key
+    ]
+    #(#enabled, #compress, #validateTextFrames) do: [:key |
+      self checkBoolean: ws key: key
+    ]
+    (ws includesKey: #deflateOptions)
+      ifTrue: [
+        ((ws at: #deflateOptions) isKindOf: Dictionary) ifFalse: [
+          Error signal: "Invalid value for #deflateOptions"
+        ]
+      ]
+    nil
+
+  /// Keys `Exchange upgradeToWebSocket:options:` accepts.
+  class upgradeOptionKeys -> List(Symbol) =>
+    #(#timeout, #compress, #maxInflateRatio, #level, #memLevel, #strategy)
+
+  /// Fail fast on per-upgrade WebSocket options, before the 101 goes
+  /// out: unknown keys and mistyped values raise.
+  ///
+  /// ## Arguments
+  /// - `opts` (ConfigOptions) — the per-upgrade options.
+  ///
+  /// ## Options
+  /// - `#timeout` (Integer | Nil) — read timeout in milliseconds; a
+  ///   positive Integer, or `nil` to wait forever.
+  /// - `#compress` (Boolean) — allow permessage-deflate on this upgrade.
+  /// - `#maxInflateRatio` (Integer) — positive; overrides the server's.
+  /// - `#level` (Integer `0`-`9`, `#none`, `#default`, `#best_speed`,
+  ///   `#best_compression`) — the zlib deflate level.
+  /// - `#memLevel` (Integer `1`-`9`) — the zlib memory level.
+  /// - `#strategy` (`#default`, `#filtered`, `#huffman_only`, `#rle`) —
+  ///   the zlib strategy.
+  class checkUpgradeOptions: opts :: ConfigOptions -> Nil =>
+    self
+      validateKeys: opts
+      known: self upgradeOptionKeys
+      name: "websocket upgrade"
+    (opts includesKey: #timeout)
+      ifTrue: [
+        (opts at: #timeout) isNil ifFalse: [
+          self checkPositiveInteger: opts key: #timeout
+        ]
+      ]
+    self checkBoolean: opts key: #compress
+    self checkPositiveInteger: opts key: #maxInflateRatio
+    self
+      checkValue: opts
+      key: #level
+      valid: [:raw |
+        raw match: [
+          n :: Integer -> n between: 0 and: 9;
+          #none -> true;
+          #default -> true;
+          #best_speed -> true;
+          #best_compression -> true;
+          _ -> false
+        ]
+      ]
+    self
+      checkValue: opts
+      key: #memLevel
+      valid: [:raw |
+        raw match: [
+          n :: Integer -> n between: 1 and: 9;
+          _ -> false
+        ]
+      ]
+    self
+      checkValue: opts
+      key: #strategy
+      valid: [:raw |
+        raw match: [
+          #default -> true;
+          #filtered -> true;
+          #huffman_only -> true;
+          #rle -> true;
+          _ -> false
+        ]
+      ]
+    nil
+
+  /// Raise unless `key` is absent or a positive Integer.
+  class checkPositiveInteger: opts :: ConfigOptions key: key :: Symbol -> Nil =>
+    self
+      checkValue: opts
+      key: key
+      valid: [:raw |
+        raw match: [
+          n :: Integer -> n > 0;
+          _ -> false
+        ]
+      ]
+
+  /// Raise unless `key` is absent or a Boolean.
+  class checkBoolean: opts :: ConfigOptions key: key :: Symbol -> Nil =>
+    self
+      checkValue: opts
+      key: key
+      valid: [:raw | raw =:= true or: [raw =:= false]]
+
+  /// Raise unless `key` is absent or its value passes `valid`.
+  class checkValue: opts :: ConfigOptions key: key :: Symbol valid: valid :: Block(Object, Boolean) -> Nil =>
+    (opts includesKey: key) ifFalse: [^nil]
+    (valid value: (opts at: key)) ifFalse: [
+      Error signal: ("Invalid value for #" ++ key asString)
+    ]
+    nil
 
   class checkScheme: opts :: ConfigOptions -> Scheme =>
     raw := opts at: #scheme ifAbsent: [#http]

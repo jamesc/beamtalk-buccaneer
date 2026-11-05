@@ -152,10 +152,11 @@ sealed typed Value subclass: Exchange
     hs do: [:h :: Tuple | all := all add: h]
     all
 
-  /// The whole response (Bandit's send_resp): content-length set from
-  /// body (a String, Binary or iodata), head and body in one send. No
-  /// body goes out for HEAD, 204 or 304. Raises AlreadySent on a second
-  /// response and TransportError if the socket fails.
+  /// The whole response (Bandit's send_resp): the body encoded when a
+  /// coding was negotiated (see Compression), content-length set from the
+  /// encoded body (a String, Binary or iodata), head and body in one
+  /// send. No body goes out for HEAD, 204 or 304. Raises AlreadySent on a
+  /// second response and TransportError if the socket fails.
   sendResp: status :: Integer headers: hs :: HttpHeaders body: body :: Object -> Exchange =>
     st := self load
     st respState =:= #unset
@@ -163,9 +164,23 @@ sealed typed Value subclass: Exchange
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
     st := st withRespStartTime: BuccaneerTelemetry monotonicTime
-    length := Erlang erlang iolist_size: body
+    {encodedHeaders, context} := Compression
+      start: st contentEncoding
+      status: status
+      headers: (self headersWithQueued: st extra: hs)
+      options: st httpOptions
+      emptyBody: (SocketHelpers iodataEmpty: body)
+      streamable: false
+    encoded := body
+    context method =:= #identity
+      ifFalse: [
+        {piece, done} := context compress: body
+        encoded := #(piece, done close)
+        st := self recordCompression: done on: st
+      ]
+    length := Erlang erlang iolist_size: encoded
     withLength := Headers
-      addContentLength: (self headersWithQueued: st extra: hs)
+      addContentLength: encodedHeaders
       length: length
       status: status
       method: st method
@@ -176,16 +191,35 @@ sealed typed Value subclass: Exchange
       disposition: #raw
     sent := self
       sendDataOn: headed
-      data: body
+      data: encoded
       end: true
     self store: (sent withRespState: #sent)
 
+  /// Bandit's compression metrics, for an encoded response.
+  recordCompression: context :: Compression on: st :: ExchangeState -> ExchangeState =>
+    context method =:= #identity ifTrue: [^st]
+    (st withRespCompressionMethod: context methodName) withRespUncompressedBodyBytes: context bytesIn
+
+  /// Close a chunked response's compression and send its tail (deflate's
+  /// final block) ahead of the end of the body.
+  sendTail: st :: ExchangeState -> ExchangeState =>
+    context := st compression
+    context isNil ifTrue: [^st]
+    tail := context close
+    cleared := (self recordCompression: context on: st) withCompression: nil
+    (SocketHelpers iodataEmpty: tail) ifTrue: [^cleared]
+    self
+      sendDataOn: cleared
+      data: tail
+      end: false
+
   /// Start a chunked response (Bandit's send_chunked). When the caller
   /// sets content-length, the body streams length-delimited instead of
-  /// chunk-framed. No body goes out for HEAD, 204 or 304. The caller owns
-  /// the count: short or long streams are not validated (Bandit parity) —
-  /// a short stream leaves the client waiting, a long one bleeds into the
-  /// next response.
+  /// chunk-framed, and is never compressed (the caller owns the exact
+  /// bytes); otherwise deflate, when negotiated, encodes each chunk. No
+  /// body goes out for HEAD, 204 or 304. The caller owns the count: short
+  /// or long streams are not validated (Bandit parity) — a short stream
+  /// leaves the client waiting, a long one bleeds into the next response.
   sendChunked: status :: Integer headers: hs :: HttpHeaders -> Exchange =>
     st := self load
     st respState =:= #unset
@@ -193,17 +227,40 @@ sealed typed Value subclass: Exchange
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
     st := st withRespStartTime: BuccaneerTelemetry monotonicTime
+    merged := self headersWithQueued: st extra: hs
+    {encodedHeaders, context} := (Headers getHeader: merged name: "content-length") isNil
+      ifTrue: [
+        Compression
+          start: st contentEncoding
+          status: status
+          headers: merged
+          options: st httpOptions
+          emptyBody: false
+          streamable: true
+      ]
+      ifFalse: [{merged, Compression identity}]
     headed := self
       sendHeadersOn: st
       status: status
-      headers: (self headersWithQueued: st extra: hs)
+      headers: encodedHeaders
       disposition: #chunkEncoded
-    (self sendsBody: headed) ifTrue: [
-      self store: (headed withRespState: #chunked)
-    ] ifFalse: [self store: (headed withRespState: #sent)]
+    (self sendsBody: headed)
+      ifTrue: [
+        streaming := context method =:= #identity ifTrue: [
+          nil
+        ] ifFalse: [context]
+        self store: ((headed withRespState: #chunked) withCompression: streaming)
+      ]
+      ifFalse: [
+        // No body follows: release the stream now.
+        context close
+        self store: (headed withRespState: #sent)
+      ]
 
-  /// One chunk (Bandit's chunk/2). An empty chunk ends the response.
-  /// Answers Result ok: nil, or error: #closed when the client has gone.
+  /// One chunk (Bandit's chunk/2), encoded when the response is
+  /// compressed. An empty chunk ends the response (after the encoder's
+  /// tail). Answers Result ok: nil, or error: #closed when the client has
+  /// gone.
   chunk: data :: Object -> Result(Nil, Object) =>
     st := self load
     st respState =:= #chunked ifFalse: [
@@ -211,23 +268,28 @@ sealed typed Value subclass: Exchange
     ]
     (SocketHelpers iodataEmpty: data)
       ifTrue: [
-        closed := [
-          st transport sendData: data end: true
+        ended := [
+          tailed := self sendTail: st
+          tailed withTransport: (tailed transport sendData: data end: true)
         ] on: TransportError do: [:e :: Exception | ^Result error: e reason]
-        stamped := (st withTransport: closed) withRespEndTime: BuccaneerTelemetry monotonicTime
+        stamped := ended withRespEndTime: BuccaneerTelemetry monotonicTime
         self store: (stamped withRespState: #sent)
         ^Result ok: nil
       ]
-    // Size first, send second: invalid iodata raises before any byte goes
-    // out, so a Result error never follows a partial send.
-    pair := [
+    // Encode and size first, send second: invalid iodata raises before
+    // any byte goes out, so a Result error never follows a partial send.
+    triple := [
       [
-        size := Erlang erlang iolist_size: data
-        {(st transport sendData: data end: false), size}
+        context := st compression
+        {encoded, next} := context isNil ifTrue: [
+          {data, nil}
+        ] ifFalse: [context compress: data]
+        size := Erlang erlang iolist_size: encoded
+        {(st transport sendData: encoded end: false), size, next}
       ] on: TransportError do: [:e :: Exception | ^Result error: e reason]
     ] on: Error do: [:e :: Exception | ^Result error: e message]
-    {transport, size} := pair
-    stamped := (st withTransport: transport) withRespBodyBytes: st respBodyBytes + size
+    {transport, size, next} := triple
+    stamped := ((st withTransport: transport) withRespBodyBytes: st respBodyBytes + size) withCompression: next
     self store: stamped
     Result ok: nil
 
@@ -319,12 +381,22 @@ sealed typed Value subclass: Exchange
   ///   milliseconds, re-armed while the connection is open; past it
   ///   the connection closes with 1002 (or drops a closing
   ///   connection). `nil` waits forever.
+  /// - `#compress` (Boolean, default `true`) — allow permessage-deflate
+  ///   when the server's `#websocket` section enables it.
+  /// - `#maxInflateRatio` (Integer) — overrides the server's.
+  /// - `#level`, `#memLevel`, `#strategy` — zlib deflate tuning,
+  ///   overriding the server's `#deflateOptions`; see
+  ///   `BuccaneerConfig checkUpgradeOptions:` for the accepted values.
+  ///
+  /// Unknown keys and mistyped values raise here, before the 101 goes
+  /// out, so the client sees a 500.
   upgradeToWebSocket: websock :: Object options: opts :: WebSocketUpgradeOptions -> Exchange =>
     st := self load
     st respState =:= #unset
       ifFalse: [
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
+    BuccaneerConfig checkUpgradeOptions: opts
     self store: ((((st withWebsock: websock) withWebsockState: websock) withWebsocketOptions: opts) withRespState: #upgraded)
 
   /// Queue a response header (Plug.Conn.put_resp_header), sent with the
@@ -420,14 +492,15 @@ sealed typed Value subclass: Exchange
       _ -> Error signal: "commit: unhandled response state"
     ]
 
-  /// Bandit's commit for a chunked response: the closing empty chunk.
-  /// Errors are ignored, as Bandit does.
+  /// Bandit's commit for a chunked response: the encoder's tail, then
+  /// the closing empty chunk. Errors are ignored, as Bandit does.
   closeChunked -> Exchange =>
     st := self load
     [
       [
-        closed := st transport sendData: "" end: true
-        stamped := (st withTransport: closed) withRespEndTime: BuccaneerTelemetry monotonicTime
+        tailed := self sendTail: st
+        closed := tailed transport sendData: "" end: true
+        stamped := (tailed withTransport: closed) withRespEndTime: BuccaneerTelemetry monotonicTime
         self store: (stamped withRespState: #sent)
       ]
         on: TransportError

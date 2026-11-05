@@ -301,8 +301,8 @@ absolute, authority, asterisk); `Exchange` with `readBody`, `readAll:`,
 `sendResp:...` and the commit rules; `InitialHandler` for HTTP/1 and
 TLS-on-clear; `ConnectionHandler`; `HTTP1Handler`; request telemetry spans
 and `BuccaneerLogger`; `HTTPError` → status, `TransportError` → close.
-**No response compression** (Phase 9): `Accept-Encoding` is ignored and
-responses are identity-encoded.
+**No response compression** (Phase 9, since landed): `Accept-Encoding`
+was ignored and responses identity-encoded.
 
 **Tests to port:** `http1/protocol_test.exs` except the sections in Phases
 3, 4 and 9 (118 tests: invalid requests 4, method coverage 4, method case 1,
@@ -695,6 +695,42 @@ has landed.
 (compression is a server option). Blocked by Phase 1; deferred out of
 Phase 1 by decision.
 
+**Status: done (BT-4093; 812 BUnit tests green, `just ci` green).**
+`Compression` (`src/compression.bt`) negotiates once per request when
+the exchange state is built (`Pipeline buildState:...http:`), and
+`Exchange sendResp:`/`sendChunked:`/`chunk:`/`commit` encode through
+it where Bandit's adapter calls `Bandit.Compression`. `BuccaneerConfig`
+now validates the four `#http` options. The stop span carries
+`resp_compression_method` and `resp_uncompressed_body_bytes`. Ported:
+the 35 HTTP/1 "content negotiation and encoding" tests
+(`HTTP1CompressionTest`), the 30 HTTP/2 compression cases of
+`http2/protocol_test.exs` (DATA frames: negotiation, etags,
+no-transform, vary, 204/304/empty, chunked DATA) plus the h2
+content-encoding telemetry case of `plug_test.exs`
+(`H2CompressionTest`, over TLS), the h1 content-encoding telemetry case
+(`TelemetryTest`), and `CompressionTest` (negotiation, q-values,
+eligibility, the deflate roundtrip) and config validation cases. The
+routes both suites share are `test/fixtures/compression_routes.bt`.
+Deviations from Bandit, all with covering tests:
+- Options are camelCase: `#compress`, `#responseEncodings`,
+  `#deflateOptions` (`#level`, `#windowBits`, `#memLevel`,
+  `#strategy`) and `#zstdOptions` (zstd's own parameter names, passed
+  through as a map). They are validated at start (`#compress` must be a
+  Boolean, `#responseEncodings` a List of Strings, the other two
+  Dictionaries); Bandit reads them unchecked per response.
+- zstd availability is checked at run time (`code:ensure_loaded(zstd)`)
+  rather than at compile time, so one build serves OTP 27 and 28. The
+  zstd tests skip themselves when the module is missing.
+- A deflate stream opened for a chunked response that sends no body
+  (HEAD, 204, 304) is closed at once; Bandit leaves the zlib port open
+  until the process exits.
+- A q-value parses Elixir's `Float.parse` prefix (digits, optional
+  fraction), not exponents: `q=1e-3` reads as 1, still acceptance.
+- HTTP/2 tests compare header lists in order without `date` and without
+  Plug's default `cache-control`, which Buccaneer never adds.
+- FFI to `zstd` carries `@expect unresolved_ffi` (BT-4457: the checker's
+  OTP module list lacks it and types `compress/2`'s context as options).
+
 ## Deviations we expect
 
 Recorded properly when each phase is done; the expected ones:
@@ -729,7 +765,8 @@ Recorded properly when each phase is done; the expected ones:
 - **WebSock** becomes Buccaneer's `WebSock` protocol, whose implementor is
   a Value that is also its state (each callback answers a `WebSocketResult`
   carrying the next value), rather than a module plus a state term.
-- **Compression** arrives in Phase 9, after the engine, not with HTTP/1.
+- **Compression** arrives in Phase 9, after the engine, not with HTTP/1
+  (done: see Phase 9 for its deviations).
 - **Errors**: `HTTPError` carries Bandit's `plug_status`; there is no
   `Plug.Exception.status/1` protocol, so any other raised error is a 500.
   Transport errors are bare reasons, as in Catalina.

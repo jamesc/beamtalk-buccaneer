@@ -1,0 +1,280 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// How a response body is encoded: Bandit's compression methods.
+type CompressionMethod = #identity | #deflate | #gzip | #zstd
+
+/// Bandit.Compression: response content-encoding (RFC9110§8.4).
+///
+/// `negotiate:options:` picks the coding for a request's
+/// `accept-encoding` once, when the exchange opens. Each response then
+/// starts a context with `start:status:headers:options:emptyBody:streamable:`,
+/// which adds `vary: accept-encoding` and, when the response qualifies,
+/// `content-encoding`; `compress:` encodes each piece of the body and
+/// `close` answers the tail. gzip and zstd encode a whole body only, so a
+/// chunked response is compressed with deflate or not at all. zstd is
+/// offered only when the OTP release has the `zstd` module (OTP 28+).
+///
+/// A context is a Value: `compress:` answers {encoded, nextContext}. The
+/// deflate stream is a `zlib` port owned by the calling process; `close`
+/// releases it.
+sealed typed Value subclass: Compression
+  field: method :: CompressionMethod = #identity
+  /// Uncompressed bytes seen so far (Bandit's bytes_in).
+  field: bytesIn :: Integer = 0
+  /// The zlib stream (deflate) or zstd context; nil otherwise.
+  field: libContext :: Object = nil
+
+  /// The identity context: bodies pass through unchanged.
+  class sealed identity -> Compression => Compression new
+
+  /// Whether this OTP release has the `zstd` module.
+  class sealed zstdAvailable -> Boolean =>
+    ((Erlang code) ensure_loaded: #zstd) match: [
+      {#module, _} -> true;
+      _ -> false
+    ]
+
+  /// Bandit's default preference order: zstd first when available, then
+  /// gzip, x-gzip and deflate.
+  class sealed defaultEncodings -> List(String) =>
+    base := #("gzip", "x-gzip", "deflate")
+    self zstdAvailable ifTrue: [^base addFirst: "zstd"]
+    base
+
+  /// Whether the `#http` options enable compression (`#compress`, default
+  /// true; `false` or `nil` disable it, as Bandit's truthiness check).
+  class sealed enabled: http :: HttpOptions -> Boolean =>
+    flag := http at: #compress ifAbsent: [true]
+    (flag =:= false or: [flag isNil]) not
+
+  /// The coding to answer with for an `accept-encoding` value, or nil
+  /// (Bandit's negotiate_content_encoding). Among the codings the client
+  /// accepts (q > 0, `*` covering the rest, compared case-insensitively),
+  /// the first in `#responseEncodings` order wins.
+  ///
+  /// ## Arguments
+  /// - `acceptEncoding` (Object) — the request's header value, or nil.
+  /// - `http` (HttpOptions) — the server's `#http` options.
+  ///
+  /// ## Examples
+  /// ```beamtalk
+  /// Compression negotiate: "gzip;q=0, deflate" options: #{}   // => "deflate"
+  /// Compression negotiate: nil options: #{}                   // => nil
+  /// ```
+  class sealed negotiate: acceptEncoding :: Object options: http :: HttpOptions -> String | Nil =>
+    text := Headers text: acceptEncoding
+    text isNil ifTrue: [^nil]
+    (self enabled: http) ifFalse: [^nil]
+    accepted := self parseAcceptEncoding: text
+    wildcard := self quality: accepted coding: "*"
+    preferred := http at: #responseEncodings ifAbsent: [self defaultEncodings]
+    preferred
+      do: [:encoding :: String |
+        q := self quality: accepted coding: encoding
+        q isNil ifTrue: [q := wildcard]
+        (q notNil and: [q > 0]) ifTrue: [^encoding]
+      ]
+    nil
+
+  /// The q-value of the first `coding` entry, or nil when absent.
+  class sealed quality: accepted :: List(Tuple(String, Number)) coding: coding :: String -> Number | Nil =>
+    accepted do: [:pair :: Tuple |
+      (pair at: 1) =:= coding ifTrue: [^pair at: 2]
+    ]
+    nil
+
+  /// {coding, q} pairs from an `accept-encoding` value (RFC9110§12.5.3):
+  /// Plug's list split, codings trimmed and lowercased.
+  class sealed parseAcceptEncoding: value :: String -> List(Tuple(String, Number)) =>
+    (Headers splitList: value)
+      collect: [:element :: String |
+        parts := element split: ";"
+        coding := (parts first trim) asciiLowercase
+        {coding, (self qualityValue: (parts drop: 1))}
+      ]
+
+  /// The `q` parameter of one coding's params (RFC9110§12.4.2), 1.0 when
+  /// absent. A malformed value reads leniently as 1.0, as Bandit does.
+  class sealed qualityValue: params :: List(String) -> Number =>
+    params
+      do: [:param :: String |
+        kv := (param trim asciiLowercase) split: "="
+        (kv size =:= 2 and: [
+          (kv at: 1) =:= "q"
+        ]) ifTrue: [^self parseQuality: (kv at: 2)]
+      ]
+    1.0
+
+  /// Elixir's Float.parse prefix rule for a q-value: leading digits, an
+  /// optional fraction, trailing text ignored; no leading digit is 1.0.
+  class sealed parseQuality: value :: String -> Number =>
+    parsed := Headers parseInteger: value
+    parsed isError ifTrue: [^1.0]
+    {whole, rest} := parsed unwrap
+    (rest startsWith: ".") ifFalse: [^whole asFloat]
+    afterDot := rest drop: 1
+    fraction := Headers parseInteger: afterDot
+    fraction isError ifTrue: [^whole asFloat]
+    {_, tail} := fraction unwrap
+    digits := afterDot take: afterDot length - tail length
+    (whole printString ++ "." ++ digits) asFloat
+
+  /// Start a response's context (Bandit's Compression.new): the headers
+  /// with `vary` (and `content-encoding` when encoding) added, and the
+  /// context for the body. A response is left identity-encoded on 204
+  /// and 304, when nothing was negotiated, when the handler set its own
+  /// `content-encoding`, a strong `etag` or `cache-control:
+  /// no-transform`, for an empty body, and for a coding that cannot
+  /// stream (gzip, zstd) when `streamable` is true.
+  ///
+  /// ## Arguments
+  /// - `encoding` (String | Nil) — the negotiated coding.
+  /// - `status` (Integer) — the response status.
+  /// - `hs` (HttpHeaders) — the response headers.
+  /// - `http` (HttpOptions) — the server's `#http` options.
+  /// - `emptyBody` (Boolean) — whether the body is known to be empty.
+  /// - `streamable` (Boolean) — whether the body arrives in pieces.
+  class sealed start: encoding :: String | Nil status: status :: Integer headers: hs :: HttpHeaders options: http :: HttpOptions emptyBody: emptyBody :: Boolean streamable: streamable :: Boolean -> Tuple(HttpHeaders, Compression) =>
+    varied := self
+      addVary: hs
+      status: status
+      options: http
+    // An isNil guard, not a match: whose `^` arm would widen the type (BT-4458).
+    encoding isNil ifTrue: [^{varied, self identity}]
+    coding := encoding
+    eligible := (status =/= 204
+      and: [
+        status =/= 304
+          and: [
+            emptyBody not
+              and: [
+                (Headers getHeader: hs name: "content-encoding") isNil and: [
+                  (self strongEtag: hs) not and: [(self noTransform: hs) not]
+                ]
+              ]
+          ]
+      ])
+    eligible ifFalse: [^{varied, self identity}]
+    context := self
+      open: coding
+      options: http
+      streamable: streamable
+    context method =:= #identity ifTrue: [^{varied, context}]
+    {(varied addFirst: {"content-encoding", coding}), context}
+
+  /// `vary: accept-encoding` unless the status is 204, compression is
+  /// off, or a `vary` header already names it (any casing).
+  class sealed addVary: hs :: HttpHeaders status: status :: Integer options: http :: HttpOptions -> HttpHeaders =>
+    status =:= 204 ifTrue: [^hs]
+    (self enabled: http) ifFalse: [^hs]
+    (Headers
+      headerContainsToken: hs
+      name: "vary"
+      token: "accept-encoding") ifTrue: [^hs]
+    hs addFirst: {"vary", "accept-encoding"}
+
+  /// A strong validator forbids transforming the body (RFC9110§8.8.1);
+  /// only `W/` marks a weak one.
+  class sealed strongEtag: hs :: HttpHeaders -> Boolean =>
+    etag := Headers getHeader: hs name: "etag"
+    etag isNil ifTrue: [^false]
+    text := Headers text: etag
+    text isNil ifTrue: [^true]
+    (text startsWith: "W/") not
+
+  class sealed noTransform: hs :: HttpHeaders -> Boolean =>
+    Headers
+      headerContainsToken: hs
+      name: "cache-control"
+      token: "no-transform"
+
+  /// The context for one coding (Bandit's start_stream). gzip and zstd
+  /// only for a whole body; anything unsupported is identity.
+  class sealed open: encoding :: String options: http :: HttpOptions streamable: streamable :: Boolean -> Compression =>
+    encoding =:= "deflate" ifTrue: [
+      ^self openDeflate: (self section: http key: #deflateOptions)
+    ]
+    streamable ifTrue: [^self identity]
+    (encoding =:= "gzip" or: [
+      encoding =:= "x-gzip"
+    ]) ifTrue: [^Compression new withMethod: #gzip]
+    (encoding =:= "zstd" and: [
+      self zstdAvailable
+    ]) ifTrue: [^self openZstd: (self section: http key: #zstdOptions)]
+    self identity
+
+  /// A nested options Dictionary, empty when absent.
+  class sealed section: http :: HttpOptions key: key :: Symbol -> Dictionary =>
+    (http at: key ifAbsent: [#{}]) match: [
+      d :: Dictionary -> d;
+      _ -> Error signal: "Invalid value for #" ++ key asString
+    ]
+
+  /// A zlib deflate stream from `#deflateOptions` (`#level`,
+  /// `#windowBits`, `#memLevel`, `#strategy`; zlib's defaults otherwise).
+  class sealed openDeflate: opts :: Dictionary -> Compression =>
+    stream := (Erlang zlib) open
+    (Erlang zlib)
+      deflateInit: stream
+      level: (opts at: #level ifAbsent: [#default])
+      method: #deflated
+      windowbits: (opts at: #windowBits ifAbsent: [15])
+      memlevel: (opts at: #memLevel ifAbsent: [8])
+      strategy: (opts at: #strategy ifAbsent: [#default])
+    (Compression new withMethod: #deflate) withLibContext: stream
+
+  /// A zstd compression context from `#zstdOptions` (zstd's own
+  /// parameter names, e.g. `#checksumFlag`).
+  class sealed openZstd: opts :: Dictionary -> Compression =>
+    // zstd is OTP 28's; the FFI checker's module list lacks it (BT-4457).
+    @expect unresolved_ffi
+    context := ((Erlang zstd) context: #compress with: opts) unwrap
+    (Compression new withMethod: #zstd) withLibContext: context
+
+  /// Encode one piece of the body: {encoded iodata, next context}.
+  compress: chunk :: Object -> Tuple(Object, Compression) =>
+    self method =:= #identity ifTrue: [^{chunk, self}]
+    size := (Erlang erlang) iolist_size: chunk
+    encoded := self method match: [
+      #deflate -> (Erlang zlib)
+        deflate: self libContext
+        with: chunk
+        with: #sync;
+      #gzip -> (Erlang zlib) gzip: chunk;
+      #zstd -> self zstdCompress: chunk;
+      _ -> chunk
+    ]
+    {encoded, (self withBytesIn: self bytesIn + size)}
+
+  zstdCompress: chunk :: Object -> Object =>
+    // compress/2 takes the context; the FFI spec types it as options (BT-4457).
+    @expect unresolved_ffi, type
+    (Erlang zstd) compress: chunk with: self libContext
+
+  /// Finish the body: the trailing iodata (empty unless deflate), with
+  /// the stream released.
+  close -> Object =>
+    self method match: [
+      #deflate -> self closeDeflate;
+      #zstd -> self closeZstd;
+      _ -> #()
+    ]
+
+  closeDeflate -> Object =>
+    last := (Erlang zlib)
+      deflate: self libContext
+      with: #()
+      with: #finish
+    (Erlang zlib) deflateEnd: self libContext
+    (Erlang zlib) close: self libContext
+    last
+
+  closeZstd -> Object =>
+    @expect unresolved_ffi
+    (Erlang zstd) close: self libContext
+    #()
+
+  /// The telemetry name of the method (Bandit's resp_compression_method;
+  /// `x-gzip` reports as `gzip`).
+  methodName -> String => self method asString

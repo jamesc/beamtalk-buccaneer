@@ -228,8 +228,10 @@ sealed typed Value subclass: HTTP2Protocol
       _ -> HTTP2Errors protocolError
     ]
 
-  /// Queue a reply for the actor to deliver.
-  withReply: tag :: Symbol token: tok :: ReplyTo value: v :: Object -> HTTP2Protocol =>
+  /// Queue a reply for the actor to deliver. A detached send (nil
+  /// token) has nobody to answer.
+  withReply: tag :: Symbol token: tok :: ReplyTo | Nil value: v :: Object -> HTTP2Protocol =>
+    tok isNil ifTrue: [^self]
     self withOutbox: (self outbox add: {tag, tok, v})
 
   /// Take every queued reply, oldest first.
@@ -237,10 +239,10 @@ sealed typed Value subclass: HTTP2Protocol
     {self outbox, (self withOutbox: #())}
 
   /// Queue TransportError failures for parked tokens.
-  failAll: tokens :: List(ReplyTo) -> HTTP2Protocol =>
+  failAll: tokens :: List(ReplyTo | Nil) -> HTTP2Protocol =>
     failed := self
     tokens
-      do: [:tok :: ReplyTo |
+      do: [:tok |
         failed := failed
           withReply: #error
           token: tok
@@ -523,7 +525,7 @@ sealed typed Value subclass: HTTP2Protocol
   /// Re-issue one queued send: frame what fits, re-queue the rest with
   /// the same token, fail it if the stream went away. Answers {bytes,
   /// protocol}; a finished send replies #sent to wake the stream.
-  sendQueued: sid :: Integer rest: rest :: Binary endStream: end :: Boolean token: tok :: ReplyTo -> Tuple(Binary, HTTP2Protocol) =>
+  sendQueued: sid :: Integer rest: rest :: Binary endStream: end :: Boolean token: tok :: ReplyTo | Nil -> Tuple(Binary, HTTP2Protocol) =>
     (self
       sendDataFor: sid
       data: rest
@@ -544,7 +546,7 @@ sealed typed Value subclass: HTTP2Protocol
 
   /// Socket-send the fitted head now, re-queue the remainder under the
   /// same token with a fresh 15 s expiry. Answers {bytes, protocol}.
-  parkQueued: sid :: Integer payload: payload :: Tuple token: tok :: ReplyTo -> Tuple(Binary, HTTP2Protocol) =>
+  parkQueued: sid :: Integer payload: payload :: Tuple token: tok :: ReplyTo | Nil -> Tuple(Binary, HTTP2Protocol) =>
     conn := self connection
       queueSend: sid
       rest: (payload at: 2)
@@ -641,7 +643,39 @@ sealed typed Value subclass: HTTP2Protocol
     pairs := headers collect: [:h :: Tuple | {(h at: 1), (h at: 2)}]
     all := pairs addFirst: {":status", status printString}
     {io, conn} := self connection encodeHeaders: all
-    hbf := Binary fromIolist: io
+    self
+      frameHeaders: sid
+      block: (Binary fromIolist: io)
+      endStream: end
+      conn: conn
+
+  /// Send a header block the stream process encoded without the dynamic
+  /// table (HTTP2Stream encodeHead:headers:): such a block means the same
+  /// whatever the peer's table holds, so only a table size update still
+  /// owed to the peer (RFC 7541 §4.2) is put in front of it here.
+  /// Answers {bytes, endStream, protocol} like sendHeadersFor:.
+  sendBlockFor: sid :: Integer block: hbf :: Binary endStream: end :: Boolean -> Tuple(Binary, Boolean, HTTP2Protocol) =>
+    {table, resizes} := self connection sendHpack popPendingResizes
+    block := resizes isEmpty
+      ifTrue: [hbf]
+      ifFalse: [
+        Binary
+          fromIolist: #((resizes
+            collect: [:r :: Integer |
+              HPACKTypes
+                encodeInteger: r
+                prefix: 5
+                flags: 32
+            ]), hbf)
+      ]
+    self
+      frameHeaders: sid
+      block: block
+      endStream: end
+      conn: (self connection withSendHpack: table)
+
+  /// Frame an encoded header block as HEADERS and account END_STREAM.
+  frameHeaders: sid :: Integer block: hbf :: Binary endStream: end :: Boolean conn: conn :: HTTP2Connection -> Tuple(Binary, Boolean, HTTP2Protocol) =>
     f := H2Headers new withStreamId: sid
     f := f withEndStream: end
     f := f withEndHeaders: true
@@ -716,6 +750,30 @@ sealed typed Value subclass: HTTP2Protocol
       endStream: end
     {#sent, bytes, proto}
 
+  /// Send a response head and its first body bytes together (one
+  /// connection call, one socket send): the HEADERS frame, then as much
+  /// DATA as the windows allow.
+  /// The frames are the ones two separate calls would send (an empty
+  /// body is still an empty DATA frame). Answers sendDataFor:'s shapes
+  /// with the HEADERS bytes in front: {#sent, bytes, protocol} or
+  /// {#park, {bytes, rest, end}, protocol}.
+  sendResponseFor: sid :: Integer block: hbf :: Binary data: data :: Binary endStream: end :: Boolean -> Tuple(Symbol, Object, HTTP2Protocol) =>
+    (self streamState: sid) =:= #closed ifTrue: [
+      ^{#error, "stream reset", self}
+    ]
+    {head, _ended, proto} := self
+      sendBlockFor: sid
+      block: hbf
+      endStream: false
+    (proto
+      sendDataOpen: sid
+      data: data
+      endStream: end) match: [
+      {#sent, bytes, next} -> {#sent, (head concat: bytes), next};
+      {#park, payload, next} -> {#park, {(head concat: (payload at: 1)), (payload at: 2), (payload at: 3)}, next};
+      other -> other
+    ]
+
   /// Drain an unread body without blocking: drop the buffer; when the
   /// request is still open, reset the stream with no error (Bandit's
   /// ensure_completed for a complete response). Answers
@@ -740,7 +798,10 @@ sealed typed Value subclass: HTTP2Protocol
   /// Answer an error status unless the stream already answered.
   errorFor: sid :: Integer status: status :: Integer -> Tuple(Binary, HTTP2Protocol) =>
     live := (self streamState: sid) isKindOf: Pid
-    answered := (self connection respEndedFor: sid) or: [live not]
+    // A queued send is a response on its way out.
+    answered := ((self connection respEndedFor: sid) or: [
+      live not
+    ]) or: [self connection hasPendingSend: sid]
     answered ifTrue: [^{Binary fromBytes: #(), self}]
     {bytes, _ended, proto} := self
       sendHeadersFor: sid
@@ -779,7 +840,13 @@ sealed typed Value subclass: HTTP2Protocol
       _ -> {Binary fromBytes: #(), #(), false, proto}
     ]
 
+  /// A stream whose process cast its final bytes and ended while they
+  /// wait on flow control is left open: the queued send finishes it
+  /// (or its expiry resets it).
   downNormal: sid :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    (self connection hasPendingSend: sid) ifTrue: [
+      ^{Binary fromBytes: #(), #(), false, self}
+    ]
     (self connectionIsKnownComplete: sid)
       ifTrue: [
         {Binary fromBytes: #(), #(), false, (self withConnection: (self forgetStream: sid conn: self connection))}
@@ -809,11 +876,22 @@ sealed typed Value subclass: HTTP2Protocol
     ] on: H2StreamError do: [:e :: H2StreamError | e]
 
   /// Parked sends expired (15 s): fail them all with a timeout error.
-  sendTimeoutFor: _token :: ReplyTo -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
-    {conn, expired} := self connection expireSends: (BuccaneerTelemetry monotonicTime)
-    proto := self withConnection: conn
-    proto2 := proto failAll: expired
-    {Binary fromBytes: #(), #(), false, proto2}
+  /// Detached sends have no caller to fail, so their streams are reset
+  /// here (internal_error, as a stream process failing on the timeout
+  /// would be).
+  sendTimeoutFor: _token :: ReplyTo | Nil -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    now := BuccaneerTelemetry monotonicTime
+    detached := self connection expiredDetached: now
+    {conn, expired} := self connection expireSends: now
+    proto := (self withConnection: conn) failAll: expired
+    out := Binary fromBytes: #()
+    detached
+      do: [:sid :: Integer |
+        {rst, failed, next} := proto resetStream: sid code: HTTP2Errors internalError
+        out := out concat: rst
+        proto := next failAll: failed
+      ]
+    {out, #(), false, proto}
 
   /// A complete header block: decode, validate and route. Raises
   /// H2StreamError (caught by the frame loop: RST + log) or

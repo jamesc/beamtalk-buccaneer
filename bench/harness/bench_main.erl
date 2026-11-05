@@ -17,9 +17,11 @@
 %%       [--only ROWID,...] [--impls a,b,...] [--out DIR] [--max-load L]
 %%
 %% The gate rule, per gate row and metric (requests/s and p99): Buccaneer
-%% misses when its median is worse than cowboy's worst round (below
-%% cowboy's lowest requests/s, above cowboy's highest p99), that is,
-%% worse beyond the rounds' spread.
+%% misses when its median is worse than the baseline's worst round (below
+%% its lowest requests/s, above its highest p99), that is, worse beyond
+%% the rounds' spread. The baseline is cowboy, except on `file_1MiB_c10`,
+%% which is gated against Bandit's sendfile: beamtalk-http's cowboy
+%% backend cannot send files, so cowboy answers that row from memory.
 -module(bench_main).
 
 -export([main/0, rows/1]).
@@ -54,15 +56,18 @@ list_to_number(S) ->
 
 %% === Rows ===
 
-%% {Id, Kind, Params, Class}. Class `gate` rows decide the gate; `context`
-%% rows (HTTP/2, WebSocket: beamtalk-http does not serve them on cowboy)
-%% skip cowboy; `memory` rows are reported, not gated (no throughput).
+%% {Id, Kind, Params, Class}. Class `gate` rows decide the gate against
+%% cowboy, `{gate, bandit}` rows against Bandit (cowboy still runs, for
+%% reference); `context` rows (HTTP/2, WebSocket: beamtalk-http does not
+%% serve them on cowboy) skip cowboy; `memory` rows are reported, not
+%% gated (no throughput).
 rows(full) ->
     [{"get_c" ++ integer_to_list(C), http, #{conns => C}, gate} || C <- [1, 10, 100, 1000]]
     ++ [{"post_echo_64KiB_c10", http, #{conns => 10, method => <<"POST">>, path => <<"/echo">>,
                                         body => binary:copy(<<"p">>, 65536), expect => 65536}, gate},
         {"chunked_1MiB_c10", http, #{conns => 10, path => <<"/chunked">>, expect => 1048576}, gate},
-        {"file_1MiB_c10", http, #{conns => 10, path => <<"/file">>, expect => 1048576}, gate},
+        %% Like for like: sendfile against Bandit's sendfile (BT-4468).
+        {"file_1MiB_c10", http, #{conns => 10, path => <<"/file">>, expect => 1048576}, {gate, bandit}},
         {"churn_close_w32", churn, #{workers => 32}, gate},
         {"tls_handshake_w32", churn, #{workers => 32, tls => true}, gate},
         {"tls_get_c100", http, #{conns => 100, tls => true}, gate},
@@ -241,12 +246,16 @@ report(Rows, Results, Impls, Env) ->
          maps:get(rounds, Opts), maps:get(duration, Opts), maps:get(warmup, Opts),
          maps:get(load, Env), maps:get(finished_load, Env)]),
     Gate = ["## The gate\n\n"
-            "beamtalk-http on Buccaneer (B) against beamtalk-http on cowboy (C), medians "
+            "beamtalk-http on Buccaneer (B) against the row's baseline, medians "
             "over the rounds; `spread` is each side's min-max over the rounds. A metric "
-            "misses when B's median is worse than C's worst round.\n\n"
-            "| Row | Metric | B median | B spread | C median | C spread | B/C | Gate |\n"
-            "|---|---|---:|---|---:|---|---:|---|\n",
-            [gate_lines(Id, Kind, Results) || {Id, Kind, _, gate} <- Rows],
+            "misses when B's median is worse than the baseline's worst round. The "
+            "baseline is beamtalk-http on cowboy, except where the Baseline column "
+            "says Bandit (`file_1MiB_c10`: cowboy cannot send files and answers it "
+            "from memory).\n\n"
+            "| Row | Metric | Baseline | B median | B spread | Base median | Base spread | B/base | Gate |\n"
+            "|---|---|---|---:|---|---:|---|---:|---|\n",
+            [gate_lines(Id, Kind, Base, Results) || {Id, Kind, _, Class} <- Rows,
+                                                    Base <- gate_baseline(Class)],
             "\n"],
     Ctx = ["## All servers\n\n"
            "Medians. Ratios are beamtalk-http on Buccaneer ÷ the other: above 1 is "
@@ -264,14 +273,19 @@ report(Rows, Results, Impls, Env) ->
               || {Id, Kind, _, _} <- Rows]],
     [Header, Gate, Ctx, Every].
 
-gate_lines(Id, Kind, Results) ->
+%% The implementation a row is gated against, if any.
+gate_baseline(gate) -> [http_cowboy];
+gate_baseline({gate, Base}) -> [Base];
+gate_baseline(_) -> [].
+
+gate_lines(Id, Kind, Base, Results) ->
     [begin
         B = values(Id, http_buccaneer, Key, Results),
-        C = values(Id, http_cowboy, Key, Results),
+        C = values(Id, Base, Key, Results),
         Mb = median(B),
         Mc = median(C),
-        io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s | ~s | ~s |~n",
-                      [Id, Label, fmt(Key, Mb), spread(Key, B), fmt(Key, Mc), spread(Key, C),
+        io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s | ~s | ~s | ~s |~n",
+                      [Id, Label, name(Base), fmt(Key, Mb), spread(Key, B), fmt(Key, Mc), spread(Key, C),
                        ratio(Mb, Mc), verdict(Better, Mb, C, errors(Id, http_buccaneer, Results))])
      end || {Key, Label, Better} <- metrics(Kind), gated(Key)].
 

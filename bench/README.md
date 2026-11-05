@@ -42,9 +42,9 @@ and servers never share schedulers.
 | Name | What | Role |
 |---|---|---|
 | `http_buccaneer` | beamtalk-http's `HTTPServer start:handler:options:` with `#backend => #buccaneer` | the gate |
-| `http_cowboy` | the same, `#backend => #cowboy` (cowboy 2.20 with ranch defaults, as beamtalk-http starts it: 10 acceptors, `max_keepalive` 1,000) | the gate's baseline |
+| `http_cowboy` | the same, `#backend => #cowboy` (cowboy 2.20 with ranch defaults, as beamtalk-http starts it: 10 acceptors, `max_keepalive` 1,000) | the gate's baseline (except `file_1MiB_c10`) |
 | `buccaneer` | Buccaneer standalone: `Buccaneer start:handler:` with an `Exchange` handler serving the same routes | context: the adapter's cost is the difference |
-| `bandit` | Bandit 1.12.5 with a bare Plug (`bench/bandit`) | context |
+| `bandit` | Bandit 1.12.5 with a bare Plug (`bench/bandit`) | context; the baseline of `file_1MiB_c10` |
 
 The three Beamtalk servers come from one package, `bench/http_node`
 (`HttpNode`). beamtalk-http is pinned by commit in `bench/run.sh`
@@ -97,7 +97,7 @@ frames).
 | `get_c1` ... `get_c1000` | keep-alive `GET /` at 1, 10, 100, 1,000 connections | gate |
 | `post_echo_64KiB_c10` | `POST /echo`, 64 KiB body, 10 connections | gate |
 | `chunked_1MiB_c10` | `GET /chunked`, 10 connections | gate |
-| `file_1MiB_c10` | `GET /file`, 10 connections | gate |
+| `file_1MiB_c10` | `GET /file`, 10 connections | gate, against Bandit |
 | `churn_close_w32` | a new connection per request (`connection: close`), 32 workers | gate |
 | `tls_handshake_w32` | the same over TLS: a full handshake per request | gate |
 | `tls_get_c100` | keep-alive `GET /` over TLS, 100 connections | gate |
@@ -111,9 +111,18 @@ report gives every round, the medians, each side's spread (min-max over
 the rounds) and the ratios against cowboy and Bandit.
 
 **The gate rule**, per gate row, for requests/s and p99: beamtalk-http
-on Buccaneer misses when its median is worse than cowboy's worst round
-(below cowboy's lowest requests/s, above cowboy's highest p99), that is,
+on Buccaneer misses when its median is worse than the baseline's worst
+round (below its lowest requests/s, above its highest p99), that is,
 worse beyond the rounds' spread. A row with errors misses.
+
+The baseline is beamtalk-http on cowboy, except on `file_1MiB_c10`,
+which is gated against Bandit's `send_file` (BT-4468; the row's class in
+`bench_main.erl` is `{gate, bandit}`). beamtalk-http's cowboy backend
+cannot send files, so on cowboy that row answers the 1 MiB from an
+in-memory binary, and over loopback sending a binary already in memory
+beats `file:sendfile` (Bandit's sendfile is 0.84× cowboy there). Bandit
+against Buccaneer is sendfile against sendfile. cowboy still runs on the
+row, and its figure stays in the report for reference.
 
 ## Stress tests (`test/stress/`)
 

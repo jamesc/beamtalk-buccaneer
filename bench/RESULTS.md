@@ -92,7 +92,10 @@ worst round, that is, worse beyond the rounds' spread.
   with the same 1 MiB as a plain in-memory body. `file_1MiB` therefore
   compares Buccaneer's sendfile with cowboy sending a binary, and on
   loopback the binary wins. Bandit's sendfile is also 0.84× cowboy there.
-  Against Bandit, Buccaneer's sendfile is 0.91× (BT-4468).
+  Against Bandit, Buccaneer's sendfile is 0.91× (BT-4468). Since BT-4468
+  the row is gated against Bandit's sendfile, not cowboy: see
+  [`file_1MiB_c10` against Bandit](#file_1mib_c10-against-bandit-bt-4468)
+  below. The table above is the Phase 7 run, against cowboy.
 - TLS rows: neither backend has a TLS option in `HTTPServer`, so both run
   beamtalk-http's request path behind their own TLS listener (README §
   The servers).
@@ -205,6 +208,79 @@ Filed:
 | BT-4468 | `sendFile:` 1 MiB, 0.91× Bandit's sendfile; the row's baseline needs deciding | file_1MiB |
 | BT-4464 | `Reference new` is a call into the Reference class process (worked around here) | all |
 | BT-4469 | HTTP/2 at 0.08× Bandit (context) | h2_get |
+
+## `file_1MiB_c10` against Bandit (BT-4468)
+
+**The baseline.** `file_1MiB_c10` is gated against Bandit's `send_file`,
+like for like, instead of beamtalk-http on cowboy. beamtalk-http's cowboy
+backend cannot send files, so cowboy answers the row from an in-memory
+binary; cowboy's figure stays in the report for reference only. In
+`bench_main.erl` the row's class is `{gate, bandit}`, and the gate table
+has a Baseline column.
+
+**Measured** with `just bench --only file_1MiB_c10 --impls
+http_buccaneer,http_cowboy,buccaneer,bandit` (5 rounds, 2026-11-05, the
+same 4-core container, load 2-8):
+
+| Server | req/s median (spread) | p99 µs |
+|---|---|---:|
+| beamtalk-http on Buccaneer (B) | 1,631 (1,557-1,686) | 15,168 |
+| beamtalk-http on cowboy (in memory, reference) | 2,137 (2,019-2,240) | 10,923 |
+| Buccaneer standalone | 1,587 (1,571-1,684) | 15,168 |
+| Bandit 1.12.5 (baseline) | 1,808 (1,702-1,835) | 14,289 |
+
+B/Bandit is 0.90 on req/s and 1.06 on p99, so the row still misses, now
+against Bandit. Seven more runs of the row without cowboy (the chunk-size
+runs below) put B/Bandit at 0.90-0.95 and standalone/Bandit at 0.90-0.97.
+
+**The sendfile path is already Bandit's.** `Exchange sendFile:` →
+`HTTP1Socket sendfile:` (send the buffered head) → Catalina's
+`TCPTransport sendfile:`, which is one `file:open` with `[read, raw,
+binary]` and one `file:sendfile/5` for the whole range, then `file:close`.
+That is Thousand Island's `ThousandIsland.Transports.TCP.sendfile/4`. A
+call-count profile shows the same OTP calls per request on both servers:
+one `gen_tcp:send` (the head), one `prim_inet:sendfile` (with OTP's own
+`nopush` cork and uncork around it, 2 `setopts` plus the re-arm), one
+`getopts`, and no read-and-send fallback. Both servers' connection sockets
+have identical options (`sndbuf`, `recbuf`, `buffer`, `nodelay`,
+watermarks).
+
+**Chunk size.** Bandit sends the whole file in one call. Measured by
+passing `chunk_size` to `file:sendfile/5` (a local experiment in
+Catalina, not committed), runs alternated, B/Bandit:
+
+| Chunk | B req/s | Standalone req/s | Bandit req/s | B/Bandit |
+|---|---:|---:|---:|---:|
+| 64 KiB | 1,541 / 1,642 / 1,561 | 1,572 / 1,606 / 1,664 | 1,617 / 1,741 / 1,733 | 0.95 / 0.94 / 0.90 |
+| 1 MiB | 1,589 | 1,619 | 1,771 | 0.90 |
+| whole file | 1,617 / 1,607 / 1,595 | 1,646 / 1,655 / 1,582 | 1,788 / 1,719 / 1,755 | 0.90 / 0.93 / 0.91 |
+
+A 1 MiB chunk is the whole file here. The differences are inside the
+machine's run-to-run noise, so the path keeps Bandit's single call.
+
+**Where the gap is.** Server CPU per request, read from the peer VM's
+`/proc` stat over 5 s of load: Buccaneer 1,167-1,227 µs against Bandit's
+1,009-1,081 µs on `file_1MiB_c10`, and 100-114 µs against 43-58 µs on
+`get_c10`. With load generator and servers on 4 shared cores the row is
+CPU-bound, so every microsecond of Beamtalk work per request is time the
+kernel does not spend copying. Timed one request at a time on one
+connection (no contention):
+
+| Median | Buccaneer | Bandit |
+|---|---:|---:|
+| `/file`, first byte | 248-295 µs | 147-167 µs |
+| `/file`, whole response | 706-759 µs | 591-628 µs |
+| `GET /`, first byte | 95-128 µs | 75-89 µs |
+
+A timestamped trace of the connection process puts the extra time before
+the head goes out: request parsing and the pipeline up to the handler, and
+building the head. That is the request path every row shares (BT-4465,
+BT-4473), not the sendfile call. The file operations themselves cost the
+same on both servers: `file:open` plus `file:close` is 55-70 µs on this
+container's filesystem in plain Erlang too. Turning off scheduler
+busy-waiting (`+sbwt none`, a diagnostic run) raised every server and left
+B/Bandit at 0.91. beamtalk-http's adapter (BT-4466) adds nothing measurable
+on this row: B/standalone is 0.94-1.03.
 
 ## Bugs found and fixed in this PR
 

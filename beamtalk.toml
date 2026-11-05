@@ -3,11 +3,11 @@
 
 [package]
 name = "buccaneer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pure-Beamtalk HTTP server built on Catalina, a port of Bandit"
 
 [dependencies]
-catalina = "0.2.1"
+catalina = "0.2.2"
 hpack = "0.1.0"
 
 # Every class is `typed`; a type warning fails the build (as Catalina's AGENTS.md).

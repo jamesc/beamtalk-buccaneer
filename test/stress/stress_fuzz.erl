@@ -129,8 +129,10 @@ cases() ->
      <<"POST /echo HTTP/1.1\r\nhost: localhost\r\ncontent-length: 3\r\ncontent-length: 4\r\n\r\nabcd">>,
      <<"POST /echo HTTP/1.1\r\nhost: localhost\r\ntransfer-encoding: chunked\r\n\r\nzz\r\nhello\r\n0\r\n\r\n">>,
      <<"GET / HTTP/1.1\r\nhost: localhost\r\nbad header\r\n\r\n">>,
-     <<(rand:bytes(64))/binary, "\r\n\r\n">>,
-     <<"\r\n\r\n\r\n\r\n">>].
+     <<(rand:bytes(64))/binary, "\r\n\r\n">>].
+%% Not here: bare empty lines. RFC 9112 2.2 has a server skip empty lines
+%% before a request line, so Buccaneer and Bandit wait for one (until the
+%% read timeout), and only cowboy closes.
 
 malformed_one(Port, Bytes) ->
     {ok, C} = bench_conn:connect(Port, false),

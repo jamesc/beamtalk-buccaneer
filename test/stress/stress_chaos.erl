@@ -9,9 +9,10 @@
 %%   wrong or corrupted answer; the server keeps serving; and once the load
 %%   stops the node is back to its baseline.
 %% - streams: HTTP/2 connections with 10 streams in flight while a killer
-%%   kills a random stream process every 20 ms. As Bandit: the killed
-%%   stream is reset (or answered 500) and its connection carries on; no
-%%   stream gets a wrong answer; back to baseline after.
+%%   kills a random stream process every 20 ms. The killed stream is reset
+%%   (or answered 500), or, as Bandit sometimes does, the connection goes
+%%   away and the client reconnects; no stream ever gets a wrong answer;
+%%   back to baseline after (this caught the TimeoutProxy leak, BT-4086).
 -module(stress_chaos).
 
 -export([tests/0]).
@@ -20,7 +21,10 @@
 
 tests() ->
     [{"chaos_kill_connections", [http_buccaneer, buccaneer, http_cowboy, bandit], fun connections/1},
-     {"chaos_kill_streams", [http_buccaneer, buccaneer, bandit], fun streams/1}].
+     %% Not Bandit: `stream_pids` (what a connection process monitors)
+     %% does not single out Bandit's stream processes, and killing what it
+     %% finds there can leave a stream unanswered until the client times out.
+     {"chaos_kill_streams", [http_buccaneer, buccaneer], fun streams/1}].
 
 connections(Ctx) ->
     Secs = stress_lib:pick(Ctx, {5, 30}),
@@ -91,18 +95,30 @@ streams(Ctx) ->
         Base = stress_lib:baseline(Ctx, ?KEYS),
         Stop = atomics:new(1, []),
         Self = self(),
-        Clients = [spawn_link(fun() -> Self ! {client, self(), h2_client(Port, Stop, #{})} end)
+        Clients = [spawn_link(fun() -> Self ! {client, self(), h2_clients(Port, Stop, #{})} end)
                    || _ <- lists:seq(1, 8)],
         Kills = killer(Ctx, kill_random_stream, 20, Secs * 1000),
         atomics:put(Stop, 1, 1),
         Counts = stress_lib:merge_counts([receive {client, P, R} -> R after 120000 -> #{stuck => 1} end
                                           || P <- Clients]),
-        Bad = maps:without([ok, reset, status_500], Counts),
-        stress_lib:check(Bad =:= #{}, "killed streams are reset or answered 500; connections carry on", Bad),
+        Bad = maps:filter(fun(K, _) -> not lists:member(K, [ok, reset, status_500, goaway, closed]) end, Counts),
+        stress_lib:check(Bad =:= #{}, "killed streams are reset, answered 500 or their connection closed", Bad),
         stress_lib:check(maps:get(ok, Counts, 0) > 0, "the load ran", Counts),
         stress_lib:back_to(Ctx, Base, ?KEYS),
         Counts#{kills => Kills}
     end).
+
+%% Reconnect after a connection-level close until Stop.
+h2_clients(Port, Stop, Acc) ->
+    case atomics:get(Stop, 1) of
+        1 -> Acc;
+        0 ->
+            Acc1 = h2_client(Port, Stop, Acc),
+            case atomics:get(Stop, 1) of
+                1 -> Acc1;
+                0 -> h2_clients(Port, Stop, Acc1)
+            end
+    end.
 
 h2_client(Port, Stop, Acc) ->
     case bench_h2:connect(Port) of
@@ -121,6 +137,8 @@ h2_loop(H, Open, Stop, Acc) ->
         {done, _, {first_byte, 16#8e}, H1} -> next(H1, Open, Stop, stress_lib:bump(status_500, Acc));
         {done, _, S, H1} -> next(H1, Open, Stop, stress_lib:bump({status, S}, Acc));
         {reset, _, H1} -> next(H1, Open, Stop, stress_lib:bump(reset, Acc));
+        {error, {goaway, _}} -> stress_lib:bump(goaway, Acc);
+        {error, closed} -> stress_lib:bump(closed, Acc);
         {error, R} -> stress_lib:bump({connection_error, R}, Acc)
     end.
 

@@ -70,15 +70,16 @@ typed Value subclass: HTTP1Socket
   /// {#ok | #more, data, socket}: the next body part (Bandit's
   /// read_data). Options (#length default 8_000_000, #readLength default
   /// 1_000_000, #readTimeout default 15_000) cap one call; #more means
-  /// call again. Data is bytes; it may be a String or a Binary.
+  /// call again. Data is a Binary, empty when there is no body (a String
+  /// "" here broke `HTTPRequest body` on beamtalk-http, BT-4086).
   readData: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
-    self readState =:= #headersRead ifFalse: [^{#ok, "", self}]
+    self readState =:= #headersRead ifFalse: [^{#ok, (Binary fromBytes: #()), self}]
     unread := self unreadContentLength
     unread isNil ifFalse: [^self readContentLengthData: unread options: options]
     encoding := self bodyEncoding
     encoding =:= "chunked" ifTrue: [^self readChunkedData: options]
     encoding isNil ifFalse: [HTTPError signal: "Unsupported transfer-encoding"]
-    {#ok, "", self}
+    {#ok, (Binary fromBytes: #()), self}
 
   readContentLengthData: unread :: Integer options: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
     maxLength := self
@@ -137,7 +138,7 @@ typed Value subclass: HTTP1Socket
       options: options
     self
       readChunkedData: self buffer
-      body: ""
+      body: (Binary fromBytes: #())
       bodyLength: 0
       maxLength: maxLength
       options: options
@@ -645,10 +646,12 @@ typed Value subclass: HTTP1Socket
 
   /// An #http1 option with Bandit's default. Non-integers raise: these
   /// feed decode_packet limits, where a bad type would fail obscurely.
+  /// (No `^` inside the ifAbsent: blocks: a non-local return is a
+  /// throw/catch, and this runs several times per request.)
   http1Opt: key :: Symbol default: default :: Integer -> Integer =>
-    section := self opts at: #http1 ifAbsent: [^default]
+    section := self opts at: #http1 ifAbsent: [nil]
     (section isKindOf: Dictionary) ifFalse: [^default]
-    raw := section at: key ifAbsent: [^default]
+    raw := section at: key ifAbsent: [default]
     (raw isKindOf: Integer) ifFalse: [
       Error signal: ("Invalid value for http1 option " ++ key asString)
     ]

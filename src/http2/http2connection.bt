@@ -180,7 +180,9 @@ sealed typed Value subclass: HTTP2Connection
   /// Queue a send blocked on the connection window: answers the
   /// connection with {streamId, rest, endStream, replyTo, expiresAt}
   /// newest first (Bandit prepends; release takes oldest first).
-  queueSend: sid :: Integer rest: rest :: Binary endStream: end :: Boolean replyTo: r :: ReplyTo expiresAt: expiry :: Integer -> HTTP2Connection =>
+  /// A nil replyTo is a detached send: the stream process cast its final
+  /// bytes and has nobody to wake (see hasPendingSend:).
+  queueSend: sid :: Integer rest: rest :: Binary endStream: end :: Boolean replyTo: r :: ReplyTo | Nil expiresAt: expiry :: Integer -> HTTP2Connection =>
     self withPendingSends: (self pendingSends addFirst: {sid, rest, end, r, expiry})
 
   /// Take every queued send, oldest first; the queue is emptied and
@@ -199,6 +201,20 @@ sealed typed Value subclass: HTTP2Connection
         ]) ifTrue: [found := item] ifFalse: [left := left add: item]
       ]
     {(self withPendingSends: left), found}
+
+  /// Whether a send is queued for the stream (its response is still
+  /// going out, so the stream is not finished even if its process is).
+  hasPendingSend: sid :: Integer -> Boolean =>
+    (self pendingSends select: [:item :: Tuple |
+      (item at: 1) =:= sid
+    ]) isEmpty not
+
+  /// The stream ids of expired detached sends (nil replyTo): nobody
+  /// waits on them, so the connection resets their streams itself.
+  expiredDetached: now :: Integer -> List(Integer) =>
+    ((self pendingSends select: [:item :: Tuple |
+      (item at: 5) <= now and: [(item at: 4) isNil]
+    ]) collect: [:item :: Tuple | item at: 1]) reversed
 
   /// Split expired sends (expiresAt <= now) from live ones: answers
   /// {connection, expiredReplyTos oldest first}; live stays newest first.

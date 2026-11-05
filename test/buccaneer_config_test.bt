@@ -289,12 +289,15 @@ TestCase subclass: BuccaneerConfigTest
     self assert: ((config catalina at: #transport) =:= TCPTransport)
 
   assertBadWebSocket: key :: Symbol value: value =>
-    self assertRaises: [
-      BuccaneerConfig from: #{
-        #handler => self handlerBlock,
-        #websocket => (Dictionary new at: key put: value)
-      }
-    ] message: ("Invalid value for #" ++ key asString)
+    self
+      assertRaises: [
+        BuccaneerConfig
+          from: #{
+            #handler => self handlerBlock,
+            #websocket => (Dictionary new at: key put: value)
+          }
+      ]
+      message: ("Invalid value for #" ++ key asString)
 
   assertBadUpgrade: key :: Symbol value: value =>
     self assertRaises: [
@@ -313,31 +316,37 @@ TestCase subclass: BuccaneerConfigTest
     self assertBadWebSocket: #deflateOptions value: #(#level, 1)
 
   testAcceptsWebSocketValues =>
-    config := BuccaneerConfig from: #{
-      #handler => self handlerBlock,
-      #websocket => #{
-        #maxFrameSize => 1000,
-        #maxFragmentedMessageSize => 2000,
-        #maxInflateRatio => 10,
-        #compress => true,
-        #validateTextFrames => false,
-        #enabled => true,
-        #deflateOptions => #{#level => 1}
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #websocket => #{
+          #maxFrameSize => 1000,
+          #maxFragmentedMessageSize => 2000,
+          #maxInflateRatio => 10,
+          #compress => true,
+          #validateTextFrames => false,
+          #enabled => true,
+          #deflateOptions => #{#level => 1}
+        }
       }
-    }
     self assert: (config websocket at: #maxFrameSize) equals: 1000
 
   testAcceptsUpgradeOptions =>
     self assert: (BuccaneerConfig checkUpgradeOptions: #{}) isNil
+    self
+      assert: (BuccaneerConfig
+        checkUpgradeOptions: #{
+          #timeout => 100,
+          #compress => false,
+          #maxInflateRatio => 5,
+          #level => #best_speed,
+          #memLevel => 9,
+          #strategy => #rle
+        }) isNil
     self assert: (BuccaneerConfig checkUpgradeOptions: #{
-      #timeout => 100,
-      #compress => false,
-      #maxInflateRatio => 5,
-      #level => #best_speed,
-      #memLevel => 9,
-      #strategy => #rle
+      #timeout => nil,
+      #level => 0
     }) isNil
-    self assert: (BuccaneerConfig checkUpgradeOptions: #{#timeout => nil, #level => 0}) isNil
 
   testRejectsUnknownUpgradeOption =>
     self assertRaisesMatching: [

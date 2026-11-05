@@ -96,11 +96,12 @@ TestCase subclass: BuccaneerTest
   testMistypedWebSocketValueRaises =>
     caught := false
     [
-      Buccaneer start: #{
-        #port => 0,
-        #handler => [:ex | ex],
-        #websocket => #{#maxFrameSize => "8000000"}
-      }
+      Buccaneer
+        start: #{
+          #port => 0,
+          #handler => [:ex | ex],
+          #websocket => #{#maxFrameSize => "8000000"}
+        }
     ]
       on: Error
       do: [:e |

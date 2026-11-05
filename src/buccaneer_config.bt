@@ -243,15 +243,18 @@ typed Value subclass: BuccaneerConfig
   /// connection, where a bad one would crash or silently misbehave.
   /// The `#deflateOptions` contents are checked when zlib opens them.
   class checkWebSocketOptions: ws :: WebSocketOptions -> Nil =>
-    #(#maxFrameSize, #maxFragmentedMessageSize, #maxInflateRatio)
-      do: [:key | self checkPositiveInteger: ws key: key]
-    #(#enabled, #compress, #validateTextFrames)
-      do: [:key | self checkBoolean: ws key: key]
-    (ws includesKey: #deflateOptions) ifTrue: [
-      ((ws at: #deflateOptions) isKindOf: Dictionary) ifFalse: [
-        Error signal: "Invalid value for #deflateOptions"
-      ]
+    #(#maxFrameSize, #maxFragmentedMessageSize, #maxInflateRatio) do: [:key |
+      self checkPositiveInteger: ws key: key
     ]
+    #(#enabled, #compress, #validateTextFrames) do: [:key |
+      self checkBoolean: ws key: key
+    ]
+    (ws includesKey: #deflateOptions)
+      ifTrue: [
+        ((ws at: #deflateOptions) isKindOf: Dictionary) ifFalse: [
+          Error signal: "Invalid value for #deflateOptions"
+        ]
+      ]
     nil
 
   /// Keys `Exchange upgradeToWebSocket:options:` accepts.
@@ -279,11 +282,12 @@ typed Value subclass: BuccaneerConfig
       validateKeys: opts
       known: self upgradeOptionKeys
       name: "websocket upgrade"
-    (opts includesKey: #timeout) ifTrue: [
-      (opts at: #timeout) isNil ifFalse: [
-        self checkPositiveInteger: opts key: #timeout
+    (opts includesKey: #timeout)
+      ifTrue: [
+        (opts at: #timeout) isNil ifFalse: [
+          self checkPositiveInteger: opts key: #timeout
+        ]
       ]
-    ]
     self checkBoolean: opts key: #compress
     self checkPositiveInteger: opts key: #maxInflateRatio
     self

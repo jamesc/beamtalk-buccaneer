@@ -205,13 +205,19 @@ TestCase subclass: HTTP1UpgradeTest
     self assert: (srv stop: 5000) isOk
 
   testUnknownUpgradeOption500s =>
-    self badUpgradeOptions: #{#timout => 100} log: "Unsupported key(s) in websocket upgrade config"
+    self badUpgradeOptions: #{
+      #timout => 100
+    } log: "Unsupported key(s) in websocket upgrade config"
 
   testMistypedUpgradeTimeout500s =>
-    self badUpgradeOptions: #{#timeout => "100"} log: "Invalid value for #timeout"
+    self badUpgradeOptions: #{
+      #timeout => "100"
+    } log: "Invalid value for #timeout"
 
   testMistypedUpgradeCompress500s =>
-    self badUpgradeOptions: #{#compress => "yes"} log: "Invalid value for #compress"
+    self badUpgradeOptions: #{
+      #compress => "yes"
+    } log: "Invalid value for #compress"
 
   testMistypedUpgradeDeflateLevel500s =>
     self badUpgradeOptions: #{#level => 99} log: "Invalid value for #level"

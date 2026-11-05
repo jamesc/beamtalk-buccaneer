@@ -672,9 +672,9 @@ sealed typed Value subclass: HTTP1Socket
   /// decode_packet limits, where a bad type would fail obscurely.
   resolvedOptions -> HTTP1Options =>
     resolved := self.http1Options
-    resolved isNil
-      ifTrue: [HTTP1Options from: (self opts at: #http1 ifAbsent: [nil])]
-      ifFalse: [resolved]
+    resolved isNil ifTrue: [
+      HTTP1Options from: (self opts at: #http1 ifAbsent: [nil])
+    ] ifFalse: [resolved]
 
   /// The next available bytes (Bandit's read_available!).
   readAvailable -> Binary =>

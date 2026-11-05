@@ -20,7 +20,9 @@ sealed typed Object subclass: Pipeline
   /// `connData` is {secure?, peerAddress}; `config` is the server's
   /// BuccaneerConfig.
   class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple(Boolean, Tuple | Symbol) options: config :: BuccaneerConfig -> Result(Object, Object) =>
-    startTime := BuccaneerTelemetry monotonicTime
+    // A connection nobody traces skips building its spans (and their clock reads).
+    traced := BuccaneerTelemetry requestsTraced
+    startTime := traced ifTrue: [BuccaneerTelemetry monotonicTime] ifFalse: [0]
     base := self baseMetadata: connectionSpan handler: config
     // Only the prologue runs protected here. runInner: has its own
     // handler and re-raises internal errors, which must reach the
@@ -34,12 +36,18 @@ sealed typed Object subclass: Pipeline
         headers: headers
         connData: connData
         http: config http
-      ex := Exchange open: initial
+      ex := Exchange open: (traced ifTrue: [
+        initial
+      ] ifFalse: [initial withTimed: false])
       meta := base at: #conn put: initial
-      span := BuccaneerTelemetry
-        startSpan: #request
-        measurements: #{#monotonic_time => startTime}
-        metadata: meta
+      span := traced
+        ifTrue: [
+          BuccaneerTelemetry
+            startSpan: #request
+            measurements: #{#monotonic_time => startTime}
+            metadata: meta
+        ]
+        ifFalse: [BuccaneerTelemetry silent]
       {ex, span, transport2, meta}
     ]
       on: Exception
@@ -76,6 +84,7 @@ sealed typed Object subclass: Pipeline
 
   /// A head that never parsed gets a span with no conn.
   class sealed startOuterSpan: meta :: Dictionary(Symbol, Object) startTime: start :: Integer -> BuccaneerTelemetry =>
+    BuccaneerTelemetry requestsTraced ifFalse: [^BuccaneerTelemetry silent]
     BuccaneerTelemetry
       startSpan: #request
       measurements: #{#monotonic_time => start}
@@ -124,7 +133,9 @@ sealed typed Object subclass: Pipeline
           ex load
         ]
       done := ex finish: final
-      span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
+      span enabled ifTrue: [
+        span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
+      ]
       Result ok: done
     ]
       on: Exception

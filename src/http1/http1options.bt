@@ -23,11 +23,24 @@ sealed typed Value subclass: HTTP1Options
     maxRequests := section at: #maxRequests ifAbsent: [0]
     gcEvery := section at: #gcEveryNKeepaliveRequests ifAbsent: [5]
     HTTP1Options
-      maxRequestLineLength: (self limit: #maxRequestLineLength in: section default: 10000)
-      maxHeaderLength: (self limit: #maxHeaderLength in: section default: 10000)
-      maxHeaderCount: (self limit: #maxHeaderCount in: section default: 50)
-      maxRequests: ((maxRequests isKindOf: Integer) ifTrue: [maxRequests] ifFalse: [0])
-      gcEveryNKeepaliveRequests: ((gcEvery isKindOf: Integer) ifTrue: [gcEvery] ifFalse: [nil])
+      maxRequestLineLength: (self
+        limit: #maxRequestLineLength
+        in: section
+        default: 10000)
+      maxHeaderLength: (self
+        limit: #maxHeaderLength
+        in: section
+        default: 10000)
+      maxHeaderCount: (self
+        limit: #maxHeaderCount
+        in: section
+        default: 50)
+      maxRequests: ((maxRequests isKindOf: Integer) ifTrue: [
+        maxRequests
+      ] ifFalse: [0])
+      gcEveryNKeepaliveRequests: ((gcEvery isKindOf: Integer) ifTrue: [
+        gcEvery
+      ] ifFalse: [nil])
 
   /// The value at key, the default when absent, nil when not an Integer.
   class sealed limit: key :: Symbol in: section :: Dictionary default: default :: Integer -> Integer | Nil =>

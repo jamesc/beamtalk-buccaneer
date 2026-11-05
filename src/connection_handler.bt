@@ -21,20 +21,30 @@ typed Handler subclass: ConnectionHandler
     decision := InitialHandler run: sock options: config
     decision match: [
       #close -> HandlerResult close: st;
-      {#http1, data} -> HandlerResult
-        continue: (HTTP1Handler
-          config: config
-          handler: handler
-          buffer: data
-          requestsProcessed: 0
-          baseline: (Erlang erlang get_keys)
-          connData: (SocketHelpers connData: sock));
+      {#http1, data} -> self
+        startHttp1: sock
+        config: config
+        handler: handler
+        data: data;
       {#http2, _} -> self
         h2Start: sock
         config: config
         handler: handler;
       _ -> Error signal: "Unknown InitialHandler decision"
     ]
+
+  /// The HTTP/1 request loop. The telemetry flag goes in first, so the
+  /// baseline keeps it across the per-request process-dictionary clear.
+  startHttp1: sock :: Socket config: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike data: data :: Binary -> HandlerResult =>
+    BuccaneerTelemetry noteRequestsTraced
+    HandlerResult
+      continue: (HTTP1Handler
+        config: config
+        handler: handler
+        buffer: data
+        requestsProcessed: 0
+        baseline: (Erlang erlang get_keys)
+        connData: (SocketHelpers connData: sock))
 
   handleData: data :: Binary socket: sock :: Socket state: st :: Object -> HandlerResult =>
     st match: [

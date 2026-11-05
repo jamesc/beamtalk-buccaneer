@@ -25,7 +25,10 @@ sealed typed Value subclass: Exchange
     // process (`new` is a process-bound selector): node-wide
     // serialisation on every request (BT-4464). make_ref directly instead.
     ex := Exchange ref: Erlang erlang make_ref owner: Pid current
-    ex store: (state withReqHeaderEndTime: BuccaneerTelemetry monotonicTime)
+    ex
+      store: (state withReqHeaderEndTime: (state timed ifTrue: [
+        BuccaneerTelemetry monotonicTime
+      ] ifFalse: [nil]))
 
   /// The process-dictionary key of this exchange's state.
   key -> Tuple(Symbol, Reference | Nil) => {#buccaneer_exchange, self.ref}
@@ -128,12 +131,10 @@ sealed typed Value subclass: Exchange
       ]
     ] on: TransportError do: [:e | ^Result error: #closed]
     {tag, data, transport} := read
-    started := st reqBodyStartTime ifNil: [BuccaneerTelemetry monotonicTime]
-    stamped := tag =:= #ok
-      ifTrue: [
-        (st withReqBodyStartTime: started) withReqBodyEndTime: BuccaneerTelemetry monotonicTime
-      ]
-      ifFalse: [st withReqBodyStartTime: started]
+    started := st reqBodyStartTime ifNil: [self stampOn: st]
+    stamped := tag =:= #ok ifTrue: [
+      (st withReqBodyStartTime: started) withReqBodyEndTime: (self stampOn: st)
+    ] ifFalse: [st withReqBodyStartTime: started]
     self store: ((stamped withTransport: transport) withReqBodyBytes: st reqBodyBytes + data size)
     Result ok: (BodyPart data: data done: tag =:= #ok)
 
@@ -166,7 +167,7 @@ sealed typed Value subclass: Exchange
       ifFalse: [
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
-    st := st withRespStartTime: BuccaneerTelemetry monotonicTime
+    st := st withRespStartTime: (self stampOn: st)
     {encodedHeaders, context} := Compression
       start: st contentEncoding
       status: status
@@ -229,7 +230,7 @@ sealed typed Value subclass: Exchange
       ifFalse: [
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
-    st := st withRespStartTime: BuccaneerTelemetry monotonicTime
+    st := st withRespStartTime: (self stampOn: st)
     merged := self headersWithQueued: st extra: hs
     {encodedHeaders, context} := (Headers getHeader: merged name: "content-length") isNil
       ifTrue: [
@@ -275,7 +276,7 @@ sealed typed Value subclass: Exchange
           tailed := self sendTail: st
           tailed withTransport: (tailed transport sendData: data end: true)
         ] on: TransportError do: [:e :: Exception | ^Result error: e reason]
-        stamped := ended withRespEndTime: BuccaneerTelemetry monotonicTime
+        stamped := ended withRespEndTime: (self stampOn: ended)
         self store: (stamped withRespState: #sent)
         ^Result ok: nil
       ]
@@ -310,7 +311,7 @@ sealed typed Value subclass: Exchange
       ifFalse: [
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
-    st := st withRespStartTime: BuccaneerTelemetry monotonicTime
+    st := st withRespStartTime: (self stampOn: st)
     {_, size, kind, _, _, _, _, _, _, _, _, _, _, _} := ((Erlang file) read_file_info: path with: #(#raw, {#time, #universal})) unwrap
     kind =:= #regular ifFalse: [
       Error signal: ("Cannot read file " ++ path ++ ": not a regular file")
@@ -346,7 +347,7 @@ sealed typed Value subclass: Exchange
       sendfile: path
       offset: offset
       length: total
-    stamped := ((headed withTransport: sent) withRespBodyBytes: total) withRespEndTime: BuccaneerTelemetry monotonicTime
+    stamped := ((headed withTransport: sent) withRespBodyBytes: total) withRespEndTime: (self stampOn: headed)
     self store: (stamped withRespState: #sent)
 
   /// A 1xx response (Bandit's inform/3). Refused on HTTP/1.0, and a
@@ -465,9 +466,14 @@ sealed typed Value subclass: Exchange
       st transport sendData: data end: endRequest
     ] ifFalse: [st transport]
     stamped := endRequest ifTrue: [
-      st withRespEndTime: BuccaneerTelemetry monotonicTime
+      st withRespEndTime: (self stampOn: st)
     ] ifFalse: [st]
     (stamped withTransport: transport) withRespBodyBytes: st respBodyBytes + (Erlang erlang iolist_size: data)
+
+  /// A telemetry stamp: native monotonic time, or nil when nobody traces
+  /// the request (its span emits nothing, so nothing reads the stamps).
+  stampOn: st :: ExchangeState -> Integer | Nil =>
+    st timed ifTrue: [BuccaneerTelemetry monotonicTime] ifFalse: [nil]
 
   /// Bandit's send_resp_body?.
   sendsBody: st :: ExchangeState -> Boolean =>
@@ -503,7 +509,7 @@ sealed typed Value subclass: Exchange
       [
         tailed := self sendTail: st
         closed := tailed transport sendData: "" end: true
-        stamped := (tailed withTransport: closed) withRespEndTime: BuccaneerTelemetry monotonicTime
+        stamped := (tailed withTransport: closed) withRespEndTime: (self stampOn: tailed)
         self store: (stamped withRespState: #sent)
       ]
         on: TransportError

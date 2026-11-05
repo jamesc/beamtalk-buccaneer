@@ -270,10 +270,15 @@ sealed typed Value subclass: HTTP2Stream
     ]
     c
 
-  /// Run a blocking connection call with this stream's read timeout.
-  withConn: block :: Block(Object) -> Object =>
-    proxy := self conn withTimeout: self readTimeout
-    [block value: proxy] ensure: [proxy stop]
+  /// A blocking connection call with this stream's read timeout: a timed
+  /// `gen_server:call` straight to the connection. (A `withTimeout:`
+  /// proxy here was an actor per call, and it leaked whenever the stream
+  /// process was killed mid-call: `ensure:` does not run on a kill.)
+  callConn: selector :: Symbol args: args :: List -> Dynamic =>
+    self conn
+      perform: selector
+      withArguments: args
+      timeout: self readTimeout
 
   version -> HttpVersion => #http2
 
@@ -303,9 +308,7 @@ sealed typed Value subclass: HTTP2Stream
       n :: Integer -> n;
       _ -> 8000000
     ]
-    {data, more, ended} := self withConn: [:proxy :: Object |
-      proxy h2ReadData: self streamId maxBytes: maxBytes
-    ]
+    {data, more, ended} := self callConn: #h2ReadData:maxBytes: args: #(self streamId, maxBytes)
     // A body that breaks its framing dies here in the stream process,
     // not in serve:: RST it like a frame-path stream error, then fail
     // the read so the handler sees a closed body.
@@ -372,13 +375,7 @@ sealed typed Value subclass: HTTP2Stream
       l :: List -> Binary fromIolist: l;
       _ -> Error signal: "sendData: needs Binary data"
     ]
-    self
-      withConn: [:proxy :: Object |
-        proxy
-          h2SendData: self streamId
-          data: bin
-          endStream: endRequest
-      ]
+    self callConn: #h2SendData:data:endStream: args: #(self streamId, bin, endRequest)
     endRequest ifTrue: [^self withState: #localClosed]
     self
 
@@ -457,7 +454,7 @@ sealed typed Value subclass: HTTP2Stream
   /// and any other failure is re-raised.
   ensureCompleted -> HTTP2Stream =>
     [
-      self withConn: [:proxy :: Object | proxy h2Drain: self streamId]
+      self callConn: #h2Drain: args: #(self streamId)
     ] on: Exception do: [:e :: Exception | self conn isAlive ifTrue: [e pass]]
     self
 

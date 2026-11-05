@@ -21,7 +21,10 @@ sealed typed Value subclass: Exchange
   /// method with no classState: runs in the caller's process (which is
   /// exactly where this state belongs).
   class sealed open: state :: ExchangeState -> Exchange =>
-    ex := Exchange ref: Reference new owner: Pid current
+    // `Reference new` is a gen_server call into the Reference class
+    // process (`new` is a process-bound selector): node-wide
+    // serialisation on every request (BT-4464). make_ref directly instead.
+    ex := Exchange ref: Erlang erlang make_ref owner: Pid current
     ex store: (state withReqHeaderEndTime: BuccaneerTelemetry monotonicTime)
 
   /// The process-dictionary key of this exchange's state.

@@ -1,0 +1,13 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// BenchSock — Buccaneer standalone's `/ws`: a `WebSock` echoing every
+/// data frame.
+sealed typed Value subclass: BenchSock
+
+  init -> WebSocketResult => WebSocketResult ok: self
+
+  handleIn: message :: Tuple(Symbol, Binary) -> WebSocketResult =>
+    WebSocketResult push: message state: self
+
+  handleInfo: _message :: Object -> WebSocketResult => WebSocketResult ok: self

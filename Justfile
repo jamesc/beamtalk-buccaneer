@@ -21,9 +21,31 @@ spikes:
     for f in _build/spikes/*.txt; do cat "$f"; echo; done
     exit $status
 
-# Spike 1: HTTP/1 GET against beamtalk-http on cowboy and Bandit, interleaved (bench/README.md)
+# Spike 1: HTTP/1 GET against beamtalk-http on cowboy and Bandit, interleaved (bench/SPIKE.md)
 spike-bench *ARGS:
-    bench/run.sh {{ARGS}}
+    bench/spike.sh {{ARGS}}
+
+# The release gate: beamtalk-http on Buccaneer against beamtalk-http on
+# cowboy, with Buccaneer standalone and Bandit for context, interleaved
+# (bench/README.md; results in bench/RESULTS.md). Not part of `test`.
+bench *ARGS:
+    bench/run.sh bench_main {{ARGS}}
+
+# Correctness under load and failure (test/stress/, bench/README.md). Not part of `test`.
+stress *ARGS:
+    bench/run.sh stress_main {{ARGS}}
+
+# One short bench round on a few rows, as CI runs it (non-blocking)
+bench-smoke:
+    bench/run.sh bench_main --rounds 1 --duration 1000 --warmup 300 --rows smoke
+
+# The stress tests at smoke sizes with a one-minute soak, as CI runs them (non-blocking)
+stress-smoke:
+    bench/run.sh stress_main --smoke
+
+# Profile one bench row on one server (call-time tracing), plus class-process calls per GET
+bench-profile *ARGS:
+    bench/run.sh bench_profile {{ARGS}}
 
 # Autobahn Testsuite fuzzingclient (needs docker): the full suite with
 # the AUTOBAHN=1 gate open (scoped runs cannot see test fixtures).

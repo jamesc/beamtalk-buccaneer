@@ -8,7 +8,7 @@
 /// bytes left in `rest`) and time the parse per request.
 ///
 /// The end-to-end numbers (requests/s and p99 against beamtalk-http on
-/// cowboy and Bandit) come from `just spike-bench` (bench/README.md).
+/// cowboy and Bandit) come from `just spike-bench` (bench/SPIKE.md).
 /// Results go to `_build/spikes/http1_parse.txt`.
 typed TestCase subclass: ParseCostSpikeTest
 

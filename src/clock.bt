@@ -4,24 +4,42 @@
 /// Bandit.Clock: the pre-formatted RFC9110 date header, cached in ETS.
 ///
 /// Formatting the date costs more than a cache read, so request processes
-/// read the cached value while a per-second updater (started with the
-/// server) refreshes it. On a cache miss the date is computed fresh and a
-/// warning is logged, as Bandit.
+/// read the cached value while a per-second updater refreshes it. The
+/// first miss on a node starts the updater (a forked process that owns the
+/// table, so it outlives the connection that started it; Bandit starts its
+/// clock with the application, and Buccaneer has none) and computes that
+/// one date itself. Until BT-4086 nothing started the updater, so every
+/// request missed, logged a warning and formatted the date.
 typed Object subclass: Clock
 
   class tableName -> Symbol => #BuccaneerClock
 
   class cacheKey -> Symbol => #dateHeader
 
-  /// {"date", <rfc9110 date>} from the cache, or freshly computed on a miss.
+  /// {"date", <rfc9110 date>} from the cache, or freshly computed on a
+  /// miss (which starts the updater if none is running).
   class dateHeader -> Tuple(String, String) =>
     cached := self cachedDate
-    cached isNil
-      ifTrue: [
-        Logger warn: "Header timestamp couldn't be fetched from ETS cache"
-        ^{"date", self computeDateHeader}
+    cached isNil ifFalse: [^{"date", cached}]
+    self ensureUpdater
+    {"date", self computeDateHeader}
+
+  /// Start the updater unless its table exists. Two racing starts are
+  /// harmless: the loser cannot create the table and exits.
+  class ensureUpdater -> Nil =>
+    (Ets exists: self tableName) ifFalse: [[self runUpdater] fork]
+    nil
+
+  /// The updater: create the table (raising, and so exiting, if another
+  /// updater already did) and refresh the date every second, forever.
+  class runUpdater -> Nil =>
+    table := Ets new: self tableName type: #set
+    [true]
+      whileTrue: [
+        table at: self cacheKey put: self computeDateHeader
+        Timer sleep: 1000
       ]
-    {"date", cached}
+    nil
 
   /// The cached date, or nil when the table or key is missing.
   class cachedDate -> String | Nil =>

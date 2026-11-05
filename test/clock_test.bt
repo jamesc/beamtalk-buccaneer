@@ -6,8 +6,12 @@ TestCase subclass: ClockTest
   // Bandit's clock_test asserts the logged warning on a cache miss; there
   // is no log capture in BUnit, so these tests assert the miss behaviour
   // (a fresh valid date) rather than the warning itself.
+  // The table may belong to the updater a miss started; only its owner
+  // can delete it, and then the next miss starts a new one.
   tearDown =>
-    (Ets exists: Clock tableName) ifTrue: [(Ets named: Clock tableName) delete]
+    (Ets exists: Clock tableName) ifTrue: [
+      [(Ets named: Clock tableName) delete] on: Error do: [:e | nil]
+    ]
     self
 
   testComputeDateHeaderFormat =>
@@ -33,6 +37,20 @@ TestCase subclass: ClockTest
     header := Clock dateHeader
     self assert: (header at: 1) equals: "date"
     self assert: (header at: 2) equals: "Wed, 21 Oct 2015 07:28:00 GMT"
+
+  testMissStartsTheUpdater =>
+    Clock dateHeader
+    filled := false
+    50
+      timesRepeat: [
+        filled ifFalse: [
+          Clock cachedDate isNil ifTrue: [
+            Timer sleep: 20
+          ] ifFalse: [filled := true]
+        ]
+      ]
+    self assert: filled
+    self assert: (Clock cachedDate matchesRegex: "GMT$" options: #())
 
   testUpdateCacheStoresFreshDate =>
     date := Clock updateCache

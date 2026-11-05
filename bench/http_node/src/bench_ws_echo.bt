@@ -1,0 +1,19 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// BenchWsEcho — the beamtalk-http `WebSocketHandler` behind `/ws`:
+/// echoes every text and binary frame.
+sealed typed Value subclass: BenchWsEcho
+
+  class onOpen: _ws :: WebSocketHandle request: _req :: HTTPRequest -> BenchWsEcho =>
+    self new
+
+  onText: text :: String ws: ws :: WebSocketHandle -> BenchWsEcho =>
+    ws sendText: text
+    self
+
+  onBinary: data :: Binary ws: ws :: WebSocketHandle -> BenchWsEcho =>
+    ws sendBinary: data
+    self
+
+  onClose: _reason :: Object -> Object => nil

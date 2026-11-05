@@ -51,3 +51,6 @@ sealed typed Value subclass: ExchangeState
   /// metrics: nil unless the response was encoded.
   field: respCompressionMethod :: String | Nil = nil
   field: respUncompressedBodyBytes :: Integer | Nil = nil
+  /// Whether the request's span is emitted: false leaves the telemetry
+  /// stamps above nil, saving the clock reads.
+  field: timed :: Boolean = true

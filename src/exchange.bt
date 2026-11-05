@@ -319,12 +319,22 @@ sealed typed Value subclass: Exchange
   ///   milliseconds, re-armed while the connection is open; past it
   ///   the connection closes with 1002 (or drops a closing
   ///   connection). `nil` waits forever.
+  /// - `#compress` (Boolean, default `true`) — allow permessage-deflate
+  ///   when the server's `#websocket` section enables it.
+  /// - `#maxInflateRatio` (Integer) — overrides the server's.
+  /// - `#level`, `#memLevel`, `#strategy` — zlib deflate tuning,
+  ///   overriding the server's `#deflateOptions`; see
+  ///   `BuccaneerConfig checkUpgradeOptions:` for the accepted values.
+  ///
+  /// Unknown keys and mistyped values raise here, before the 101 goes
+  /// out, so the client sees a 500.
   upgradeToWebSocket: websock :: Object options: opts :: WebSocketUpgradeOptions -> Exchange =>
     st := self load
     st respState =:= #unset
       ifFalse: [
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
+    BuccaneerConfig checkUpgradeOptions: opts
     self store: ((((st withWebsock: websock) withWebsockState: websock) withWebsocketOptions: opts) withRespState: #upgraded)
 
   /// Queue a response header (Plug.Conn.put_resp_header), sent with the

@@ -65,13 +65,13 @@ sealed typed Value subclass: HTTP1Handler
 
   /// Erase every key that was not there when the connection started,
   /// except Catalina's telemetry marker, as Bandit's clear_process_dict.
+  /// The baseline comes off in one lists:subtract, so only the keys
+  /// this request added are visited.
   clearProcessDictionary -> HTTP1Handler =>
-    keys := ProcessDictionary keys
-    keys
-      do: [:k |
-        ((self baseline includes: k) or: [
-          self isEngineKey: k
-        ]) ifFalse: [ProcessDictionary erase: k]
+    added :: List(Object) := Erlang lists subtract: ProcessDictionary keys with: self baseline
+    added
+      do: [:k :: Object |
+        (self isEngineKey: k) ifFalse: [ProcessDictionary erase: k]
       ]
     self
 

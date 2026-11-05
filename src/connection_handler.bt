@@ -26,25 +26,32 @@ typed Handler subclass: ConnectionHandler
         config: config
         handler: handler
         data: data;
-      {#http2, _} -> self
+      {#http2, data} -> self
         h2Start: sock
         config: config
-        handler: handler;
+        handler: handler
+        data: data;
       _ -> Error signal: "Unknown InitialHandler decision"
     ]
 
   /// The HTTP/1 request loop. The telemetry flag goes in first, so the
   /// baseline keeps it across the per-request process-dictionary clear.
+  /// Sniffed bytes are served at once, as Bandit's DelegatingHandler
+  /// hands them to the new handler's handle_data: the sniff usually read
+  /// the whole first request, and waiting for the socket's next message
+  /// would cost a re-arm and a wakeup per connection. With nothing read
+  /// yet (an idle client) the handler waits for data.
   startHttp1: sock :: Socket config: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike data: data :: Binary -> HandlerResult =>
     BuccaneerTelemetry noteRequestsTraced
-    HandlerResult
-      continue: (HTTP1Handler
-        config: config
-        handler: handler
-        buffer: data
-        requestsProcessed: 0
-        baseline: (Erlang erlang get_keys)
-        connData: (SocketHelpers connData: sock))
+    http1 := HTTP1Handler
+      config: config
+      handler: handler
+      buffer: data
+      requestsProcessed: 0
+      baseline: (Erlang erlang get_keys)
+      connData: (SocketHelpers connData: sock)
+    data isEmpty ifTrue: [^HandlerResult continue: http1]
+    http1 serveBuffered: sock
 
   handleData: data :: Binary socket: sock :: Socket state: st :: Object -> HandlerResult =>
     st match: [
@@ -58,14 +65,19 @@ typed Handler subclass: ConnectionHandler
     ]
 
   /// Start HTTP/2: send our SETTINGS preface, then serve from the
-  /// protocol value.
-  h2Start: sock :: Socket config: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike -> HandlerResult =>
+  /// protocol value, starting with any bytes the sniff read after the
+  /// client preface.
+  h2Start: sock :: Socket config: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike data: data :: Binary -> HandlerResult =>
     proto := HTTP2Protocol
       begin: config
       handler: handler
       connData: (SocketHelpers connData: sock)
     sock send: proto initialSettingsBytes
-    HandlerResult continue: proto
+    data isEmpty ifTrue: [^HandlerResult continue: proto]
+    self
+      h2Serve: data
+      socket: sock
+      state: proto
 
   /// Feed socket bytes through the HTTP/2 protocol: socket-send the
   /// answer, spawn stream processes, close when told.

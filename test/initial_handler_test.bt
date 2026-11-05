@@ -10,7 +10,7 @@ TestCase subclass: InitialHandlerTest
     (Erlang gen_tcp) send: (pair at: 2) with: "GET / HTTP/1.1\r\n\r\n"
     result := InitialHandler run: (pair at: 1) options: self config
     result match: [
-      {#http1, buf} -> self assert: buf asStringUnchecked equals: "GET";
+      {#http1, buf} -> self assert: buf asStringUnchecked equals: "GET / HTTP/1.1\r\n\r\n";
       _ -> self assert: false
     ]
     Loopback close: pair
@@ -61,7 +61,7 @@ TestCase subclass: InitialHandlerTest
     (Erlang gen_tcp) send: (pair at: 2) with: "PRI X"
     result := InitialHandler run: (pair at: 1) options: self config
     result match: [
-      {#http1, buf} -> self assert: buf asStringUnchecked equals: "PRI";
+      {#http1, buf} -> self assert: buf asStringUnchecked equals: "PRI X";
       _ -> self assert: false
     ]
     Loopback close: pair
@@ -71,9 +71,45 @@ TestCase subclass: InitialHandlerTest
     (Erlang gen_tcp) send: (pair at: 2) with: "PRIXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
     result := InitialHandler run: (pair at: 1) options: self config
     result match: [
-      {#http1, buf} -> self assert: buf size equals: 24;
+      {#http1, buf} -> self assert: buf size equals: 44;
       _ -> self assert: false
     ]
+    Loopback close: pair
+
+  testPriPrefaceKeepsWhatFollows =>
+    pair := Loopback pairWithReadTimeout: 5000
+    (Erlang gen_tcp) send: (pair at: 2) with: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nabc"
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http2, buf} -> self assert: buf asStringUnchecked equals: "abc";
+      _ -> self assert: false
+    ]
+    Loopback close: pair
+
+  testSplitPrefaceReadsOn =>
+    pair := Loopback pairWithReadTimeout: 5000
+    client := pair at: 2
+    (Erlang gen_tcp) send: client with: "PR"
+    [
+      Timer sleep: 50
+      (Erlang gen_tcp) send: client with: "I * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    ] fork
+    result := InitialHandler run: (pair at: 1) options: self config
+    result match: [
+      {#http2, buf} -> self assert: buf isEmpty;
+      _ -> self assert: false
+    ]
+    Loopback close: pair
+
+  testSplitTlsHelloCloses =>
+    pair := Loopback pairWithReadTimeout: 5000
+    client := pair at: 2
+    (Erlang gen_tcp) send: client with: (Binary fromBytes: #(22))
+    [
+      Timer sleep: 50
+      (Erlang gen_tcp) send: client with: (Binary fromBytes: #(3, 1, 0))
+    ] fork
+    self assert: (InitialHandler run: (pair at: 1) options: self config) equals: #close
     Loopback close: pair
 
   testClosedCloses =>

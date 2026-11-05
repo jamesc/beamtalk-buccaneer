@@ -3,52 +3,49 @@
 
 /// Bandit.HTTP2.StreamProcess: one process per stream, running the
 /// pipeline. Spawned monitored by the connection when a stream's first
-/// HEADERS arrives; runs the pipeline in a `continueWith:` step (so
-/// spawn returns first) and stops normally when done. The connection
-/// learns of the end through the DOWN message and resets or forgets
-/// the stream there — the stream process never waits on its own
-/// mailbox. Spawn with a Dictionary: #conn (the connection actor),
-/// #transport (the HTTP2Stream), #handler, #config, #connData, #span.
+/// HEADERS arrives, and stops normally when done. The connection learns
+/// of the end through the DOWN message and resets or forgets the stream
+/// there — the stream process never waits on its own mailbox.
+///
+/// The process is a plain monitored process (`spawn_monitor`), not an
+/// actor: spawning an actor makes the connection wait for the new
+/// process's init, once per stream, in the connection's own loop
+/// (BT-4469). Nothing calls a stream process, so it needs no mailbox
+/// protocol. Its process dictionary carries `markerKey` so tools (the
+/// stress tests' stream killer) can find stream processes.
 ///
 /// An abnormal end (a leaked raise past the pipeline's own handling)
 /// is swallowed here the way Bandit's handle_error returns normally:
 /// the 500 already went out through sendOnError, and the connection
 /// resets the stream on the DOWN message.
-typed Server subclass: StreamProcess
-  state: conn :: ConnectionHandler | Nil = nil
-  state: transport :: HTTP2Stream | Nil = nil
-  state: handler :: ExchangeHandlerLike | Nil = nil
-  state: config :: BuccaneerConfig | Nil = nil
-  state: connData :: Tuple(Boolean, Tuple | Symbol) = {false, #unknown}
-  state: span :: CatalinaTelemetry | Nil = nil
+typed Object subclass: StreamProcess
 
-  initialize -> Nil =>
-    self continueWith: #run
-    nil
+  /// Spawn a monitored stream process running the pipeline on
+  /// transport; answers {pid, monitorRef}. The monitor is the caller's
+  /// (the connection's), set atomically with the spawn.
+  class sealed spawnFor: transport :: HTTP2Stream handler: handler :: ExchangeHandlerLike config: config :: BuccaneerConfig connData: connData :: Tuple(Boolean, Tuple | Symbol) span: span :: CatalinaTelemetry | Nil -> Tuple =>
+    Erlang erlang
+      spawn_monitor: [
+        StreamProcess
+          run: transport
+          handler: handler
+          config: config
+          connData: connData
+          span: span
+      ]
 
-  run -> Nil =>
+  /// The stream process body: mark the process, run the pipeline.
+  class sealed run: transport :: HTTP2Stream handler: handler :: ExchangeHandlerLike config: config :: BuccaneerConfig connData: connData :: Tuple(Boolean, Tuple | Symbol) span: span :: CatalinaTelemetry | Nil -> Nil =>
+    ProcessDictionary at: StreamProcess markerKey put: true
     [
       Pipeline
-        runRequest: self transportValue
-        handler: self handlerValue
-        connectionSpan: self.span
-        connData: self.connData
-        options: self configValue
+        runRequest: transport
+        handler: handler
+        connectionSpan: span
+        connData: connData
+        options: config
     ] on: Exception do: [:e :: Exception | nil]
-    self stopWith: #normal
     nil
 
-  transportValue -> HTTP2Stream =>
-    t := self.transport
-    t isNil ifTrue: [Error signal: "StreamProcess has no transport"]
-    t
-
-  handlerValue -> ExchangeHandlerLike =>
-    h := self.handler
-    h isNil ifTrue: [Error signal: "StreamProcess has no handler"]
-    h
-
-  configValue -> BuccaneerConfig =>
-    c := self.config
-    c isNil ifTrue: [Error signal: "StreamProcess has no config"]
-    c
+  /// The process-dictionary key that marks a stream process.
+  class sealed markerKey -> Symbol => #buccaneer_h2_stream

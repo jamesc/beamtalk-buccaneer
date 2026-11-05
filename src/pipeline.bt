@@ -33,6 +33,7 @@ typed Object subclass: Pipeline
         target: target
         headers: headers
         connData: connData
+        http: config http
       ex := Exchange open: initial
       meta := base at: #conn put: initial
       span := BuccaneerTelemetry
@@ -255,7 +256,9 @@ typed Object subclass: Pipeline
   /// The stop measurements for a served request: the stamps and byte
   /// counts the request reached, as the adapter's metrics.
   class sealed metricsFrom: st :: ExchangeState -> Dictionary(Symbol, Object) =>
-    out := #{#req_header_end_time => st reqHeaderEndTime}
+    out :: Dictionary(Symbol, Object) := #{
+      #req_header_end_time => st reqHeaderEndTime
+    }
     st reqBodyStartTime isNil
       ifFalse: [
         out := (out at: #req_body_start_time put: st reqBodyStartTime) at: #req_body_bytes put: st reqBodyBytes
@@ -270,11 +273,15 @@ typed Object subclass: Pipeline
           out := out at: #resp_end_time put: st respEndTime
         ]
       ]
+    st respCompressionMethod isNil
+      ifFalse: [
+        out := (out at: #resp_compression_method put: st respCompressionMethod) at: #resp_uncompressed_body_bytes put: st respUncompressedBodyBytes
+      ]
     out
 
   /// The exchange state for a parsed head (Bandit's build_conn!, minus
-  /// the conn).
-  class sealed buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: HttpHeaders connData: connData :: Tuple(Boolean, Tuple | Symbol) -> ExchangeState =>
+  /// the conn, plus the adapter's negotiated content encoding).
+  class sealed buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: HttpHeaders connData: connData :: Tuple(Boolean, Tuple | Symbol) http: http :: HttpOptions -> ExchangeState =>
     {secure, _} := connData
     scheme := secure =:= true ifTrue: [#https] ifFalse: [#http]
     {host, port} := self
@@ -293,7 +300,9 @@ typed Object subclass: Pipeline
         #path => path,
         #query => query,
         #headers => headers,
-        #expectContinue => self expectsContinue: headers version: transport version
+        #expectContinue => self expectsContinue: headers version: transport version,
+        #httpOptions => http,
+        #contentEncoding => Compression negotiate: (Headers getHeader: headers name: "accept-encoding") options: http
       }
 
   /// Whether the client waits for `100 Continue` (Bandit's expect_continue?).
@@ -301,15 +310,10 @@ typed Object subclass: Pipeline
   /// auto-100 (and therefore no unhonored-expect close either).
   class sealed expectsContinue: headers :: HttpHeaders version: ver :: HttpVersion -> Boolean =>
     (ver =:= #http11 or: [ver =:= #http2]) ifFalse: [^false]
-    expect := Headers getHeader: headers name: "expect"
-    expect isNil ifTrue: [^false]
     // HTTP/2 request values stay Binary (HPACK decodes opaque); HTTP/1
     // parses them to String. Accept both spellings of 100-continue.
-    text := expect match: [
-      s :: String -> s;
-      b :: Binary -> b asStringUnchecked;
-      _ -> ^false
-    ]
+    text := Headers text: (Headers getHeader: headers name: "expect")
+    text isNil ifTrue: [^false]
     text asciiLowercase =:= "100-continue"
 
   /// {host, port} from an absolute target, else the Host header

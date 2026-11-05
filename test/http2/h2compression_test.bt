@@ -1,0 +1,443 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of the compression cases of Bandit's `http2/protocol_test.exs`
+/// ("DATA frames": content negotiation and encoding, chunked DATA) and
+/// the content-encoding telemetry case of `http2/plug_test.exs`. Each
+/// test opens a TLS connection with ALPN `h2`, sends one GET to
+/// CompressionRoutes and reads the response HEADERS and DATA frames.
+/// Header lists are compared in order without `date` (and without
+/// Plug's `cache-control`, which Buccaneer does not add).
+TestCase subclass: H2CompressionTest
+
+  tableName -> Symbol => #h2CompressionTestEvents
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  text: v => Headers stringOrOpaque: v
+
+  /// GET `path` on stream 1 with the extra request headers. Answers
+  /// #{#end => endStream on HEADERS, #headers => cooked headers without
+  /// date, #frames => each DATA payload, #body => their concatenation}.
+  get: path on: srv headers: extra =>
+    {sock, enc, dec} := H2Client openTls: (self portOf: srv)
+    hs := #({":method", "GET"}, {":path", path}, {":scheme", "https"}, {":authority", "localhost"})
+    extra do: [:h | hs := hs add: h]
+    {frag, _} := H2Client encode: hs table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: true)
+    {_, endStream, headers, _} := H2Client recvHeadersTls: sock dec: dec
+    frames := endStream ifTrue: [#()] ifFalse: [self dataFrames: sock acc: #()]
+    H2Client closeTls: sock
+    cooked := (headers reject: [:h |
+      (self text: (h at: 1)) =:= "date"
+    ]) collect: [:h | {(self text: (h at: 1)), (self text: (h at: 2))}]
+    body := frames inject: (Binary fromBytes: #()) into: [:acc :f |
+      acc concat: f
+    ]
+    #{#end => endStream, #headers => cooked, #frames => frames, #body => body}
+
+  get: path on: srv accept: coding =>
+    self
+      get: path
+      on: srv
+      headers: #({"accept-encoding", coding})
+
+  /// DATA payloads to END_STREAM (an empty final frame included),
+  /// skipping WINDOW_UPDATEs.
+  dataFrames: sock acc: acc =>
+    frame := H2Client recvFrameTls: sock
+    frame match: [
+      d :: H2Data -> d endStream ifTrue: [
+        acc add: d data
+      ] ifFalse: [self dataFrames: sock acc: (acc add: d data)];
+      w :: H2WindowUpdate -> self dataFrames: sock acc: acc;
+      _ -> Error signal: "expected DATA"
+    ]
+
+  /// Bytes off the wire are a Binary; the routes' body is a String.
+  assertBigBody: bytes =>
+    self assert: bytes asStringUnchecked equals: CompressionRoutes bigBody
+
+  assertHeaders: resp are: expected =>
+    self assert: (resp at: #headers) equals: expected
+
+  encodedHeaders: coding length: length =>
+    #({":status", "200"}, {"content-length", length}, {"content-encoding", coding}, {"vary", "accept-encoding"})
+
+  identityHeaders =>
+    #({":status", "200"}, {"content-length", "10000"}, {"vary", "accept-encoding"})
+
+  testDeflateIfNegotiated =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: (self encodedHeaders: "deflate" length: "40")
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testGzipIfNegotiated =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip"
+    self assertHeaders: resp are: (self encodedHeaders: "gzip" length: "46")
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testXGzipIfNegotiated =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "x-gzip"
+    self assertHeaders: resp are: (self encodedHeaders: "x-gzip" length: "46")
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testZstdIfNegotiated =>
+    Compression zstdAvailable ifFalse: [^self]
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "zstd"
+    self assertHeaders: resp are: (self encodedHeaders: "zstd" length: "19")
+    self assert: (resp at: #body) equals: CompressionRoutes zstdBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testFirstMatchingResponseEncoding =>
+    srv := CompressionRoutes tlsServerWith: #{
+      #responseEncodings => #("gzip", "x-gzip", "deflate")
+    }
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "foo, deflate, gzip"
+    self assertHeaders: resp are: (self encodedHeaders: "gzip" length: "46")
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testHonorsQValues =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip;q=1.0,deflate;q=0.6,identity;q=0.3"
+    self assertHeaders: resp are: (self encodedHeaders: "gzip" length: "46")
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testQZeroRefusesCoding =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip;q=0, deflate"
+    self assertHeaders: resp are: (self encodedHeaders: "deflate" length: "40")
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testRefusesAllSupportedCodings =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "zstd;q=0, gzip;q=0, x-gzip;q=0, deflate;q=0"
+    self assertHeaders: resp are: self identityHeaders
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testCodingsCaseInsensitive =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "GZIP"
+    self assertHeaders: resp are: (self encodedHeaders: "gzip" length: "46")
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testHonorsWildcard =>
+    srv := CompressionRoutes tlsServerWith: #{
+      #responseEncodings => #("gzip", "x-gzip", "deflate")
+    }
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "*"
+    self assertHeaders: resp are: (self encodedHeaders: "gzip" length: "46")
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testQZeroWildcardRefuses =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "*;q=0, deflate"
+    self assertHeaders: resp are: (self encodedHeaders: "deflate" length: "40")
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testIdentityOnly =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "identity"
+    self assertHeaders: resp are: self identityHeaders
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testMalformedQValueAccepts =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip;q=huh"
+    self assertHeaders: resp are: (self encodedHeaders: "gzip" length: "46")
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testNoEncodingOrVaryFor204 =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_204"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #end)
+    self assertHeaders: resp are: #({":status", "204"})
+    self assert: (srv stop: 5000) isOk
+
+  testVaryButNoEncodingFor304 =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_304"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #end)
+    self assertHeaders: resp are: #({":status", "304"}, {"content-length", "5"}, {"vary", "accept-encoding"})
+    self assert: (srv stop: 5000) isOk
+
+  testVaryButNoEncodingForEmptyBody =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_empty"
+      on: srv
+      accept: "deflate"
+    self deny: (resp at: #end)
+    self assertHeaders: resp are: #({":status", "200"}, {"content-length", "0"}, {"vary", "accept-encoding"})
+    self assert: (resp at: #body) size equals: 0
+    self assert: (srv stop: 5000) isOk
+
+  testIolistBodyEncoded =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_iolist_body"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: (self encodedHeaders: "deflate" length: "40")
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testOwnContentEncodingNotReencoded =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_content_encoding"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: #({":status", "200"}, {"content-length", "10000"}, {"vary", "accept-encoding"}, {"content-encoding", "deflate"})
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testStrongEtagNotEncoded =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_strong_etag"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: #({":status", "200"}, {"content-length", "10000"}, {"vary", "accept-encoding"}, {"etag", """1234"""})
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testWeakEtagEncoded =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_weak_etag"
+      on: srv
+      accept: "gzip"
+    self assertHeaders: resp are: #({":status", "200"}, {"content-length", "46"}, {"content-encoding", "gzip"}, {"vary", "accept-encoding"}, {"etag", "W/""1234"""})
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testMalformedWEtagNotEncoded =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_malformed_w_etag"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: #({":status", "200"}, {"content-length", "10000"}, {"vary", "accept-encoding"}, {"etag", "Wonky"})
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testNoTransformNotEncoded =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_no_transform"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: #({":status", "200"}, {"content-length", "10000"}, {"vary", "accept-encoding"}, {"cache-control", "no-transform"})
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testNoDuplicateVary =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body_with_vary_accept_encoding"
+      on: srv
+      accept: "deflate"
+    self assert: ((resp at: #headers) includes: {"content-encoding", "deflate"})
+    self assert: ((resp at: #headers) select: [:h |
+      (h at: 1) =:= "vary"
+    ]) equals: #({"vary", "accept-encoding"})
+    self assert: (srv stop: 5000) isOk
+
+  testNoDuplicateVaryAnyCase =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body_with_vary_mixed_case"
+      on: srv
+      accept: "deflate"
+    self assert: ((resp at: #headers) includes: {":status", "200"})
+    self assert: ((resp at: #headers) includes: {"content-encoding", "deflate"})
+    self assert: ((resp at: #headers) select: [:h |
+      (h at: 1) =:= "vary"
+    ]) equals: #({"vary", "Accept-Encoding"})
+    self assert: (srv stop: 5000) isOk
+
+  testVaryAlongsideUnrelatedVary =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body_with_vary_accept_language"
+      on: srv
+      accept: "deflate"
+    self assert: ((resp at: #headers) includes: {":status", "200"})
+    self assert: ((resp at: #headers) includes: {"content-encoding", "deflate"})
+    self assert: ((resp at: #headers) includes: {"vary", "accept-language"})
+    self assert: ((resp at: #headers) includes: {"vary", "accept-encoding"})
+    self assert: (srv stop: 5000) isOk
+
+  testNoAcceptEncodingIsIdentity =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      headers: #()
+    self assertHeaders: resp are: self identityHeaders
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testNoMatchingCodingIsIdentity =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "a, b, c"
+    self assertHeaders: resp are: self identityHeaders
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testCompressionDisabled =>
+    srv := CompressionRoutes tlsServerWith: #{#compress => false}
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: #({":status", "200"}, {"content-length", "10000"})
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testDeflateEncodesChunkedFrames =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/chunk_response"
+      on: srv
+      accept: "deflate"
+    self assertHeaders: resp are: #({":status", "200"}, {"content-encoding", "deflate"}, {"vary", "accept-encoding"})
+    frames := resp at: #frames
+    // Two encoded chunks, deflate's final block, then the empty END_STREAM.
+    self assert: frames size equals: 4
+    self assert: frames last size equals: 0
+    self assert: (CompressionRoutes inflate: (resp at: #body)) asStringUnchecked equals: "OKDOKEE"
+    self assert: (srv stop: 5000) isOk
+
+  testNoGzipForChunkedFrames =>
+    srv := CompressionRoutes tlsServer
+    resp := self
+      get: "/chunk_response"
+      on: srv
+      accept: "gzip"
+    self assertHeaders: resp are: #({":status", "200"}, {"vary", "accept-encoding"})
+    frames := resp at: #frames
+    self assert: (frames at: 1) asStringUnchecked equals: "OK"
+    self assert: (frames at: 2) asStringUnchecked equals: "DOKEE"
+    self assert: (srv stop: 5000) isOk
+
+  /// `http2/plug_test.exs`: the stop span carries the compression metrics.
+  testStopWithContentEncoding =>
+    (Ets exists: self tableName) ifTrue: [(Ets named: self tableName) delete]
+    TelemetryCollector detach: self tableName
+    Ets new: self tableName type: #set
+    TelemetryCollector attachAll: #h2CompressionPlug table: self tableName
+    srv := (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #catalina => #{
+          #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+        },
+        #displayHandler => #h2CompressionPlug,
+        #handler => [:ex |
+          ex readAll: 8000000
+          ex
+            sendResp: 200
+            headers: #()
+            body: "OK"
+        ]
+      }) unwrap
+    {sock, enc, dec} := H2Client openTls: (self portOf: srv)
+    {frag, _} := H2Client encode: #({":method", "POST"}, {":path", "/do_read_body"}, {":scheme", "https"}, {":authority", "localhost"}, {"accept-encoding", "gzip"}) table: enc
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: frag
+        endStream: false)
+    H2Client sendFrameTls: sock frame: (((H2Data new withStreamId: 1) withEndStream: true) withData: ("a" repeat: 80))
+    {_, _, _, _} := H2Client recvHeadersTls: sock dec: dec
+    {_, body} := H2Client recvBodyTls: sock
+    self assert: body equals: ((Erlang zlib) gzip: "OK")
+    stop := TelemetryCollector
+      await: #request
+      named: #stop
+      in: self tableName
+    self deny: stop isNil
+    measurements := stop at: 2
+    self assert: (measurements at: #req_body_bytes) equals: 80
+    self assert: (measurements at: #resp_uncompressed_body_bytes) equals: 2
+    self assert: (measurements at: #resp_body_bytes) equals: 22
+    self assert: (measurements at: #resp_compression_method) equals: "gzip"
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+    TelemetryCollector detach: self tableName
+    (Ets named: self tableName) delete

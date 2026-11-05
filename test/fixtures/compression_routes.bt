@@ -1,0 +1,161 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// The plug functions Bandit's compression tests route to (its
+/// `http1/protocol_test.exs` and `http2/protocol_test.exs` "content
+/// negotiation and encoding" helpers), shared by the HTTP/1 and HTTP/2
+/// ports: `handle:` dispatches on the request path. Bodies are 10,000
+/// `a`s unless the route says otherwise.
+sealed Object subclass: CompressionRoutes
+
+  /// The uncompressed body every big route sends.
+  class sealed bigBody => "a" repeat: 10000
+
+  /// Start a server on an ephemeral port serving these routes, with the
+  /// given `#http` options.
+  class sealed serverWith: http =>
+    (Buccaneer start: #{
+      #port => 0,
+      #http => http,
+      #handler => [:ex | self handle: ex]
+    }) unwrap
+
+  class sealed server => self serverWith: #{}
+
+  /// The same over TLS with ALPN `h2`, as Bandit's HTTP/2 tests run.
+  class sealed tlsServerWith: http =>
+    (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #catalina => #{
+          #transportOptions => #({#alpn_preferred_protocols, #("h2")})
+        },
+        #http => http,
+        #handler => [:ex | self handle: ex]
+      }) unwrap
+
+  class sealed tlsServer => self tlsServerWith: #{}
+
+  class sealed handle: ex =>
+    path := ex path
+    path =:= "/send_big_body"
+      ifTrue: [
+        ^ex
+          sendResp: 200
+          headers: #({"content-length", "10000"})
+          body: self bigBody
+      ]
+    path =:= "/send_big_body_with_vary_accept_encoding" ifTrue: [
+      ^self send: ex header: {"vary", "accept-encoding"}
+    ]
+    path =:= "/send_big_body_with_vary_mixed_case" ifTrue: [
+      ^self send: ex header: {"vary", "Accept-Encoding"}
+    ]
+    path =:= "/send_big_body_with_vary_accept_language" ifTrue: [
+      ^self send: ex header: {"vary", "accept-language"}
+    ]
+    path =:= "/send_204"
+      ifTrue: [
+        ^ex
+          sendResp: 204
+          headers: #()
+          body: "this is an invalid body"
+      ]
+    path =:= "/send_304"
+      ifTrue: [
+        ^ex
+          sendResp: 304
+          headers: #()
+          body: "abcde"
+      ]
+    path =:= "/send_empty"
+      ifTrue: [
+        ^ex
+          sendResp: 200
+          headers: #()
+          body: ""
+      ]
+    path =:= "/send_iolist_body"
+      ifTrue: [
+        ^ex
+          sendResp: 200
+          headers: #({"content-length", "10000"})
+          body: ((Erlang lists) duplicate: 10000 with: "a")
+      ]
+    path =:= "/send_content_encoding"
+      ifTrue: [
+        ^ex
+          sendResp: 200
+          headers: #({"content-encoding", "deflate"}, {"content-length", "10000"})
+          body: self bigBody
+      ]
+    path =:= "/send_strong_etag" ifTrue: [
+      ^self send: ex header: {"etag", """1234"""}
+    ]
+    path =:= "/send_weak_etag" ifTrue: [
+      ^self send: ex header: {"etag", "W/""1234"""}
+    ]
+    path =:= "/send_malformed_w_etag" ifTrue: [
+      ^self send: ex header: {"etag", "Wonky"}
+    ]
+    path =:= "/send_no_transform" ifTrue: [
+      ^self send: ex header: {"cache-control", "no-transform"}
+    ]
+    path =:= "/send_mixed_case_no_transform" ifTrue: [
+      ^self send: ex header: {"cache-control", "No-Transform"}
+    ]
+    path =:= "/send_big_body_chunked"
+      ifTrue: [
+        ex sendChunked: 200 headers: #()
+        10 timesRepeat: [ex chunk: ("a" repeat: 1000)]
+        ^ex
+      ]
+    path =:= "/send_known_length_stream"
+      ifTrue: [
+        ex sendChunked: 200 headers: #({"content-length", "10000"})
+        10 timesRepeat: [ex chunk: ("a" repeat: 1000)]
+        ^ex
+      ]
+    path =:= "/chunk_response"
+      ifTrue: [
+        ex sendChunked: 200 headers: #(); chunk: "OK"; chunk: "DOKEE"
+        ^ex
+      ]
+    ex
+      sendResp: 404
+      headers: #()
+      body: "no route"
+
+  /// The big body with one extra response header, set through
+  /// putRespHeader: as Bandit's helpers do.
+  class sealed send: ex header: h =>
+    ex putRespHeader: (h at: 1) value: (h at: 2)
+    ex
+      sendResp: 200
+      headers: #()
+      body: self bigBody
+
+  /// Inflate a zlib (deflate) body.
+  class sealed inflate: body =>
+    z := (Erlang zlib) open
+    (Erlang zlib) inflateInit: z
+    out := Binary fromIolist: ((Erlang zlib) inflate: z with: body)
+    (Erlang zlib) inflateEnd: z
+    (Erlang zlib) close: z
+    out
+
+  /// The gzip of the big body, as `:zlib.gzip/1` makes it.
+  class sealed gzippedBigBody => (Erlang zlib) gzip: self bigBody
+
+  /// The zstd frame of the big body, as `:zstd.compress/1` makes it.
+  class sealed zstdBigBody =>
+    @expect unresolved_ffi
+    Binary fromIolist: ((Erlang zstd) compress: self bigBody)
+
+  /// Decompress a zstd body.
+  class sealed unzstd: body =>
+    @expect unresolved_ffi
+    Binary fromIolist: ((Erlang zstd) decompress: body)

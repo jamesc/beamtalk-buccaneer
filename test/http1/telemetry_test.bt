@@ -138,3 +138,31 @@ TestCase subclass: TelemetryTest
       in: self tableName
     self assert: stops isEmpty
     self assert: (srv stop: 5000) isOk
+
+  testStopWithContentEncoding =>
+    srv := self
+      server: [:ex |
+        ex readAll: 8000000
+        ex
+          sendResp: 200
+          headers: #()
+          body: "OK"
+      ]
+    client := self connect: (self portOf: srv)
+    (Erlang gen_tcp)
+      send: client
+      with: "POST /do_read_body HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\ncontent-length: 80\r\n\r\n"
+        ++ ("a" repeat: 80)
+    resp := Loopback responseOn: client body: 22
+    (Erlang gen_tcp) close: client
+    self assert: (resp includesSubstring: "content-encoding: gzip")
+    stop := self stopNamed: #stop
+    self deny: stop =:= #none
+    measurements := stop at: 2
+    self assert: (measurements at: #req_body_bytes) equals: 80
+    self assert: (measurements at: #resp_uncompressed_body_bytes) equals: 2
+    self assert: (measurements at: #resp_body_bytes) equals: 22
+    self assert: (measurements at: #resp_compression_method) equals: "gzip"
+    self assert: ((measurements at: #resp_start_time) isKindOf: Integer)
+    self assert: ((measurements at: #resp_end_time) isKindOf: Integer)
+    self assert: (srv stop: 5000) isOk

@@ -1,0 +1,118 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Compression without a server: accept-encoding negotiation, q-value
+/// parsing, which responses qualify, and the deflate stream's
+/// roundtrip. The wire behavior is covered by HTTP1CompressionTest and
+/// H2CompressionTest.
+TestCase subclass: CompressionTest
+
+  testNegotiateNilHeader =>
+    self assert: (Compression negotiate: nil options: #{}) isNil
+
+  testNegotiateDisabled =>
+    self assert: (Compression negotiate: "gzip" options: #{
+      #compress => false
+    }) isNil
+
+  testNegotiatePrefersServerOrder =>
+    http := #{#responseEncodings => #("gzip", "x-gzip", "deflate")}
+    self assert: (Compression negotiate: "deflate, gzip" options: http) equals: "gzip"
+    self assert: (Compression negotiate: "deflate" options: http) equals: "deflate"
+
+  testNegotiateBinaryValue =>
+    // HTTP/2 request values arrive as Binaries after HPACK.
+    self assert: (Compression negotiate: (Binary fromBytes: #(100, 101, 102, 108, 97, 116, 101)) options: #{}) equals: "deflate"
+
+  testNegotiateWildcardAndRefusals =>
+    http := #{#responseEncodings => #("gzip", "deflate")}
+    self assert: (Compression negotiate: "*" options: http) equals: "gzip"
+    self assert: (Compression negotiate: "*;q=0" options: http) isNil
+    self assert: (Compression negotiate: "gzip;q=0, *" options: http) equals: "deflate"
+    self assert: (Compression negotiate: "identity" options: http) isNil
+
+  testDefaultEncodings =>
+    defaults := Compression defaultEncodings
+    self assert: (defaults includes: "gzip")
+    self assert: (defaults includes: "deflate")
+    self assert: (defaults includes: "zstd") equals: Compression zstdAvailable
+
+  testParseQuality =>
+    self assert: (Compression parseQuality: "0.5") equals: 0.5
+    self assert: (Compression parseQuality: "1") equals: 1.0
+    self assert: (Compression parseQuality: "0") equals: 0.0
+    self assert: (Compression parseQuality: "0.000") equals: 0.0
+    self assert: (Compression parseQuality: "0.3x") equals: 0.3
+    self assert: (Compression parseQuality: "huh") equals: 1.0
+
+  testQualityValueParams =>
+    self assert: (Compression qualityValue: #(" Q=0 ")) equals: 0.0
+    self assert: (Compression qualityValue: #("level=1", "q=0.2")) equals: 0.2
+    self assert: (Compression qualityValue: #("q = 0")) equals: 1.0
+    self assert: (Compression qualityValue: #()) equals: 1.0
+
+  testStartAddsHeadersInBanditOrder =>
+    {hs, context} := Compression
+      start: "gzip"
+      status: 200
+      headers: #({"x-a", "1"})
+      options: #{}
+      emptyBody: false
+      streamable: false
+    self assert: hs equals: #({"content-encoding", "gzip"}, {"vary", "accept-encoding"}, {"x-a", "1"})
+    self assert: context method equals: #gzip
+
+  testStartUnsupportedCodingIsIdentity =>
+    {hs, context} := Compression
+      start: "br"
+      status: 200
+      headers: #()
+      options: #{}
+      emptyBody: false
+      streamable: false
+    self assert: hs equals: #({"vary", "accept-encoding"})
+    self assert: context method equals: #identity
+
+  testStartGzipCannotStream =>
+    {hs, context} := Compression
+      start: "gzip"
+      status: 200
+      headers: #()
+      options: #{}
+      emptyBody: false
+      streamable: true
+    self assert: hs equals: #({"vary", "accept-encoding"})
+    self assert: context method equals: #identity
+
+  testStartSkips204Entirely =>
+    {hs, context} := Compression
+      start: "gzip"
+      status: 204
+      headers: #()
+      options: #{}
+      emptyBody: false
+      streamable: false
+    self assert: hs equals: #()
+    self assert: context method equals: #identity
+
+  testDeflateRoundtripCountsBytesIn =>
+    {_, context} := Compression
+      start: "deflate"
+      status: 200
+      headers: #()
+      options: #{}
+      emptyBody: false
+      streamable: true
+    {first, next} := context compress: "hello "
+    {second, last} := next compress: #("wor", "ld")
+    tail := last close
+    self assert: last bytesIn equals: 11
+    self assert: last methodName equals: "deflate"
+    body := Binary fromIolist: #(first, second, tail)
+    self assert: (CompressionRoutes inflate: body) asStringUnchecked equals: "hello world"
+
+  testIdentityPassesThrough =>
+    {out, context} := Compression identity compress: "abc"
+    self assert: out equals: "abc"
+    self assert: context bytesIn equals: 0
+    self assert: context close equals: #()

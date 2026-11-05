@@ -11,10 +11,10 @@ type ConfigOptions = Dictionary(Symbol, Object)
 /// - `#logProtocolErrors` (`#short` | `#verbose` | `False`, default `#short`) — how much to log on a protocol error.
 /// - `#logClientClosures` (`#short` | `#verbose` | `False`, default `false`) — how much to log when the client went away first.
 /// - `#logExceptionsWithStatusCodes` (Integer, List, or anything answering `includes:`, default `500-599`) — which statuses log on an internal error.
-/// - `#compress` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#responseEncodings` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#deflateOptions` (reserved) — accepted for Bandit parity, currently unused.
-/// - `#zstdOptions` (reserved) — accepted for Bandit parity, currently unused.
+/// - `#compress` (Boolean, default `true`) — negotiate response content-encoding from `accept-encoding` and add `vary: accept-encoding`; `false` sends every body identity-encoded.
+/// - `#responseEncodings` (List of String, default `zstd` (OTP 28+), `gzip`, `x-gzip`, `deflate`) — the codings offered, in preference order; unsupported names are ignored.
+/// - `#deflateOptions` (Dictionary, default empty) — zlib settings for deflate: `#level`, `#windowBits`, `#memLevel`, `#strategy`.
+/// - `#zstdOptions` (Dictionary, default empty) — zstd compression parameters, passed to `zstd:context/2` (e.g. `#checksumFlag`).
 type HttpOptions = Dictionary(Symbol, Object)
 
 /// The `#http1` section: Bandit's HTTP/1 options, in camelCase.
@@ -143,6 +143,7 @@ typed Value subclass: BuccaneerConfig
       name: #http
       keys: self httpKeys
     self checkHttpLoggingOptions: http
+    self checkCompressionOptions: http
     http1 := self
       section: options
       name: #http1
@@ -219,6 +220,27 @@ typed Value subclass: BuccaneerConfig
     self checkStatusCodes: (http at: #logExceptionsWithStatusCodes ifAbsent: [
       nil
     ])
+
+  /// Fail fast on compression option typos: they are read per response.
+  class checkCompressionOptions: http :: HttpOptions -> Nil =>
+    (http at: #compress ifAbsent: [true]) match: [
+      _b :: Boolean -> nil;
+      _ -> Error signal: "Invalid value for #compress"
+    ]
+    (http at: #responseEncodings ifAbsent: [#()]) match: [
+      l :: List -> (l allSatisfy: [:e :: Object |
+        e isKindOf: String
+      ]) ifFalse: [Error signal: "Invalid value for #responseEncodings"];
+      _ -> Error signal: "Invalid value for #responseEncodings"
+    ]
+    #(#deflateOptions, #zstdOptions)
+      do: [:key :: Symbol |
+        (http at: key ifAbsent: [#{}]) match: [
+          _d :: Dictionary -> nil;
+          _ -> Error signal: "Invalid value for #" ++ key asString
+        ]
+      ]
+    nil
 
   class checkVerbosity: raw :: Object name: name :: String -> Nil =>
     raw isNil ifTrue: [^nil]

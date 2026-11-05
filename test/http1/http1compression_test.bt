@@ -1,0 +1,517 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Port of Bandit's `http1/protocol_test.exs` "response body — content
+/// negotiation and encoding (RFC9110§8.4)" (35 tests), plus the
+/// compression case of `http1/telemetry_test.exs`. Each test serves one
+/// `connection: close` request from CompressionRoutes over raw TCP and
+/// reads the whole response, de-chunking a chunked body. Bodies are
+/// compared raw, as Bandit's Req client is configured to.
+TestCase subclass: HTTP1CompressionTest
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  /// GET `path` with the extra request headers; answer
+  /// #{#status, #headers, #body}.
+  get: path on: srv headers: extra =>
+    client := ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: (self portOf: srv)
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+    lines := extra inject: "" into: [:acc :h |
+      acc ++ (h at: 1) ++ ": " ++ (h at: 2) ++ "\r\n"
+    ]
+    (Erlang gen_tcp)
+      send: client
+      with: "GET "
+        ++ path
+        ++ " HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n"
+        ++ lines
+        ++ "\r\n"
+    raw := self readToClose: client acc: (Binary fromBytes: #())
+    (Erlang gen_tcp) close: client
+    self parse: raw
+
+  get: path on: srv accept: coding =>
+    self
+      get: path
+      on: srv
+      headers: #({"accept-encoding", coding})
+
+  readToClose: client acc: acc =>
+    got := (Erlang gen_tcp)
+      recv: client
+      with: 0
+      with: 2000
+    got isError ifTrue: [^acc]
+    self readToClose: client acc: (acc concat: got value)
+
+  parse: raw =>
+    {pos, _} := (Erlang binary) match: raw with: "\r\n\r\n"
+    head := (raw part: 0 size: pos) asStringUnchecked
+    rest := raw part: pos + 4 size: raw size - pos - 4
+    lines := head split: "\r\n"
+    status := ((lines first split: " ") at: 2) asInteger
+    headers := (lines drop: 1)
+      collect: [:line |
+        i := line indexOf: ": "
+        {(line take: i - 1) asciiLowercase, (line drop: i + 1)}
+      ]
+    chunked := headers anySatisfy: [:h |
+      (h at: 1) =:= "transfer-encoding" and: [(h at: 2) =:= "chunked"]
+    ]
+    body := chunked ifTrue: [
+      self dechunk: rest acc: (Binary fromBytes: #())
+    ] ifFalse: [rest]
+    #{#status => status, #headers => headers, #body => body}
+
+  dechunk: data acc: acc =>
+    {pos, _} := (Erlang binary) match: data with: "\r\n"
+    size := (Erlang erlang) binary_to_integer: (data part: 0 size: pos) with: 16
+    size =:= 0 ifTrue: [^acc]
+    chunk := data part: pos + 2 size: size
+    self dechunk: (data part: pos + 4 + size size: data size - pos - 4 - size) acc: (acc concat: chunk)
+
+  /// Every value of the response header `name`, in order.
+  values: name of: resp =>
+    ((resp at: #headers) select: [:h |
+      (h at: 1) =:= name
+    ]) collect: [:h | h at: 2]
+
+  /// Bytes off the wire are a Binary; the routes' body is a String.
+  assertBigBody: bytes =>
+    self assert: bytes asStringUnchecked equals: CompressionRoutes bigBody
+
+  assertEncoded: resp as: coding length: length =>
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-length" of: resp) equals: #(length)
+    self assert: (self values: "content-encoding" of: resp) equals: #(coding)
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+
+  /// The big body, sent as is, with `vary: accept-encoding`.
+  assertIdentity: resp =>
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-length" of: resp) equals: #("10000")
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+    self assertBigBody: (resp at: #body)
+
+  testDeflateIfNegotiated =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "deflate"
+    self
+      assertEncoded: resp
+      as: "deflate"
+      length: "40"
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testGzipIfNegotiated =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip"
+    self
+      assertEncoded: resp
+      as: "gzip"
+      length: "46"
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testXGzipIfNegotiated =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "x-gzip"
+    self
+      assertEncoded: resp
+      as: "x-gzip"
+      length: "46"
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testZstdIfNegotiated =>
+    Compression zstdAvailable ifFalse: [^self]
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "zstd"
+    self
+      assertEncoded: resp
+      as: "zstd"
+      length: "19"
+    self assert: (resp at: #body) equals: CompressionRoutes zstdBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testFirstMatchingResponseEncoding =>
+    srv := CompressionRoutes serverWith: #{
+      #responseEncodings => #("gzip", "x-gzip", "deflate")
+    }
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "foo, deflate, gzip"
+    self
+      assertEncoded: resp
+      as: "gzip"
+      length: "46"
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testHonorsQValues =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip;q=1.0,deflate;q=0.6,identity;q=0.3"
+    self
+      assertEncoded: resp
+      as: "gzip"
+      length: "46"
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testQZeroRefusesCoding =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip;q=0, deflate"
+    self
+      assertEncoded: resp
+      as: "deflate"
+      length: "40"
+    self assert: (srv stop: 5000) isOk
+
+  testRefusesAllSupportedCodings =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "zstd;q=0, gzip;q=0, x-gzip;q=0, deflate;q=0"
+    self assertIdentity: resp
+    self assert: (srv stop: 5000) isOk
+
+  testCodingsCaseInsensitive =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "GZIP"
+    self
+      assertEncoded: resp
+      as: "gzip"
+      length: "46"
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testHonorsWildcard =>
+    srv := CompressionRoutes serverWith: #{
+      #responseEncodings => #("gzip", "x-gzip", "deflate")
+    }
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "*"
+    self
+      assertEncoded: resp
+      as: "gzip"
+      length: "46"
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testQZeroWildcardRefuses =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "*;q=0, deflate"
+    self
+      assertEncoded: resp
+      as: "deflate"
+      length: "40"
+    self assert: (srv stop: 5000) isOk
+
+  testIdentityOnly =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "identity"
+    self assertIdentity: resp
+    self assert: (srv stop: 5000) isOk
+
+  testMalformedQValueAccepts =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "gzip;q=huh"
+    self
+      assertEncoded: resp
+      as: "gzip"
+      length: "46"
+    self assert: (srv stop: 5000) isOk
+
+  testNoDuplicateVary =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body_with_vary_accept_encoding"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #("deflate")
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+    self assert: (srv stop: 5000) isOk
+
+  testNoDuplicateVaryAnyCase =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body_with_vary_mixed_case"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #("deflate")
+    self assert: (self values: "vary" of: resp) equals: #("Accept-Encoding")
+    self assert: (srv stop: 5000) isOk
+
+  testVaryAlongsideUnrelatedVary =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body_with_vary_accept_language"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #("deflate")
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding", "accept-language")
+    self assert: (srv stop: 5000) isOk
+
+  testNoEncodingOrVaryFor204 =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_204"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 204
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assert: (self values: "vary" of: resp) equals: #()
+    self assert: (resp at: #body) size equals: 0
+    self assert: (srv stop: 5000) isOk
+
+  testVaryButNoEncodingFor304 =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_304"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 304
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+    self assert: (resp at: #body) size equals: 0
+    self assert: (srv stop: 5000) isOk
+
+  testVaryButNoEncodingForEmptyBody =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_empty"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+    self assert: (resp at: #body) size equals: 0
+    self assert: (srv stop: 5000) isOk
+
+  testIolistBodyEncoded =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_iolist_body"
+      on: srv
+      accept: "deflate"
+    self
+      assertEncoded: resp
+      as: "deflate"
+      length: "40"
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testDeflateEncodesChunks =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body_chunked"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #("deflate")
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testNoGzipForChunks =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body_chunked"
+      on: srv
+      accept: "gzip"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testNoAcceptEncodingIsIdentity =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      headers: #()
+    self assertIdentity: resp
+    self assert: (srv stop: 5000) isOk
+
+  testOwnContentEncodingNotReencoded =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_content_encoding"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-length" of: resp) equals: #("10000")
+    self assert: (self values: "content-encoding" of: resp) equals: #("deflate")
+    self assert: (self values: "vary" of: resp) equals: #("accept-encoding")
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testStrongEtagNotEncoded =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_strong_etag"
+      on: srv
+      accept: "deflate"
+    self assertIdentity: resp
+    self assert: (srv stop: 5000) isOk
+
+  testMalformedWEtagNotEncoded =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_malformed_w_etag"
+      on: srv
+      accept: "deflate"
+    self assertIdentity: resp
+    self assert: (srv stop: 5000) isOk
+
+  testWeakEtagEncoded =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_weak_etag"
+      on: srv
+      accept: "gzip"
+    self
+      assertEncoded: resp
+      as: "gzip"
+      length: "46"
+    self assert: (resp at: #body) equals: CompressionRoutes gzippedBigBody
+    self assert: (srv stop: 5000) isOk
+
+  testNoTransformNotEncoded =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_no_transform"
+      on: srv
+      accept: "deflate"
+    self assertIdentity: resp
+    self assert: (srv stop: 5000) isOk
+
+  testNoTransformAnyCaseNotEncoded =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_mixed_case_no_transform"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-length" of: resp) equals: #("10000")
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testNoMatchingCodingIsIdentity =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "a, b, c"
+    self assertIdentity: resp
+    self assert: (srv stop: 5000) isOk
+
+  testCompressionDisabled =>
+    srv := CompressionRoutes serverWith: #{#compress => false}
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-length" of: resp) equals: #("10000")
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assert: (self values: "vary" of: resp) equals: #()
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testRespectsDeflateOptions =>
+    srv := CompressionRoutes serverWith: #{#deflateOptions => #{#level => 0}}
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #("deflate")
+    // level 0 stores the input: a few bytes over 10,000, not the 40 of
+    // the default level.
+    self assert: (self values: "content-length" of: resp) first asInteger > 10000
+    self assertBigBody: (CompressionRoutes inflate: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testRespectsZstdOptions =>
+    Compression zstdAvailable ifFalse: [^self]
+    srv := CompressionRoutes serverWith: #{
+      #zstdOptions => #{#checksumFlag => true}
+    }
+    resp := self
+      get: "/send_big_body"
+      on: srv
+      accept: "zstd"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-encoding" of: resp) equals: #("zstd")
+    // The checksum adds 4 bytes to the default 19.
+    self assert: (self values: "content-length" of: resp) equals: #("23")
+    self assertBigBody: (CompressionRoutes unzstd: (resp at: #body))
+    self assert: (srv stop: 5000) isOk
+
+  testKnownLengthStreamUnframed =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_known_length_stream"
+      on: srv
+      headers: #()
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-length" of: resp) equals: #("10000")
+    self assert: (self values: "transfer-encoding" of: resp) equals: #()
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk
+
+  testKnownLengthStreamNotCompressed =>
+    srv := CompressionRoutes server
+    resp := self
+      get: "/send_known_length_stream"
+      on: srv
+      accept: "deflate"
+    self assert: (resp at: #status) equals: 200
+    self assert: (self values: "content-length" of: resp) equals: #("10000")
+    self assert: (self values: "content-encoding" of: resp) equals: #()
+    self assert: (self values: "transfer-encoding" of: resp) equals: #()
+    self assertBigBody: (resp at: #body)
+    self assert: (srv stop: 5000) isOk

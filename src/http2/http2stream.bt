@@ -275,7 +275,10 @@ sealed typed Value subclass: HTTP2Stream
   /// proxy here was an actor per call, and it leaked whenever the stream
   /// process was killed mid-call: `ensure:` does not run on a kill.)
   callConn: selector :: Symbol args: args :: List -> Dynamic =>
-    self conn perform: selector withArguments: args timeout: self readTimeout
+    self conn
+      perform: selector
+      withArguments: args
+      timeout: self readTimeout
 
   version -> HttpVersion => #http2
 

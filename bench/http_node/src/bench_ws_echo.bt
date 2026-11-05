@@ -5,7 +5,8 @@
 /// echoes every text and binary frame.
 sealed typed Value subclass: BenchWsEcho
 
-  class onOpen: _ws :: WebSocketHandle request: _req :: HTTPRequest -> BenchWsEcho => self new
+  class onOpen: _ws :: WebSocketHandle request: _req :: HTTPRequest -> BenchWsEcho =>
+    self new
 
   onText: text :: String ws: ws :: WebSocketHandle -> BenchWsEcho =>
     ws sendText: text

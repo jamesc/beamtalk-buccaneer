@@ -621,6 +621,12 @@ Deviations from Bandit, all with covering tests:
 
 ### Phase 7: Release gate (L)
 
+> **Run 2026-11-05 (BT-4086): no-go.** The harness is `just bench` /
+> `just stress` (bench/README.md). beamtalk-http on Buccaneer is
+> 0.39-0.80× cowboy on 9 of the 10 gate rows, and passes only the 1 MiB
+> chunked row. Every stress test passes, after fixes to three bugs the
+> suite found. Results, misses and filed issues: bench/RESULTS.md.
+
 Reuse Catalina's harness (`bench/harness`, `test/stress`, the peer-VM
 runner) and extend it with an HTTP load generator. Servers run side by side,
 interleaved round by round: **beamtalk-http on Buccaneer** against

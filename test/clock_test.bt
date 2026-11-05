@@ -41,11 +41,14 @@ TestCase subclass: ClockTest
   testMissStartsTheUpdater =>
     Clock dateHeader
     filled := false
-    50 timesRepeat: [
-      filled ifFalse: [
-        Clock cachedDate isNil ifTrue: [Timer sleep: 20] ifFalse: [filled := true]
+    50
+      timesRepeat: [
+        filled ifFalse: [
+          Clock cachedDate isNil ifTrue: [
+            Timer sleep: 20
+          ] ifFalse: [filled := true]
+        ]
       ]
-    ]
     self assert: filled
     self assert: (Clock cachedDate matchesRegex: "GMT$" options: #())
 

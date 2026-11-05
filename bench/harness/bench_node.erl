@@ -227,11 +227,22 @@ connection_pids() ->
     lists:usort([Pid || P <- connection_ports(),
                         {connected, Pid} <- [erlang:port_info(P, connected)], is_pid(Pid)]).
 
-%% HTTP/2 stream processes: what connection processes monitor.
+%% HTTP/2 stream processes: Buccaneer's `StreamProcess` actors and
+%% Bandit's `Bandit.HTTP2.StreamProcess` processes, found by their process
+%% dictionary. (Not "what a connection monitors": a connection in a
+%% `gen_server:call` monitors the callee, a class process or the server
+%% actor, and killing those breaks the node.)
 stream_pids() ->
-    lists:usort([S || C <- connection_pids(),
-                      {monitors, Ms} <- [erlang:process_info(C, monitors)],
-                      {process, S} <- Ms, is_pid(S), erlang:is_process_alive(S)]).
+    [P || P <- erlang:processes(), P =/= self(), is_stream(P)].
+
+is_stream(P) ->
+    case erlang:process_info(P, dictionary) of
+        {dictionary, D} ->
+            proplists:get_value('$beamtalk_actor', D) =:= 'StreamProcess'
+                orelse element(1, proplists:get_value('$initial_call', D, {x, x, 0}))
+                       =:= 'Elixir.Bandit.HTTP2.StreamProcess';
+        _ -> false
+    end.
 
 %% The process-dictionary size of each connection process.
 dictionary_sizes() ->

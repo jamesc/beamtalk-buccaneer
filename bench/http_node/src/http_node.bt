@@ -44,25 +44,46 @@ sealed typed Object subclass: HttpNode
     octets := #(#("content-type", "application/octet-stream"))
     [:req :: HTTPRequest |
       req path match: [
-        "/echo" -> HTTPResponse new: #{#status => 200, #headers => octets, #body => req body};
+        "/echo" -> HTTPResponse new: #{
+          #status => 200,
+          #headers => octets,
+          #body => req body
+        };
         "/chunked" -> streaming
           ifTrue: [
-            HTTPResponse streamWith: [:w :: HttpChunkWriter |
-              w startChunked: 200 headers: octets
-              16 timesRepeat: [w sendChunk: piece]
-              w finish
-            ]
+            HTTPResponse
+              streamWith: [:w :: HttpChunkWriter |
+                w startChunked: 200 headers: octets
+                16 timesRepeat: [w sendChunk: piece]
+                w finish
+              ]
           ]
-          ifFalse: [HTTPResponse new: #{#status => 200, #headers => octets, #body => big}];
-        "/file" -> streaming
-          ifTrue: [(HTTPResponse file: path) withStatus: 200]
-          ifFalse: [HTTPResponse new: #{#status => 200, #headers => octets, #body => big}];
+          ifFalse: [
+            HTTPResponse new: #{
+              #status => 200,
+              #headers => octets,
+              #body => big
+            }
+          ];
+        "/file" -> streaming ifTrue: [
+          (HTTPResponse file: path) withStatus: 200
+        ] ifFalse: [
+          HTTPResponse new: #{#status => 200, #headers => octets, #body => big}
+        ];
         "/ws" -> HTTPResponse upgradeWebSocket: BenchWsEcho;
         "/slow" -> [
           Timer sleep: 1000
-          HTTPResponse new: #{#status => 200, #headers => text, #body => "hello world"}
+          HTTPResponse new: #{
+            #status => 200,
+            #headers => text,
+            #body => "hello world"
+          }
         ] value;
-        _ -> HTTPResponse new: #{#status => 200, #headers => text, #body => "hello world"}
+        _ -> HTTPResponse new: #{
+          #status => 200,
+          #headers => text,
+          #body => "hello world"
+        }
       ]
     ]
 
@@ -83,9 +104,9 @@ sealed typed Object subclass: HttpNode
   /// beamtalk-http's request path behind a TLS Buccaneer listener.
   class sealed startTls: options :: Dictionary -> ServerSupervisor =>
     h := self handler: true
-    (Buccaneer
-      start: (self tlsOptions: options)
-      handler: [:ex | HttpExchangeAdapter serve: ex handler: h]) unwrap
+    (Buccaneer start: (self tlsOptions: options) handler: [:ex |
+      HttpExchangeAdapter serve: ex handler: h
+    ]) unwrap
 
   class sealed tlsOptions: options :: Dictionary -> Dictionary =>
     #{
@@ -112,7 +133,10 @@ sealed typed Object subclass: HttpNode
     octets := #({"content-type", "application/octet-stream"})
     [:ex :: Exchange |
       ex path match: [
-        "/echo" -> ex sendResp: 200 headers: octets body: (ex readAll: 8000000) unwrap;
+        "/echo" -> ex
+          sendResp: 200
+          headers: octets
+          body: (ex readAll: 8000000) unwrap;
         "/chunked" -> [
           ex sendChunked: 200 headers: octets
           16 timesRepeat: [ex chunk: piece]
@@ -126,9 +150,15 @@ sealed typed Object subclass: HttpNode
         "/ws" -> ex upgradeToWebSocket: BenchSock new options: #{};
         "/slow" -> [
           Timer sleep: 1000
-          ex sendResp: 200 headers: text body: "hello world"
+          ex
+            sendResp: 200
+            headers: text
+            body: "hello world"
         ] value;
-        _ -> ex sendResp: 200 headers: text body: "hello world"
+        _ -> ex
+          sendResp: 200
+          headers: text
+          body: "hello world"
       ]
     ]
 
@@ -137,4 +167,5 @@ sealed typed Object subclass: HttpNode
     {_ip, port} := srv listenerInfo unwrap
     port
 
-  class sealed stop: srv :: ServerSupervisor timeout: ms :: Integer -> Object => srv stop: ms
+  class sealed stop: srv :: ServerSupervisor timeout: ms :: Integer -> Object =>
+    srv stop: ms

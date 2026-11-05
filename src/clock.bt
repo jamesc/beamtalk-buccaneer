@@ -34,10 +34,11 @@ typed Object subclass: Clock
   /// updater already did) and refresh the date every second, forever.
   class runUpdater -> Nil =>
     table := Ets new: self tableName type: #set
-    [true] whileTrue: [
-      table at: self cacheKey put: self computeDateHeader
-      Timer sleep: 1000
-    ]
+    [true]
+      whileTrue: [
+        table at: self cacheKey put: self computeDateHeader
+        Timer sleep: 1000
+      ]
     nil
 
   /// The cached date, or nil when the table or key is missing.

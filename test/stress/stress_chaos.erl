@@ -9,10 +9,11 @@
 %%   wrong or corrupted answer; the server keeps serving; and once the load
 %%   stops the node is back to its baseline.
 %% - streams: HTTP/2 connections with 10 streams in flight while a killer
-%%   kills a random stream process every 20 ms. The killed stream is reset
-%%   (or answered 500), or, as Bandit sometimes does, the connection goes
-%%   away and the client reconnects; no stream ever gets a wrong answer;
-%%   back to baseline after (this caught the TimeoutProxy leak, BT-4086).
+%%   kills a random stream process every 20 ms (a quarter of the
+%%   streams are `/slow`, so there are always some alive). The killed
+%%   stream is reset (or answered 500), or its connection goes away and
+%%   the client reconnects; no stream ever gets a wrong answer; back to
+%%   baseline after (this caught the TimeoutProxy leak, BT-4086).
 -module(stress_chaos).
 
 -export([tests/0]).
@@ -21,9 +22,9 @@
 
 tests() ->
     [{"chaos_kill_connections", [http_buccaneer, buccaneer, http_cowboy, bandit], fun connections/1},
-     %% Not Bandit: `stream_pids` (what a connection process monitors)
-     %% does not single out Bandit's stream processes, and killing what it
-     %% finds there can leave a stream unanswered until the client times out.
+     %% Not Bandit: there a killed stream process leaves its stream
+     %% unanswered (no RST_STREAM), and the client waits until it times out
+     %% (Bandit 1.12.5, measured in BT-4086). Buccaneer resets the stream.
      {"chaos_kill_streams", [http_buccaneer, buccaneer], fun streams/1}].
 
 connections(Ctx) ->
@@ -123,7 +124,7 @@ h2_clients(Port, Stop, Acc) ->
 h2_client(Port, Stop, Acc) ->
     case bench_h2:connect(Port) of
         {ok, H0} ->
-            H = lists:foldl(fun(_, H1) -> element(2, bench_h2:request(H1, <<"/">>)) end,
+            H = lists:foldl(fun(_, H1) -> element(2, bench_h2:request(H1, path())) end,
                             H0, lists:seq(1, 10)),
             h2_loop(H, 10, Stop, Acc);
         E -> stress_lib:bump({connect, E}, Acc)
@@ -146,6 +147,14 @@ next(H, Open, Stop, Acc) ->
     case atomics:get(Stop, 1) of
         1 -> h2_loop(H, Open - 1, Stop, Acc);
         0 ->
-            {_, H1} = bench_h2:request(H, <<"/">>),
+            {_, H1} = bench_h2:request(H, path()),
             h2_loop(H1, Open, Stop, Acc)
+    end.
+
+%% One stream in four is `/slow` (a second in the handler), so there are
+%% always stream processes alive for the killer to find.
+path() ->
+    case rand:uniform(4) of
+        1 -> <<"/slow">>;
+        _ -> <<"/">>
     end.

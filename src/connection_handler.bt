@@ -7,6 +7,9 @@
 /// userState; later callbacks delegate to it.
 typed Handler subclass: ConnectionHandler
 
+  /// The process-dictionary key of the bytes gathered for the next flush.
+  class sealed h2OutKey -> Symbol => #buccaneer_h2_out
+
   handleConnection: sock :: Socket state: st :: Object -> HandlerResult =>
     opts := st match: [
       d :: Dictionary -> d;
@@ -95,7 +98,11 @@ typed Handler subclass: ConnectionHandler
       socket: sock
     {outbox, clean} := proto3 takeOutbox
     self h2Deliver: outbox
-    close ifTrue: [^HandlerResult close: clean]
+    close
+      ifTrue: [
+        self h2Flush
+        ^HandlerResult close: clean
+      ]
     HandlerResult continue: clean
 
   /// A message for the connection: a WebSocket protocol handles it in
@@ -113,12 +120,17 @@ typed Handler subclass: ConnectionHandler
   /// A connection message for HTTP/2 (stream DOWNs, send timeouts):
   /// socket-send any answer and keep or close the connection.
   h2Info: msg :: Object state: proto :: HTTP2Protocol -> Object =>
+    msg =:= #h2Flush ifTrue: [^self h2Flush]
     {bytes, _spawns, close, proto2} := proto info: msg
     self h2SendBytes: bytes socket: self socket
     {outbox, clean} := proto2 takeOutbox
     self h2Deliver: outbox
     self.userState := clean
-    close ifTrue: [^self closeLocally]
+    close
+      ifTrue: [
+        self h2Flush
+        ^self closeLocally
+      ]
     nil
 
   userInfo: msg :: Object protocol: p :: WebSocketProtocol -> Object =>
@@ -190,9 +202,32 @@ typed Handler subclass: ConnectionHandler
   /// peer has gone, and the connection finds out on its next read. Raising
   /// would crash the connection process and log a TransportError for what
   /// is an ordinary client hang-up (for example after a GOAWAY).
-  h2SendBytes: bytes :: Binary socket: sock :: Socket -> Nil =>
+  ///
+  /// The bytes are not sent at once but gathered until the mailbox is
+  /// drained: the first bytes of a batch post #h2Flush to this process,
+  /// which arrives behind every message already queued (other streams'
+  /// casts and calls, socket data), so one socket send carries all of
+  /// their frames. A close flushes first (h2Flush).
+  h2SendBytes: bytes :: Binary socket: _sock :: Socket -> Nil =>
     bytes size =:= 0 ifTrue: [^nil]
-    sock send: bytes
+    pending := ProcessDictionary at: ConnectionHandler h2OutKey
+    pending isNil
+      ifTrue: [
+        ProcessDictionary at: ConnectionHandler h2OutKey put: bytes
+        self pid send: #h2Flush
+      ]
+      ifFalse: [
+        ProcessDictionary at: ConnectionHandler h2OutKey put: #(pending, bytes)
+      ]
+    nil
+
+  /// Socket-send the gathered bytes (see h2SendBytes:socket:), ignoring
+  /// a failed send for the same reason.
+  h2Flush -> Nil =>
+    pending := ProcessDictionary at: ConnectionHandler h2OutKey
+    pending isNil ifTrue: [^nil]
+    ProcessDictionary erase: ConnectionHandler h2OutKey
+    self socket send: pending
     nil
 
   /// Raise a transport failure for a purged stream op.
@@ -263,6 +298,19 @@ typed Handler subclass: ConnectionHandler
     self h2SendBytes: bytes socket: self socket
     #sent
 
+  /// Send a header block the stream encoded (HTTP2Stream
+  /// encodeHead:headers:); answers #sent.
+  h2SendBlock: sid :: Integer block: hbf :: Binary endStream: end :: Boolean -> Object =>
+    proto := self h2Protocol
+    self h2CheckLive: sid proto: proto
+    {bytes, _ended, proto2} := proto
+      sendBlockFor: sid
+      block: hbf
+      endStream: end
+    self h2Store: proto2
+    self h2SendBytes: bytes socket: self socket
+    #sent
+
   /// Send response data; parks the caller when the windows are empty.
   h2SendData: sid :: Integer data: data :: Binary endStream: end :: Boolean -> Object =>
     self
@@ -284,6 +332,106 @@ typed Handler subclass: ConnectionHandler
       #park -> self h2ParkPartial: sid payload: payload;
       #error -> self h2Raise: payload
     ]
+
+  /// Send the response head with its first body bytes (HTTP2Stream
+  /// holds a #raw head until the body comes): one call and one socket
+  /// send instead of two of each. Parks like h2SendBinary: when the
+  /// windows are short.
+  h2SendResponse: sid :: Integer block: hbf :: Binary data: data :: Binary endStream: end :: Boolean -> Object =>
+    proto := self h2Protocol
+    self h2CheckLive: sid proto: proto
+    {kind, payload, proto2} := proto
+      sendResponseFor: sid
+      block: hbf
+      data: data
+      endStream: end
+    self h2Store: proto2
+    kind match: [
+      #sent -> self h2Sent: payload;
+      #park -> self h2ParkPartial: sid payload: payload;
+      #error -> self h2Raise: payload
+    ]
+
+  // === Pushes: casts (`!`) from a stream whose request has ended ===
+  //
+  // A stream's final send needs no answer when its request is over:
+  // nothing is left to read or drain, and the stream process ends right
+  // after. It casts the bytes instead of calling, so it neither waits on
+  // the connection nor holds it in a call. While the windows allow, the
+  // bytes go out at once; the rest is queued detached (no caller to
+  // wake) and released by WINDOW_UPDATE like any parked send. A push is
+  // a cast, so nothing may raise here: a stream reset in the meantime
+  // drops the bytes, and a failure to frame them resets the stream.
+
+  /// Push a complete response: the head and the whole body.
+  h2PushResponse: sid :: Integer block: hbf :: Binary data: data :: Binary -> Nil =>
+    self
+      h2Push: sid
+      do: [:proto :: HTTP2Protocol |
+        proto
+          sendResponseFor: sid
+          block: hbf
+          data: data
+          endStream: true
+      ]
+
+  /// Push the final body bytes after an earlier head.
+  h2PushData: sid :: Integer data: data :: Binary -> Nil =>
+    self
+      h2Push: sid
+      do: [:proto :: HTTP2Protocol |
+        proto
+          sendDataFor: sid
+          data: data
+          endStream: true
+      ]
+
+  /// Push a head that ends the response (no body).
+  h2PushHeaders: sid :: Integer block: hbf :: Binary -> Nil =>
+    self
+      h2Push: sid
+      do: [:proto :: HTTP2Protocol |
+        {bytes, _ended, next} := proto
+          sendBlockFor: sid
+          block: hbf
+          endStream: true
+        {#sent, bytes, next}
+      ]
+
+  /// Run a push against a live stream: send what was framed, queue the
+  /// rest detached; reset the stream if framing raised.
+  h2Push: sid :: Integer do: step :: Block(HTTP2Protocol, Tuple) -> Nil =>
+    proto := self h2Protocol
+    ((proto streamState: sid) isKindOf: Pid) ifFalse: [^nil]
+    result := [step value: proto] on: Exception do: [:e :: Exception | nil]
+    result isNil ifTrue: [
+      ^self h2ResetStream: sid code: HTTP2Errors internalError
+    ]
+    {kind, payload, proto2} := result
+    self h2Store: proto2
+    kind match: [
+      #sent -> self h2SendBytes: payload socket: self socket;
+      #park -> self h2ParkDetached: sid payload: payload;
+      _ -> nil
+    ]
+    nil
+
+  /// Queue a pushed send's remainder with no caller to wake, under the
+  /// same 15 s expiry as a parked send.
+  h2ParkDetached: sid :: Integer payload: payload :: Tuple -> Nil =>
+    self h2SendBytes: (payload at: 1) socket: self socket
+    conn := self h2Protocol connection
+      queueSend: sid
+      rest: (payload at: 2)
+      endStream: (payload at: 3)
+      replyTo: nil
+      expiresAt: (BuccaneerTelemetry monotonicTime + HTTP2Protocol sendTimeoutNative)
+    self.userState := (self h2Protocol withConnection: conn)
+    Timer
+      send: {#h2SendTimeout, nil}
+      to: self
+      after: HTTP2Protocol sendTimeoutMs
+    nil
 
   /// A fitted send: socket-send the bytes, wake the stream.
   h2Sent: bytes :: Binary -> Symbol =>
@@ -355,7 +503,10 @@ typed Handler subclass: ConnectionHandler
 
   /// Spawn one stream process and record its monitor.
   h2SpawnOne: sid :: Integer proto: proto :: HTTP2Protocol socket: sock :: Socket -> HTTP2Protocol =>
-    conn := proto connection
+    // The HEADERS that opened the stream are buffered by now: hand them
+    // to the stream process with its transport, so it need not call back
+    // for them.
+    {conn, head} := proto connection takeBufferedHeaders: sid
     transport := HTTP2Stream
       init: self
       sid: sid
@@ -367,20 +518,17 @@ typed Handler subclass: ConnectionHandler
       ])
       sendfileChunk: conn sendfileChunkSize
       contentLength: (conn contentLengthFor: sid)
-    transport := transport withSocket: sock
-    args := #{
-      #conn => self,
-      #transport => transport,
-      #handler => proto handler,
-      #config => proto config,
-      #connData => proto connData,
-      #span => sock telemetrySpan
-    }
-    pair := StreamProcess spawnMonitoredWith: args
+    transport := (transport withSocket: sock) withRequestHead: head
+    pair := StreamProcess
+      spawnFor: transport
+      handler: proto handler
+      config: proto config
+      connData: proto connData
+      span: sock telemetrySpan
     proto
       withConnection: (conn
         withStreamMonitored: sid
-        pid: ((pair at: 1) pid)
+        pid: (pair at: 1)
         ref: (pair at: 2))
 
   logUnknown: msg :: Object config: config :: BuccaneerConfig -> Nil =>

@@ -19,9 +19,7 @@ sealed typed Value subclass: HTTP1Handler
 
   /// Serve one request from the buffer, then keep alive or close.
   serveBuffered: sock :: Socket -> HandlerResult =>
-    transport := ((HTTP1Socket new withSocket: sock) withBuffer: self buffer) withOpts: #{
-      #http1 => self config http1
-    }
+    transport := ((HTTP1Socket new withSocket: sock) withBuffer: self buffer) withHttp1Options: self config http1Options
     result := Pipeline
       runRequest: (transport withCloseAfterResponse: self closeAfterResponse)
       handler: self handler
@@ -33,8 +31,7 @@ sealed typed Value subclass: HTTP1Handler
 
   /// Whether this request is the last (Bandit's request_limit_reached?).
   closeAfterResponse -> Boolean =>
-    limit := self config http1 at: #maxRequests ifAbsent: [0]
-    (limit isKindOf: Integer) ifFalse: [^false]
+    limit := self config http1Options maxRequests
     limit =:= 0 ifTrue: [^false]
     self requestsProcessed + 1 >= limit
 
@@ -54,9 +51,9 @@ sealed typed Value subclass: HTTP1Handler
     ]) ifTrue: [^HandlerResult close: self]
     self clearProcessDictionary
     advanced := (self withRequestsProcessed: self requestsProcessed + 1) withBuffer: transport buffer
-    gcEvery := self config http1 at: #gcEveryNKeepaliveRequests ifAbsent: [5]
-    (gcEvery isKindOf: Integer)
-      ifTrue: [
+    gcEvery := self config http1Options gcEveryNKeepaliveRequests
+    gcEvery isNil
+      ifFalse: [
         (advanced requestsProcessed % gcEvery) =:= 0 ifTrue: [
           Erlang erlang garbage_collect
         ]

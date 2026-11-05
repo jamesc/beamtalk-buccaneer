@@ -94,6 +94,9 @@ typed Value subclass: BuccaneerConfig
   field: http2 :: Http2Options = Dictionary new
   field: websocket :: WebSocketOptions = Dictionary new
   field: catalina :: CatalinaOptions = Dictionary new
+  /// The `#http1` section resolved once (`from:` sets it), for the
+  /// HTTP/1 request path to read without Dictionary lookups.
+  field: http1Options :: HTTP1Options = HTTP1Options new
 
   /// Build a validated config from an options dictionary. Unknown keys
   /// raise, as a typo the user should hear about.
@@ -176,6 +179,7 @@ typed Value subclass: BuccaneerConfig
       http2: http2
       websocket: websocket
       catalina: catalina
+      http1Options: (HTTP1Options from: http1)
 
   class topLevelKeys -> List(Symbol) =>
     #(#handler, #scheme, #port, #ip, #inet, #inet6, #keyfile, #certfile, #otpApp, #cipherSuite, #displayHandler, #startupLog, #catalina, #http, #http1, #http2, #websocket)

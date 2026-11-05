@@ -1,0 +1,51 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// The `#http1` options the HTTP/1 request path reads, resolved once
+/// per connection (HTTP1Handler builds it at connection start) instead
+/// of looked up in the options Dictionary on every request. A limit
+/// that is present but not an Integer resolves to nil and still raises
+/// where it is used, as the Dictionary lookups did: the section is not
+/// type-checked when the server starts.
+sealed typed Value subclass: HTTP1Options
+  /// Bandit's defaults: 10_000, 10_000 and 50.
+  field: maxRequestLineLength :: Integer | Nil = 10000
+  field: maxHeaderLength :: Integer | Nil = 10000
+  field: maxHeaderCount :: Integer | Nil = 50
+  /// 0 (and any non-Integer) means unlimited.
+  field: maxRequests :: Integer = 0
+  /// nil (a non-Integer) skips the collection.
+  field: gcEveryNKeepaliveRequests :: Integer | Nil = 5
+
+  /// Resolve an `#http1` section; anything but a Dictionary is all defaults.
+  class sealed from: section :: Object -> HTTP1Options =>
+    (section isKindOf: Dictionary) ifFalse: [^HTTP1Options new]
+    maxRequests := section at: #maxRequests ifAbsent: [0]
+    gcEvery := section at: #gcEveryNKeepaliveRequests ifAbsent: [5]
+    HTTP1Options
+      maxRequestLineLength: (self limit: #maxRequestLineLength in: section default: 10000)
+      maxHeaderLength: (self limit: #maxHeaderLength in: section default: 10000)
+      maxHeaderCount: (self limit: #maxHeaderCount in: section default: 50)
+      maxRequests: ((maxRequests isKindOf: Integer) ifTrue: [maxRequests] ifFalse: [0])
+      gcEveryNKeepaliveRequests: ((gcEvery isKindOf: Integer) ifTrue: [gcEvery] ifFalse: [nil])
+
+  /// The value at key, the default when absent, nil when not an Integer.
+  class sealed limit: key :: Symbol in: section :: Dictionary default: default :: Integer -> Integer | Nil =>
+    raw := section at: key ifAbsent: [default]
+    (raw isKindOf: Integer) ifTrue: [raw] ifFalse: [nil]
+
+  /// A limit, raising as the per-request lookup did when it is invalid.
+  checked: value :: Integer | Nil key: key :: Symbol -> Integer =>
+    value isNil ifTrue: [
+      Error signal: ("Invalid value for http1 option " ++ key asString)
+    ]
+    value
+
+  requestLineLimit -> Integer =>
+    self checked: self.maxRequestLineLength key: #maxRequestLineLength
+
+  headerLengthLimit -> Integer =>
+    self checked: self.maxHeaderLength key: #maxHeaderLength
+
+  headerCountLimit -> Integer =>
+    self checked: self.maxHeaderCount key: #maxHeaderCount

@@ -15,7 +15,7 @@ type RecvTimeout = Integer | #infinity
 /// the latest one. The request line and headers come from
 /// erlang:decode_packet through the FFI; a nil socket parses from the
 /// buffer only (tests).
-typed Value subclass: HTTP1Socket
+sealed typed Value subclass: HTTP1Socket
   field: socket :: Socket | Nil = nil
   field: buffer :: Binary = ""
   field: readState :: ReadState = #unread
@@ -28,6 +28,9 @@ typed Value subclass: HTTP1Socket
   field: closeAfterResponse :: Boolean = false
   field: keepalive :: Boolean | Nil = nil
   field: opts :: ConfigOptions = Dictionary new
+  /// The connection's resolved `#http1` options (HTTP1Handler sets it);
+  /// nil resolves them from opts on use (tests).
+  field: http1Options :: HTTP1Options | Nil = nil
 
   class sentKey -> Symbol => #buccaneerSent
 
@@ -492,7 +495,7 @@ typed Value subclass: HTTP1Socket
     ] on: Error do: [:e | self]
 
   doReadRequestLine -> Tuple(String, Tuple, HTTP1Socket) =>
-    packetSize := self http1Opt: #maxRequestLineLength default: 10000
+    packetSize := self resolvedOptions requestLineLimit
     decoded := Erlang erlang
       decode_packet: #http_bin
       with: self buffer
@@ -575,8 +578,17 @@ typed Value subclass: HTTP1Socket
     ]
 
   doReadHeaders: headers :: HttpHeaders count: count :: Integer -> Tuple(HttpHeaders, HTTP1Socket) =>
-    packetSize := self http1Opt: #maxHeaderLength default: 10000
-    maxCount := self http1Opt: #maxHeaderCount default: 50
+    resolved := self resolvedOptions
+    packetSize := resolved headerLengthLimit
+    maxCount := resolved headerCountLimit
+    self
+      doReadHeaders: headers
+      count: count
+      packetSize: packetSize
+      maxCount: maxCount
+
+  /// The header loop with its limits looked up once per head.
+  doReadHeaders: headers :: HttpHeaders count: count :: Integer packetSize: packetSize :: Integer maxCount: maxCount :: Integer -> Tuple(HttpHeaders, HTTP1Socket) =>
     decoded := Erlang erlang
       decode_packet: #httph_bin
       with: self buffer
@@ -590,13 +602,18 @@ typed Value subclass: HTTP1Socket
         HTTPError signal: ("Header read unknown error: " ++ reason printString)
       ]
     decoded match: [
-      {#more, _} -> (self withBuffer: (self buffer concat: self readAvailable)) doReadHeaders: headers count: count;
+      {#more, _} -> (self withBuffer: (self buffer concat: self readAvailable))
+        doReadHeaders: headers
+        count: count
+        packetSize: packetSize
+        maxCount: maxCount;
       {#ok, {#http_header, _n, field, _r, value}, rest} -> self
         headerRead: field
         value: value
         rest: rest
         headers: headers
         count: count
+        packetSize: packetSize
         maxCount: maxCount;
       {#ok, #http_eoh, rest} -> {headers reversed, (self withBuffer: rest) withReadState: #headersRead};
       {#ok, {#http_error, reason}, _rest} -> HTTPError signal: ("Header read HTTP error: " ++ reason printString);
@@ -606,7 +623,7 @@ typed Value subclass: HTTP1Socket
   /// The name and value convert once, here (BT-4172): valid UTF-8
   /// reaches every Headers guard as a String, non-UTF-8 values stay
   /// opaque, and a garbage name still falls into the rejecting arm.
-  headerRead: field :: Object value: value :: Object rest: rest :: Binary headers: headers :: HttpHeaders count: count :: Integer maxCount: maxCount :: Integer -> Tuple(HttpHeaders, HTTP1Socket) =>
+  headerRead: field :: Object value: value :: Object rest: rest :: Binary headers: headers :: HttpHeaders count: count :: Integer packetSize: packetSize :: Integer maxCount: maxCount :: Integer -> Tuple(HttpHeaders, HTTP1Socket) =>
     text := Headers stringOrOpaque: value
     (Headers fieldValueValid: text) ifFalse: [
       HTTPError signal: "Field value contains invalid characters (RFC9110§5.5)"
@@ -618,7 +635,11 @@ typed Value subclass: HTTP1Socket
     ]
     next := count + 1
     next > maxCount ifTrue: [HTTPError signal: "Too many headers" reason: 431]
-    (self withBuffer: rest) doReadHeaders: (headers addFirst: {name asciiLowercase, text}) count: next
+    (self withBuffer: rest)
+      doReadHeaders: (headers addFirst: {name asciiLowercase, text})
+      count: next
+      packetSize: packetSize
+      maxCount: maxCount
 
   contentLengthOf: headers :: HttpHeaders -> Integer | Nil =>
     result := Headers getContentLength: headers
@@ -646,18 +667,14 @@ typed Value subclass: HTTP1Socket
     (value isKindOf: Binary) ifTrue: [^value]
     nil
 
-  /// An #http1 option with Bandit's default. Non-integers raise: these
-  /// feed decode_packet limits, where a bad type would fail obscurely.
-  /// (No `^` inside the ifAbsent: blocks: a non-local return is a
-  /// throw/catch, and this runs several times per request.)
-  http1Opt: key :: Symbol default: default :: Integer -> Integer =>
-    section := self opts at: #http1 ifAbsent: [nil]
-    (section isKindOf: Dictionary) ifFalse: [^default]
-    raw := section at: key ifAbsent: [default]
-    (raw isKindOf: Integer) ifFalse: [
-      Error signal: ("Invalid value for http1 option " ++ key asString)
-    ]
-    raw
+  /// The #http1 options: the connection's, resolved once, or resolved
+  /// from opts here. Their limits raise on non-Integers: these feed
+  /// decode_packet limits, where a bad type would fail obscurely.
+  resolvedOptions -> HTTP1Options =>
+    resolved := self.http1Options
+    resolved isNil
+      ifTrue: [HTTP1Options from: (self opts at: #http1 ifAbsent: [nil])]
+      ifFalse: [resolved]
 
   /// The next available bytes (Bandit's read_available!).
   readAvailable -> Binary =>

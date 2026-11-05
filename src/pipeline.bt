@@ -12,7 +12,7 @@
 /// span's exception event, a log line when its status is configured,
 /// a 500 unless answered) and then re-signalled, so the connection
 /// crashes as in Bandit.
-typed Object subclass: Pipeline
+sealed typed Object subclass: Pipeline
 
   /// Run one request to completion. `transport` is this request's
   /// transport; `handler` is a block or an ExchangeHandler;

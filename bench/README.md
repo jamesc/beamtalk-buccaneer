@@ -8,7 +8,7 @@ generator added. Phase 0's spike bench is [SPIKE.md](SPIKE.md)
 (`just spike-bench`).
 
 ```bash
-just bench                               # 5 rounds x 5 s, every row, four servers
+just bench                               # 5 rounds x 5 s, every row, five servers
 just bench --rounds 7 --duration 10000   # longer
 just bench --only get_c10,tls_get_c100   # some rows
 just bench --impls http_buccaneer,http_cowboy
@@ -44,10 +44,13 @@ and servers never share schedulers.
 | `http_buccaneer` | beamtalk-http's `HTTPServer start:handler:options:` with `#backend => #buccaneer` | the gate |
 | `http_cowboy` | the same, `#backend => #cowboy` (cowboy 2.20 with ranch defaults, as beamtalk-http starts it: 10 acceptors, `max_keepalive` 1,000) | the gate's baseline (except `file_1MiB_c10`) |
 | `buccaneer` | Buccaneer standalone: `Buccaneer start:handler:` with an `Exchange` handler serving the same routes | context: the adapter's cost is the difference |
+| `cowboy` | bare cowboy: the same cowboy and ranch with a plain Erlang handler (`bench/harness/bench_cowboy_handler.erl`), no beamtalk-http and no Beamtalk runtime | context: splits B/cowboy into engine and adapter (`just bench` only, not `just stress`) |
 | `bandit` | Bandit 1.12.5 with a bare Plug (`bench/bandit`) | context; the baseline of `file_1MiB_c10` |
 
 The three Beamtalk servers come from one package, `bench/http_node`
-(`HttpNode`). beamtalk-http is pinned by commit in `bench/run.sh`
+(`HttpNode`); bare cowboy loads cowboy and ranch from that package's
+dependencies, so it runs the cowboy version beamtalk-http runs, with
+cowboy's defaults as beamtalk-http starts it. beamtalk-http is pinned by commit in `bench/run.sh`
 (`HTTP_REV`, main d644c20, the same code for both backends, so the gate
 compares the backends and nothing else). beamtalk-http pins Buccaneer by
 git rev and a path dependency does not override a transitive one, so
@@ -59,7 +62,11 @@ Routes, the same on every server: `/` answers `hello world`
 (`text/plain`); `POST /echo` the request body; `/chunked` 1 MiB as 16
 chunks of 64 KiB; `/file` a 1 MiB file (`HTTPResponse file:`, Bandit's
 `send_file`); `/slow` `hello world` after a second; `/ws` a WebSocket
-echo. beamtalk-http's cowboy backend cannot stream or send files (it
+echo. Bare cowboy serves every route natively (`stream_reply`,
+`sendfile`, `cowboy_websocket`), and runs the HTTP/2 (h2c prior
+knowledge) and WebSocket rows; its HTTP/2 frame-rate guard
+(`max_received_frame_rate`, 10,000 frames per 10 s per connection by
+default) is lifted, or the h2 row's load gets a GOAWAY. beamtalk-http's cowboy backend cannot stream or send files (it
 raises `unsupported_backend`), so on cowboy `/chunked` and `/file` answer
 the same 1 MiB as a plain body: that is how a cowboy-backed app serves it
 today.
@@ -123,6 +130,26 @@ in-memory binary, and over loopback sending a binary already in memory
 beats `file:sendfile` (Bandit's sendfile is 0.84× cowboy there). Bandit
 against Buccaneer is sendfile against sendfile. cowboy still runs on the
 row, and its figure stays in the report for reference.
+
+## Engine and adapter
+
+The report's "All servers" table has two ratio columns besides B/x
+(BT-4498). Like the other ratios they are medians divided, so above 1 is
+better on req/s and MB/s, worse on latency and memory:
+
+- **engine**: Buccaneer standalone ÷ bare cowboy. The two engines, each
+  with a bare handler in its own language and no beamtalk-http.
+- **adapter**: (B ÷ Buccaneer standalone) ÷ (beamtalk-http on cowboy ÷
+  bare cowboy). What beamtalk-http's Buccaneer adapter keeps of its
+  engine's figure, against what its cowboy adapter (native Erlang,
+  `beamtalk_http_server_handler`) keeps of cowboy's. Below 1 on req/s,
+  the Buccaneer adapter costs more than the cowboy one.
+
+B/cowboy is engine × adapter. B/standalone alone overstates the adapter
+(cowboy's adapter is not free) and standalone ÷ beamtalk-http on cowboy
+flatters the engine (it compares a bare handler with one that builds an
+`HTTPRequest`). Both columns are reporting only: the gate rule does not
+use them.
 
 ## Stress tests (`test/stress/`)
 

@@ -12,9 +12,12 @@
 %%   http_cowboy     beamtalk-http's HTTPServer, `#backend => #cowboy` (the gate)
 %%   buccaneer       Buccaneer standalone (an Exchange handler)
 %%   bandit          Bandit 1.12.5 with a bare Plug (context)
+%%   cowboy          bare cowboy: a plain Erlang handler (`bench_cowboy_handler`),
+%%                   no Beamtalk runtime (context; `just bench` only)
 %%
 %% The three Beamtalk implementations load the same package
-%% (`bench/http_node`); each gets its own VM.
+%% (`bench/http_node`); each gets its own VM. Bare cowboy loads cowboy and
+%% ranch from that package's dependencies.
 %%
 %% Paths come from the environment, set by `bench/run.sh`:
 %%   BENCH_ROOT            the repository root
@@ -22,11 +25,15 @@
 %%   BENCH_ELIXIR_LIB      the directory holding Elixir's `elixir/` and `logger/`
 -module(bench_peer).
 
--export([start/1, start/2, stop/1, call/4, call/5, impls/0, gate_impls/0]).
+-export([start/1, start/2, stop/1, call/4, call/5, impls/0, bench_impls/0, gate_impls/0]).
 
 -define(CALL_TIMEOUT, 120000).
 
 impls() -> [http_buccaneer, http_cowboy, buccaneer, bandit].
+
+%% `just bench`'s servers: the above plus bare cowboy, which splits the
+%% gap between the gate pair into engine and adapter (BT-4498).
+bench_impls() -> [http_buccaneer, http_cowboy, buccaneer, cowboy, bandit].
 
 %% The pair the gate compares.
 gate_impls() -> [http_buccaneer, http_cowboy].

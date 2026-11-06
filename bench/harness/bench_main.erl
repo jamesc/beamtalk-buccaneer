@@ -2,8 +2,8 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% @doc `just bench`: the release gate. beamtalk-http on Buccaneer against
-%% beamtalk-http on cowboy (the gate), with Buccaneer standalone and
-%% Bandit 1.12.5 for context.
+%% beamtalk-http on cowboy (the gate), with Buccaneer standalone, bare
+%% cowboy (a plain Erlang handler) and Bandit 1.12.5 for context.
 %%
 %% Every implementation runs in its own peer VM for the whole run, the load
 %% generator in this one. Every round measures every row once per
@@ -22,6 +22,10 @@
 %% the rounds' spread. The baseline is cowboy, except on `file_1MiB_c10`,
 %% which is gated against Bandit's sendfile: beamtalk-http's cowboy
 %% backend cannot send files, so cowboy answers that row from memory.
+%%
+%% Bare cowboy is reporting only: it splits the gap between the gate pair
+%% into engine (Buccaneer standalone ÷ bare cowboy) and adapter
+%% ((B ÷ standalone) ÷ (beamtalk-http on cowboy ÷ bare cowboy)).
 -module(bench_main).
 
 -export([main/0, rows/1]).
@@ -29,7 +33,7 @@
 main() ->
     Opts = parse(init:get_plain_arguments(), #{
         rounds => 5, duration => 5000, warmup => 1000, rows => full,
-        only => [], impls => bench_peer:impls(), max_load => undefined,
+        only => [], impls => bench_peer:bench_impls(), max_load => undefined,
         out => filename:join([os:getenv("BENCH_ROOT"), "_build", "bench"])
     }),
     try run(Opts) of
@@ -258,11 +262,16 @@ report(Rows, Results, Impls, Env) ->
                                                     Base <- gate_baseline(Class)],
             "\n"],
     Ctx = ["## All servers\n\n"
-           "Medians. Ratios are beamtalk-http on Buccaneer ÷ the other: above 1 is "
-           "better on req/s and MB/s, worse on latency and memory.\n\n"
+           "Medians. B/x ratios are beamtalk-http on Buccaneer ÷ the other: above 1 is "
+           "better on req/s and MB/s, worse on latency and memory. `engine` is "
+           "Buccaneer standalone ÷ bare cowboy, the two engines with no beamtalk-http "
+           "in front. `adapter` is (B ÷ standalone) ÷ (beamtalk-http on cowboy ÷ bare "
+           "cowboy): what beamtalk-http's Buccaneer adapter keeps of its engine's "
+           "figure, relative to what its cowboy adapter keeps; below 1 on req/s, the "
+           "Buccaneer adapter costs more. B/cowboy is about engine × adapter.\n\n"
            "| Row | Metric | ", lists:join(" | ", [name(I) || I <- Impls]),
-           " | B/cowboy | B/Bandit | B/standalone |\n|---|---|",
-           lists:duplicate(length(Impls) + 3, "---:|"), "\n",
+           " | B/cowboy | B/Bandit | B/standalone | engine | adapter |\n|---|---|",
+           lists:duplicate(length(Impls) + 5, "---:|"), "\n",
            [ctx_lines(Id, Kind, Impls, Results) || {Id, Kind, _, _} <- Rows], "\n"],
     Every = ["## Every round\n\n| Row | Metric | Server | Rounds | Errors |\n|---|---|---|---|---|\n",
              [[[io_lib:format("| ~s | ~s | ~s | ~s | ~s |~n",
@@ -298,15 +307,18 @@ verdict(lower, Mb, C, _) -> case Mb > lists:max(C) of true -> "MISS"; false -> "
 ctx_lines(Id, Kind, Impls, Results) ->
     [begin
         M = fun(I) -> median(values(Id, I, Key, Results)) end,
-        io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s |~n",
+        io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s | ~s | ~s |~n",
                       [Id, Label, lists:join(" | ", [fmt(Key, M(I)) || I <- Impls]),
                        ratio(M(http_buccaneer), M(http_cowboy)), ratio(M(http_buccaneer), M(bandit)),
-                       ratio(M(http_buccaneer), M(buccaneer))])
+                       ratio(M(http_buccaneer), M(buccaneer)), ratio(M(buccaneer), M(cowboy)),
+                       ratio(quotient(M(http_buccaneer), M(buccaneer)),
+                             quotient(M(http_cowboy), M(cowboy)))])
      end || {Key, Label, _} <- metrics(Kind)].
 
 name(http_buccaneer) -> "http on Buccaneer";
 name(http_cowboy) -> "http on cowboy";
 name(buccaneer) -> "Buccaneer standalone";
+name(cowboy) -> "bare cowboy";
 name(bandit) -> "Bandit";
 name(I) -> atom_to_list(I).
 
@@ -334,6 +346,12 @@ ratio(undefined, _) -> "-";
 ratio(_, undefined) -> "-";
 ratio(_, T) when T == 0 -> "-";
 ratio(C, T) -> io_lib:format("~.2f", [C / T]).
+
+%% C ÷ T as a number, for a ratio of ratios.
+quotient(undefined, _) -> undefined;
+quotient(_, undefined) -> undefined;
+quotient(_, T) when T == 0 -> undefined;
+quotient(C, T) -> C / T.
 
 fmt(_, undefined) -> "-";
 fmt(bytes_per_s, V) -> io_lib:format("~.1f", [V / 1.0e6]);

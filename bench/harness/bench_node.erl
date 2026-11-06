@@ -55,6 +55,12 @@ boot_impl(bandit) ->
     {module, _} = code:ensure_loaded('Elixir.BanditNode.HelloPlug'),
     {module, _} = code:ensure_loaded('Elixir.BanditNode.WsEcho'),
     ok;
+boot_impl(cowboy) ->
+    %% Bare cowboy: no Beamtalk runtime, only cowboy and ranch (from
+    %% http_node's dependencies, the version beamtalk-http runs).
+    {ok, _} = application:ensure_all_started(cowboy),
+    {module, _} = code:ensure_loaded(bench_cowboy_handler),
+    ok;
 boot_impl(_Beamtalk) ->
     {ok, _} = application:ensure_all_started(beamtalk_stdlib),
     {ok, _} = application:ensure_all_started(http_node),
@@ -166,7 +172,25 @@ start(http_cowboy, true, _Opts) ->
         [{port, 0}, {ip, {127, 0, 0, 1}},
          {certfile, filename:join(Dir, "cert.pem")}, {keyfile, filename:join(Dir, "key.pem")}],
         #{env => #{dispatch => Dispatch}}),
-    {ok, {cowboy_tls, Ref}, ranch:get_port(Ref)};
+    {ok, {cowboy_listener, Ref}, ranch:get_port(Ref)};
+start(cowboy, Tls, _Opts) ->
+    %% Bare cowboy: a plain Erlang handler (bench_cowboy_handler), cowboy's
+    %% defaults otherwise, as beamtalk-http starts it, except HTTP/2's frame
+    %% flood guard: its default (10,000 frames per 10 s per connection)
+    %% answers the h2 row's sustained load with GOAWAY ENHANCE_YOUR_CALM.
+    Dispatch = cowboy_router:compile([{'_', [{'_', bench_cowboy_handler, #{}}]}]),
+    Ref = make_ref(),
+    Proto = #{env => #{dispatch => Dispatch}, max_received_frame_rate => {1000000000, 1000}},
+    Listen = [{port, 0}, {ip, {127, 0, 0, 1}}],
+    {ok, _} = case Tls of
+        true ->
+            Dir = cert_dir(),
+            cowboy:start_tls(Ref, Listen ++ [{certfile, filename:join(Dir, "cert.pem")},
+                                             {keyfile, filename:join(Dir, "key.pem")}], Proto);
+        false ->
+            cowboy:start_clear(Ref, Listen, Proto)
+    end,
+    {ok, {cowboy_listener, Ref}, ranch:get_port(Ref)};
 start(buccaneer, Tls, Opts) ->
     Extra = maps:get(buccaneer, Opts, #{}),
     Srv = ?NODE:'class_startStandalone:'(node_class(),
@@ -190,7 +214,7 @@ start(bandit, Tls, _Opts) ->
 
 stop({http, Srv}, _Timeout) -> ?NODE:'class_stopHttp:'(node_class(), Srv);
 stop({buccaneer, Srv}, Timeout) -> ?NODE:'class_stop:timeout:'(node_class(), Srv, Timeout);
-stop({cowboy_tls, Ref}, _Timeout) -> cowboy:stop_listener(Ref);
+stop({cowboy_listener, Ref}, _Timeout) -> cowboy:stop_listener(Ref);
 stop({bandit, Pid}, Timeout) -> 'Elixir.ThousandIsland':stop(Pid, Timeout).
 
 %% The receiver for a direct class-method call: the class object tuple

@@ -65,7 +65,9 @@ sealed typed Value subclass: HTTP2Stream
       collect: [:h :: Tuple |
         name := h at: 1
         value := h at: 2
-        HPACK validateHeader: name value: value
+        // hpack 0.1.1 removed `validateHeader:value:` (BT-4362 perf);
+        // `literalPlainNew:` takes Binary params, so non-binary
+        // names/values still raise at that boundary.
         HPACK
           literalPlainNew: name
           value: value

@@ -84,9 +84,7 @@ sealed typed Value subclass: BuccaneerTelemetry
     timed := (measurements includesKey: #monotonic_time) ifTrue: [
       measurements
     ] ifFalse: [measurements at: #monotonic_time put: self monotonicTime]
-    // Not `Reference new`: that is a call into the Reference class
-    // process on every request (BT-4464).
-    context := Erlang erlang make_ref
+    context := Reference new
     start := metadata at: #telemetry_span_context put: context
     self
       emit: name

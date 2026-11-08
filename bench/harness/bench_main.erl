@@ -2,8 +2,8 @@
 %% SPDX-License-Identifier: Apache-2.0
 
 %% @doc `just bench`: the release gate. beamtalk-http on Buccaneer against
-%% beamtalk-http on cowboy (the gate), with Buccaneer standalone, bare
-%% cowboy (a plain Erlang handler) and Bandit 1.12.5 for context.
+%% bare cowboy (a plain Erlang handler, the gate's baseline), with
+%% Buccaneer standalone and Bandit 1.12.5 for context.
 %%
 %% Every implementation runs in its own peer VM for the whole run, the load
 %% generator in this one. Every round measures every row once per
@@ -19,13 +19,14 @@
 %% The gate rule, per gate row and metric (requests/s and p99): Buccaneer
 %% misses when its median is worse than the baseline's worst round (below
 %% its lowest requests/s, above its highest p99), that is, worse beyond
-%% the rounds' spread. The baseline is cowboy, except on `file_1MiB_c10`,
-%% which is gated against Bandit's sendfile: beamtalk-http's cowboy
-%% backend cannot send files, so cowboy answers that row from memory.
+%% the rounds' spread. The baseline is bare cowboy, except on `file_1MiB_c10`,
+%% which is gated against Bandit's sendfile (cowboy answers that row from
+%% memory, as it has no sendfile).
 %%
-%% Bare cowboy is reporting only: it splits the gap between the gate pair
-%% into engine (Buccaneer standalone ÷ bare cowboy) and adapter
-%% ((B ÷ standalone) ÷ (beamtalk-http on cowboy ÷ bare cowboy)).
+%% Engine and adapter are reporting only: engine is Buccaneer standalone ÷
+%% bare cowboy (the two engines, no beamtalk-http in front), adapter is
+%% beamtalk-http on Buccaneer ÷ Buccaneer standalone (what the adapter keeps
+%% of its engine's figure).
 -module(bench_main).
 
 -export([main/0, rows/1]).
@@ -61,10 +62,9 @@ list_to_number(S) ->
 %% === Rows ===
 
 %% {Id, Kind, Params, Class}. Class `gate` rows decide the gate against
-%% cowboy, `{gate, bandit}` rows against Bandit (cowboy still runs, for
-%% reference); `context` rows (HTTP/2, WebSocket: beamtalk-http does not
-%% serve them on cowboy) skip cowboy; `memory` rows are reported, not
-%% gated (no throughput).
+%% the baseline (bare cowboy, or Bandit for `{gate, bandit}` rows);
+%% `context` rows (HTTP/2, WebSocket) run on every implementation;
+%% `memory` rows are reported, not gated (no throughput).
 rows(full) ->
     [{"get_c" ++ integer_to_list(C), http, #{conns => C}, gate} || C <- [1, 10, 100, 1000]]
     ++ [{"post_echo_64KiB_c10", http, #{conns => 10, method => <<"POST">>, path => <<"/echo">>,
@@ -89,7 +89,6 @@ rows(smoke) ->
      {"h2_get_2x10", h2, #{conns => 2, streams => 10}, context},
      {"ws_echo_c10", ws, #{conns => 10, size => 64}, context}].
 
-impls_for(context, Impls) -> Impls -- [http_cowboy];
 impls_for(_, Impls) -> Impls.
 
 %% === The run ===
@@ -253,9 +252,9 @@ report(Rows, Results, Impls, Env) ->
             "beamtalk-http on Buccaneer (B) against the row's baseline, medians "
             "over the rounds; `spread` is each side's min-max over the rounds. A metric "
             "misses when B's median is worse than the baseline's worst round. The "
-            "baseline is beamtalk-http on cowboy, except where the Baseline column "
-            "says Bandit (`file_1MiB_c10`: cowboy cannot send files and answers it "
-            "from memory).\n\n"
+            "baseline is bare cowboy, except where the Baseline column "
+            "says Bandit (`file_1MiB_c10`: cowboy answers it from memory, "
+            "as it has no sendfile).\n\n"
             "| Row | Metric | Baseline | B median | B spread | Base median | Base spread | B/base | Gate |\n"
             "|---|---|---|---:|---|---:|---|---:|---|\n",
             [gate_lines(Id, Kind, Base, Results) || {Id, Kind, _, Class} <- Rows,
@@ -265,13 +264,12 @@ report(Rows, Results, Impls, Env) ->
            "Medians. B/x ratios are beamtalk-http on Buccaneer ÷ the other: above 1 is "
            "better on req/s and MB/s, worse on latency and memory. `engine` is "
            "Buccaneer standalone ÷ bare cowboy, the two engines with no beamtalk-http "
-           "in front. `adapter` is (B ÷ standalone) ÷ (beamtalk-http on cowboy ÷ bare "
-           "cowboy): what beamtalk-http's Buccaneer adapter keeps of its engine's "
-           "figure, relative to what its cowboy adapter keeps; below 1 on req/s, the "
-           "Buccaneer adapter costs more. B/cowboy is about engine × adapter.\n\n"
+           "in front. `adapter` is B ÷ standalone: what beamtalk-http's adapter keeps "
+           "of its engine's figure; below 1 on req/s, the adapter costs. B/cowboy is "
+           "about engine × adapter.\n\n"
            "| Row | Metric | ", lists:join(" | ", [name(I) || I <- Impls]),
-           " | B/cowboy | B/Bandit | B/standalone | engine | adapter |\n|---|---|",
-           lists:duplicate(length(Impls) + 5, "---:|"), "\n",
+           " | B/cowboy | B/Bandit | engine | adapter |\n|---|---|",
+           lists:duplicate(length(Impls) + 4, "---:|"), "\n",
            [ctx_lines(Id, Kind, Impls, Results) || {Id, Kind, _, _} <- Rows], "\n"],
     Every = ["## Every round\n\n| Row | Metric | Server | Rounds | Errors |\n|---|---|---|---|---|\n",
              [[[io_lib:format("| ~s | ~s | ~s | ~s | ~s |~n",
@@ -283,7 +281,7 @@ report(Rows, Results, Impls, Env) ->
     [Header, Gate, Ctx, Every].
 
 %% The implementation a row is gated against, if any.
-gate_baseline(gate) -> [http_cowboy];
+gate_baseline(gate) -> [cowboy];
 gate_baseline({gate, Base}) -> [Base];
 gate_baseline(_) -> [].
 
@@ -307,16 +305,13 @@ verdict(lower, Mb, C, _) -> case Mb > lists:max(C) of true -> "MISS"; false -> "
 ctx_lines(Id, Kind, Impls, Results) ->
     [begin
         M = fun(I) -> median(values(Id, I, Key, Results)) end,
-        io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s | ~s | ~s |~n",
+        io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s | ~s |~n",
                       [Id, Label, lists:join(" | ", [fmt(Key, M(I)) || I <- Impls]),
-                       ratio(M(http_buccaneer), M(http_cowboy)), ratio(M(http_buccaneer), M(bandit)),
-                       ratio(M(http_buccaneer), M(buccaneer)), ratio(M(buccaneer), M(cowboy)),
-                       ratio(quotient(M(http_buccaneer), M(buccaneer)),
-                             quotient(M(http_cowboy), M(cowboy)))])
+                       ratio(M(http_buccaneer), M(cowboy)), ratio(M(http_buccaneer), M(bandit)),
+                       ratio(M(buccaneer), M(cowboy)), ratio(M(http_buccaneer), M(buccaneer))])
      end || {Key, Label, _} <- metrics(Kind)].
 
 name(http_buccaneer) -> "http on Buccaneer";
-name(http_cowboy) -> "http on cowboy";
 name(buccaneer) -> "Buccaneer standalone";
 name(cowboy) -> "bare cowboy";
 name(bandit) -> "Bandit";
@@ -346,12 +341,6 @@ ratio(undefined, _) -> "-";
 ratio(_, undefined) -> "-";
 ratio(_, T) when T == 0 -> "-";
 ratio(C, T) -> io_lib:format("~.2f", [C / T]).
-
-%% C ÷ T as a number, for a ratio of ratios.
-quotient(undefined, _) -> undefined;
-quotient(_, undefined) -> undefined;
-quotient(_, T) when T == 0 -> undefined;
-quotient(C, T) -> C / T.
 
 fmt(_, undefined) -> "-";
 fmt(bytes_per_s, V) -> io_lib:format("~.1f", [V / 1.0e6]);

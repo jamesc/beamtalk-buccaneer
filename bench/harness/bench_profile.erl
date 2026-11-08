@@ -10,7 +10,7 @@
 %% Beamtalk class processes (`sys:statistics`, BT-4065). Adapted from
 %% Catalina's `bench_profile`.
 %%
-%%   bench/run.sh bench_profile [--impl http_buccaneer|buccaneer|http_cowboy|bandit]
+%%   bench/run.sh bench_profile [--impl http_buccaneer|buccaneer|cowboy|bandit]
 %%       [--row ROW] [--seconds N] [--top N] [--workers N]
 %%       [--type call_time|call_count|call_memory|split]
 %%

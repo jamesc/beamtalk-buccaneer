@@ -4,13 +4,10 @@
 /// HttpNode — what the release-gate harness (`bench/harness/bench_node.erl`)
 /// calls in a Beamtalk server peer node. One handler, three ways in:
 ///
-/// - `startHttp:` — beamtalk-http's `HTTPServer` on `#buccaneer` or
-///   `#cowboy` (the gate pair);
+/// - `startHttp` — beamtalk-http's `HTTPServer` on Buccaneer (the gate);
 /// - `startTls:` — the same beamtalk-http request path behind a TLS
 ///   Buccaneer listener (`HttpExchangeAdapter serve:handler:`, as
-///   `HTTPBuccaneerServer` does); `HTTPServer` has no TLS option on
-///   either backend, so the harness starts cowboy's TLS listener itself
-///   around `handler:`;
+///   `HTTPBuccaneerServer` does);
 /// - `startStandalone:` — Buccaneer on its own, with an `Exchange`
 ///   handler serving the same routes (the adapter's cost is the
 ///   difference).
@@ -18,27 +15,19 @@
 /// Routes: `/` → `hello world`; `POST /echo` → the request body;
 /// `/chunked` → 1 MiB as 16 chunks of 64 KiB; `/file` → a 1 MiB file;
 /// `/ws` → a WebSocket echo; `/slow` → `hello world` after a second
-/// (the lifecycle tests' in-flight request). cowboy cannot stream or send files in
-/// beamtalk-http (it raises `unsupported_backend`), so with
-/// `streaming: false` the last two answer the same 1 MiB as a plain
-/// body, which is how a cowboy-backed app serves it today.
+/// (the lifecycle tests' in-flight request).
 sealed typed Object subclass: HttpNode
 
   /// The 64 KiB chunk `/chunked` sends 16 times.
   class sealed chunk -> Binary => Erlang binary copy: "x" with: 65536
 
-  /// The 1 MiB body `/chunked` and `/file` answer without streaming.
-  class sealed big -> Binary => Erlang binary copy: "x" with: 1048576
-
   /// The 1 MiB file `/file` sends, relative to the repository root (the
   /// peers' working directory); `bench_node` writes it at boot.
   class sealed filePath -> String => "_build/bench/buccaneer_bench_1mib"
 
-  /// The beamtalk-http handler. `streaming` picks `streamWith:` and
-  /// `file:` (Buccaneer) or a plain 1 MiB body (cowboy).
-  class sealed handler: streaming :: Boolean -> Block(HTTPRequest, HTTPResponse) =>
+  /// The beamtalk-http handler: `streamWith:` and `file:` (Buccaneer).
+  class sealed handler -> Block(HTTPRequest, HTTPResponse) =>
     piece := self chunk
-    big := self big
     path := self filePath
     text := #(#("content-type", "text/plain"))
     octets := #(#("content-type", "application/octet-stream"))
@@ -49,27 +38,13 @@ sealed typed Object subclass: HttpNode
           #headers => octets,
           #body => req body
         };
-        "/chunked" -> streaming
-          ifTrue: [
-            HTTPResponse
-              streamWith: [:w :: HttpChunkWriter |
-                w startChunked: 200 headers: octets
-                16 timesRepeat: [w sendChunk: piece]
-                w finish
-              ]
-          ]
-          ifFalse: [
-            HTTPResponse new: #{
-              #status => 200,
-              #headers => octets,
-              #body => big
-            }
+        "/chunked" -> HTTPResponse
+          streamWith: [:w :: HttpChunkWriter |
+            w startChunked: 200 headers: octets
+            16 timesRepeat: [w sendChunk: piece]
+            w finish
           ];
-        "/file" -> streaming ifTrue: [
-          (HTTPResponse file: path) withStatus: 200
-        ] ifFalse: [
-          HTTPResponse new: #{#status => 200, #headers => octets, #body => big}
-        ];
+        "/file" -> (HTTPResponse file: path) withStatus: 200;
         "/ws" -> HTTPResponse upgradeWebSocket: BenchWsEcho;
         "/slow" -> [
           Timer sleep: 1000
@@ -87,13 +62,13 @@ sealed typed Object subclass: HttpNode
       ]
     ]
 
-  /// beamtalk-http's `HTTPServer` on `backend` (`#buccaneer` or
-  /// `#cowboy`), port 0. Answers the server actor.
-  class sealed startHttp: backend :: Symbol -> Dynamic =>
+  /// beamtalk-http's `HTTPServer` on Buccaneer, port 0.
+  /// Answers the server actor.
+  class sealed startHttp -> Dynamic =>
     HTTPServer
       start: 0
-      handler: (self handler: backend =:= #buccaneer)
-      options: #{#backend => backend}
+      handler: self handler
+      options: #{}
 
   class sealed httpPort: srv :: Dynamic -> Integer => srv port
 
@@ -103,7 +78,7 @@ sealed typed Object subclass: HttpNode
 
   /// beamtalk-http's request path behind a TLS Buccaneer listener.
   class sealed startTls: options :: Dictionary -> ServerSupervisor =>
-    h := self handler: true
+    h := self handler
     (Buccaneer start: (self tlsOptions: options) handler: [:ex |
       HttpExchangeAdapter serve: ex handler: h
     ]) unwrap

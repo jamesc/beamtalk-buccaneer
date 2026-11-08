@@ -8,16 +8,15 @@
 %% and server never share schedulers. Adapted from Catalina's
 %% `bench_peer`.
 %%
-%%   http_buccaneer  beamtalk-http's HTTPServer, `#backend => #buccaneer`
-%%   http_cowboy     beamtalk-http's HTTPServer, `#backend => #cowboy` (the gate)
+%%   http_buccaneer  beamtalk-http's HTTPServer on Buccaneer (the gate)
 %%   buccaneer       Buccaneer standalone (an Exchange handler)
 %%   bandit          Bandit 1.12.5 with a bare Plug (context)
 %%   cowboy          bare cowboy: a plain Erlang handler (`bench_cowboy_handler`),
-%%                   no Beamtalk runtime (context; `just bench` only)
+%%                   no Beamtalk runtime (the gate's baseline; `just bench` only)
 %%
-%% The three Beamtalk implementations load the same package
+%% The two Beamtalk implementations load the same package
 %% (`bench/http_node`); each gets its own VM. Bare cowboy loads cowboy and
-%% ranch from that package's dependencies.
+%% ranch from that package's native dependencies (pinned for the baseline).
 %%
 %% Paths come from the environment, set by `bench/run.sh`:
 %%   BENCH_ROOT            the repository root
@@ -29,14 +28,14 @@
 
 -define(CALL_TIMEOUT, 120000).
 
-impls() -> [http_buccaneer, http_cowboy, buccaneer, bandit].
+impls() -> [http_buccaneer, buccaneer, bandit].
 
-%% `just bench`'s servers: the above plus bare cowboy, which splits the
-%% gap between the gate pair into engine and adapter (BT-4498).
-bench_impls() -> [http_buccaneer, http_cowboy, buccaneer, cowboy, bandit].
+%% `just bench`'s servers: the above plus bare cowboy (BT-4498), the
+%% gate's baseline.
+bench_impls() -> [http_buccaneer, buccaneer, cowboy, bandit].
 
 %% The pair the gate compares.
-gate_impls() -> [http_buccaneer, http_cowboy].
+gate_impls() -> [http_buccaneer, cowboy].
 
 start(Impl) -> start(Impl, #{}).
 

@@ -1,7 +1,7 @@
 # The release gate: `just bench` and `just stress`
 
 Phase 7 (PLAN.md § Phase 7, BT-4086): does beamtalk-http on Buccaneer
-match beamtalk-http on cowboy, and does Buccaneer hold up under load and
+match bare cowboy, and does Buccaneer hold up under load and
 failure? Results are in [RESULTS.md](RESULTS.md). The harness is
 Catalina's (its `bench/` and `test/stress/`, BT-4051) with an HTTP load
 generator added. Phase 0's spike bench is [SPIKE.md](SPIKE.md)
@@ -11,7 +11,7 @@ generator added. Phase 0's spike bench is [SPIKE.md](SPIKE.md)
 just bench                               # 5 rounds x 5 s, every row, five servers
 just bench --rounds 7 --duration 10000   # longer
 just bench --only get_c10,tls_get_c100   # some rows
-just bench --impls http_buccaneer,http_cowboy
+just bench --impls http_buccaneer,cowboy
 just bench-smoke                         # 1 round x 1 s on the smoke rows (CI)
 just stress                              # every stress test, full sizes, 30-minute soak
 just stress --soak-minutes 5 --only soak
@@ -41,18 +41,17 @@ and servers never share schedulers.
 
 | Name | What | Role |
 |---|---|---|
-| `http_buccaneer` | beamtalk-http's `HTTPServer start:handler:options:` with `#backend => #buccaneer` | the gate |
-| `http_cowboy` | the same, `#backend => #cowboy` (cowboy 2.20 with ranch defaults, as beamtalk-http starts it: 10 acceptors, `max_keepalive` 1,000) | the gate's baseline (except `file_1MiB_c10`) |
+| `http_buccaneer` | beamtalk-http's `HTTPServer` on Buccaneer | the gate |
 | `buccaneer` | Buccaneer standalone: `Buccaneer start:handler:` with an `Exchange` handler serving the same routes | context: the adapter's cost is the difference |
-| `cowboy` | bare cowboy: the same cowboy and ranch with a plain Erlang handler (`bench/harness/bench_cowboy_handler.erl`), no beamtalk-http and no Beamtalk runtime | context: splits B/cowboy into engine and adapter (`just bench` only, not `just stress`) |
+| `cowboy` | bare cowboy: cowboy 2.20.0 and ranch 2.2.1 with a plain Erlang handler (`bench/harness/bench_cowboy_handler.erl`), no beamtalk-http and no Beamtalk runtime | the gate's baseline (except `file_1MiB_c10`) |
 | `bandit` | Bandit 1.12.5 with a bare Plug (`bench/bandit`) | context; the baseline of `file_1MiB_c10` |
 
-The three Beamtalk servers come from one package, `bench/http_node`
-(`HttpNode`); bare cowboy loads cowboy and ranch from that package's
-dependencies, so it runs the cowboy version beamtalk-http runs, with
-cowboy's defaults as beamtalk-http starts it. beamtalk-http is pinned by commit in `bench/run.sh`
-(`HTTP_REV`, main d644c20, the same code for both backends, so the gate
-compares the backends and nothing else). beamtalk-http pins Buccaneer by
+The two Beamtalk servers come from one package, `bench/http_node`
+(`HttpNode`). Bare cowboy loads cowboy and ranch from that package's
+pinned native dependencies (BT-4509), with cowboy's defaults (10
+acceptors, `max_keepalive` 1,000). beamtalk-http tracks origin/main in
+`bench/run.sh` (`HTTP_REV`, override with `BENCH_HTTP_REV_PIN`), so the
+gate always measures current beamtalk-http. beamtalk-http pins Buccaneer by
 git rev and a path dependency does not override a transitive one, so
 `run.sh` clones beamtalk-http into `_build/bench/beamtalk-http` and points
 its `buccaneer` dependency at this checkout: the gate always measures the
@@ -66,18 +65,13 @@ echo. Bare cowboy serves every route natively (`stream_reply`,
 `sendfile`, `cowboy_websocket`), and runs the HTTP/2 (h2c prior
 knowledge) and WebSocket rows; its HTTP/2 frame-rate guard
 (`max_received_frame_rate`, 10,000 frames per 10 s per connection by
-default) is lifted, or the h2 row's load gets a GOAWAY. beamtalk-http's cowboy backend cannot stream or send files (it
-raises `unsupported_backend`), so on cowboy `/chunked` and `/file` answer
-the same 1 MiB as a plain body: that is how a cowboy-backed app serves it
-today.
+default) is lifted, or the h2 row's load gets a GOAWAY.
 
-TLS: `HTTPServer` has no TLS option on either backend. The TLS rows run
-beamtalk-http's request path behind each backend's TLS listener: on
-Buccaneer, `Buccaneer start:` with `#scheme => #https` and
-`HttpExchangeAdapter serve:handler:` (what `HTTPBuccaneerServer` runs);
-on cowboy, `cowboy:start_tls` with beamtalk-http's
-`beamtalk_http_server_handler` (what `beamtalk_http_server` runs on its
-clear listener). Both use `test/fixtures/{cert,key}.pem`.
+TLS: the TLS rows run beamtalk-http's request path behind Buccaneer's
+TLS listener (`Buccaneer start:` with `#scheme => #https` and
+`HttpExchangeAdapter serve:handler:`, what `HTTPBuccaneerServer` runs),
+and bare cowboy behind `cowboy:start_tls` with the plain Erlang
+handler. Both use `test/fixtures/{cert,key}.pem`.
 
 ## The load generator
 
@@ -109,8 +103,8 @@ frames).
 | `tls_handshake_w32` | the same over TLS: a full handshake per request | gate |
 | `tls_get_c100` | keep-alive `GET /` over TLS, 100 connections | gate |
 | `idle_10k` | 10,000 idle keep-alive connections (one GET each): node and process memory and processes per connection | reported |
-| `h2_get_10x10` | HTTP/2 `GET /`, 10 connections x 10 streams in flight | context (not cowboy) |
-| `ws_echo_c100` | WebSocket echo, 64-byte text, 100 connections | context (not cowboy) |
+| `h2_get_10x10` | HTTP/2 `GET /`, 10 connections x 10 streams in flight | context |
+| `ws_echo_c100` | WebSocket echo, 64-byte text, 100 connections | context |
 
 Every round measures every row once per server, back to back, rotating
 which server goes first, and each measurement starts a fresh server. The
@@ -122,34 +116,28 @@ on Buccaneer misses when its median is worse than the baseline's worst
 round (below its lowest requests/s, above its highest p99), that is,
 worse beyond the rounds' spread. A row with errors misses.
 
-The baseline is beamtalk-http on cowboy, except on `file_1MiB_c10`,
-which is gated against Bandit's `send_file` (BT-4468; the row's class in
-`bench_main.erl` is `{gate, bandit}`). beamtalk-http's cowboy backend
-cannot send files, so on cowboy that row answers the 1 MiB from an
-in-memory binary, and over loopback sending a binary already in memory
-beats `file:sendfile` (Bandit's sendfile is 0.84× cowboy there). Bandit
-against Buccaneer is sendfile against sendfile. cowboy still runs on the
-row, and its figure stays in the report for reference.
+The baseline is bare cowboy (BT-4509; beamtalk-http dropped its cowboy
+backend in BT-4087), except on `file_1MiB_c10`, which is gated against
+Bandit's `send_file` (BT-4468; the row's class in `bench_main.erl` is
+`{gate, bandit}`). Cowboy answers that row from an in-memory binary, and
+over loopback sending a binary already in memory beats `file:sendfile`
+(Bandit's sendfile is 0.84× cowboy there). Bandit against Buccaneer is
+sendfile against sendfile.
 
 ## Engine and adapter
 
 The report's "All servers" table has two ratio columns besides B/x
-(BT-4498). Like the other ratios they are medians divided, so above 1 is
-better on req/s and MB/s, worse on latency and memory:
+(BT-4498, redefined in BT-4509). Like the other ratios they are medians
+divided, so above 1 is better on req/s and MB/s, worse on latency and
+memory:
 
 - **engine**: Buccaneer standalone ÷ bare cowboy. The two engines, each
   with a bare handler in its own language and no beamtalk-http.
-- **adapter**: (B ÷ Buccaneer standalone) ÷ (beamtalk-http on cowboy ÷
-  bare cowboy). What beamtalk-http's Buccaneer adapter keeps of its
-  engine's figure, against what its cowboy adapter (native Erlang,
-  `beamtalk_http_server_handler`) keeps of cowboy's. Below 1 on req/s,
-  the Buccaneer adapter costs more than the cowboy one.
+- **adapter**: B ÷ Buccaneer standalone. What beamtalk-http's adapter
+  keeps of its engine's figure. Below 1 on req/s, the adapter costs.
 
-B/cowboy is engine × adapter. B/standalone alone overstates the adapter
-(cowboy's adapter is not free) and standalone ÷ beamtalk-http on cowboy
-flatters the engine (it compares a bare handler with one that builds an
-`HTTPRequest`). Both columns are reporting only: the gate rule does not
-use them.
+B/cowboy is engine × adapter. Both columns are reporting only: the gate
+rule does not use them.
 
 ## Stress tests (`test/stress/`)
 

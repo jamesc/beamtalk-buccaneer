@@ -630,16 +630,17 @@ Deviations from Bandit, all with covering tests:
 Reuse Catalina's harness (`bench/harness`, `test/stress`, the peer-VM
 runner) and extend it with an HTTP load generator. Servers run side by side,
 interleaved round by round: **beamtalk-http on Buccaneer** against
-**beamtalk-http 0.2.0 on cowboy** (the gate), with **Buccaneer
-standalone** (the adapter's cost on its own) and **Bandit 1.12.5** (a mix
-project with the equivalent handler as a bare Plug) reported for context.
+**bare cowboy** (the gate since BT-4509; beamtalk-http dropped cowboy in
+BT-4087), with **Buccaneer standalone** (the adapter's cost on its own)
+and **Bandit 1.12.5** (a mix project with the equivalent handler as a
+bare Plug) reported for context.
 
 **Rows:** GET hello at 1/10/100/1,000 keepalive connections (requests/s,
 p50/p99/p99.9); POST 64 KiB echo; a 1 MiB chunked response; `file:` 1 MiB;
 connection churn (`Connection: close`); TLS handshakes/s and TLS keepalive
 GET; memory and processes per idle keepalive connection (10,000); and, for
-context only (cowboy is not serving them in beamtalk-http today), HTTP/2 GET
-at 100 streams over 10 connections and WebSocket echo at 100 connections.
+context, HTTP/2 GET at 100 streams over 10 connections and WebSocket
+echo at 100 connections.
 
 **`just stress`:** request fuzz (random framing, random chunk splits,
 pipelining; bytes checked), leak churn (processes, ports, ETS,
@@ -650,9 +651,9 @@ under load), lifecycle (suspend, resume, `stop:` draining in-flight
 requests), a 30-minute mixed soak (HTTP/1, TLS, HTTP/2, WebSocket).
 Conformance: h2spec and Autobahn in CI (non-blocking until green).
 
-**The gate (decided):**
+**The gate (decided, baseline moved to bare cowboy in BT-4509):**
 
-- beamtalk-http on Buccaneer **matches beamtalk-http on cowboy on
+- beamtalk-http on Buccaneer **matches bare cowboy on
   throughput and p99 on every HTTP/1.1 and TLS gate row** (medians over
   ≥ 5 interleaved rounds; "matches" means not worse beyond the rounds'
   spread, which RESULTS.md reports);

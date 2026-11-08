@@ -7,30 +7,37 @@
 #   bench/run.sh bench_main [ARGS...]    (just bench)
 #   bench/run.sh stress_main [ARGS...]   (just stress)
 #
-#   bench/http_node   beamtalk-http (pinned below) on this checkout's
-#                     Buccaneer and on cowboy, plus Buccaneer standalone
+#   bench/http_node   beamtalk-http (tracking origin/main below) on this
+#                     checkout's Buccaneer, plus Buccaneer standalone
 #   bench/bandit      Bandit 1.12.5 (a mix project; context)
 #
+# The gate baseline is bare cowboy (a plain Erlang handler, no
+# beamtalk-http): cowboy and ranch come from http_node's pinned native
+# dependencies (BT-4509).
+#
 # beamtalk-http pins Buccaneer by git rev, and a path dependency does not
-# override a transitive one, so the harness clones beamtalk-http at
-# HTTP_REV into _build/bench/beamtalk-http and points its buccaneer
-# dependency at this checkout.
+# override a transitive one, so the harness clones beamtalk-http into
+# _build/bench/beamtalk-http and points its buccaneer dependency at this
+# checkout.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 main="$1"
 shift
 
-HTTP_REV="${BENCH_HTTP_REV_PIN:-d644c2050fdd19078bba6db4af8819758fda9733}"
+# beamtalk-http tracks origin/main so the gate always measures current
+# beamtalk-http (override with BENCH_HTTP_REV_PIN to pin a revision).
+HTTP_REV="${BENCH_HTTP_REV_PIN:-origin/main}"
 http="$root/_build/bench/beamtalk-http"
 if [ ! -d "$http/.git" ]; then
   mkdir -p "$root/_build/bench"
   git clone -q https://github.com/jamesc/beamtalk-http "$http"
 fi
-if [ "$(git -C "$http" rev-parse HEAD)" != "$HTTP_REV" ]; then
-  git -C "$http" checkout -q -- beamtalk.toml 2>/dev/null || true
-  git -C "$http" fetch -q origin
-  git -C "$http" checkout -q "$HTTP_REV"
+git -C "$http" fetch -q origin
+want="$(git -C "$http" rev-parse "$HTTP_REV^{commit}")"
+if [ "$(git -C "$http" rev-parse HEAD)" != "$want" ]; then
+  git -C "$http" checkout -q -- beamtalk.toml beamtalk.lock 2>/dev/null || true
+  git -C "$http" checkout -q "$want"
 fi
 sed -i.orig "s|^buccaneer = .*|buccaneer = { path = \"$root\" }|" "$http/beamtalk.toml"
 
@@ -58,7 +65,7 @@ export BENCH_BEAMTALK_EBINS="$(IFS=:; echo "${ebins[*]}")"
 export BENCH_ELIXIR_LIB="$(cd "$root/bench/bandit" && elixir -e 'IO.write(Path.dirname(:code.lib_dir(:elixir)))')"
 export BENCH_ELIXIR_VERSION="$(cd "$root/bench/bandit" && elixir -e 'IO.write(System.version())')"
 export BENCH_BANDIT_VERSION="$(sed -n 's/.*"bandit": {:hex, :bandit, "\([^"]*\)".*/\1/p' "$root/bench/bandit/mix.lock")"
-export BENCH_COWBOY_VERSION="$(sed -n '/name = "cowboy"/{n;s/version = "\(.*\)"/\1/p}' "$root/bench/http_node/beamtalk.lock")"
+export BENCH_COWBOY_VERSION="$(grep -A1 '^name = "cowboy"$' "$root/bench/http_node/beamtalk.lock" | sed -n 's/^version = "\(.*\)"/\1/p')"
 export BENCH_BEAMTALK_VERSION="$(beamtalk --version | awk '{print $2}') ($(git -C "$sysroot/.." rev-parse --short HEAD 2>/dev/null || echo installed))"
 export BENCH_BUCCANEER_REV="$(git -C "$root" rev-parse --short HEAD)$(git -C "$root" diff --quiet HEAD -- src || echo '+dirty')"
 export BENCH_HTTP_REV="$(git -C "$http" rev-parse --short HEAD)"

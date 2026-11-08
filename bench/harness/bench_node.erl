@@ -57,15 +57,13 @@ boot_impl(bandit) ->
     ok;
 boot_impl(cowboy) ->
     %% Bare cowboy: no Beamtalk runtime, only cowboy and ranch (from
-    %% http_node's dependencies, the version beamtalk-http runs).
+    %% http_node's native dependencies, pinned for the baseline).
     {ok, _} = application:ensure_all_started(cowboy),
     {module, _} = code:ensure_loaded(bench_cowboy_handler),
     ok;
 boot_impl(_Beamtalk) ->
     {ok, _} = application:ensure_all_started(beamtalk_stdlib),
     {ok, _} = application:ensure_all_started(http_node),
-    %% cowboy and ranch for the cowboy backend's own listeners.
-    {ok, _} = application:ensure_all_started(cowboy),
     %% Load every package module so its class registers (on_load).
     Dirs = [D || D <- code:get_path(), is_package_ebin(D)],
     [code:ensure_loaded(list_to_atom(filename:basename(F, ".beam")))
@@ -150,29 +148,11 @@ stop_server(Name, Timeout) ->
 server() -> persistent_term:get({?MODULE, server, main}).
 
 start(http_buccaneer, false, _Opts) ->
-    Srv = ?NODE:'class_startHttp:'(node_class(), buccaneer),
-    {ok, {http, Srv}, ?NODE:'class_httpPort:'(node_class(), Srv)};
-start(http_cowboy, false, _Opts) ->
-    Srv = ?NODE:'class_startHttp:'(node_class(), cowboy),
+    Srv = ?NODE:'class_startHttp'(node_class()),
     {ok, {http, Srv}, ?NODE:'class_httpPort:'(node_class(), Srv)};
 start(http_buccaneer, true, _Opts) ->
     Srv = ?NODE:'class_startTls:'(node_class(), #{}),
     {ok, {buccaneer, Srv}, ?NODE:'class_port:'(node_class(), Srv)};
-start(http_cowboy, true, _Opts) ->
-    %% HTTPServer has no TLS option: beamtalk-http's cowboy handler module
-    %% behind a cowboy TLS listener, as `beamtalk_http_server` starts its
-    %% clear one.
-    Handler = ?NODE:'class_handler:'(node_class(), false),
-    Dispatch = cowboy_router:compile([
-        {'_', [{'_', beamtalk_http_server_handler, #{handler => Handler}}]}
-    ]),
-    Ref = make_ref(),
-    Dir = cert_dir(),
-    {ok, _} = cowboy:start_tls(Ref,
-        [{port, 0}, {ip, {127, 0, 0, 1}},
-         {certfile, filename:join(Dir, "cert.pem")}, {keyfile, filename:join(Dir, "key.pem")}],
-        #{env => #{dispatch => Dispatch}}),
-    {ok, {cowboy_listener, Ref}, ranch:get_port(Ref)};
 start(cowboy, Tls, _Opts) ->
     %% Bare cowboy: a plain Erlang handler (bench_cowboy_handler), cowboy's
     %% defaults otherwise, as beamtalk-http starts it, except HTTP/2's frame

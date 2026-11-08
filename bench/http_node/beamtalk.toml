@@ -4,11 +4,19 @@
 [package]
 name = "http_node"
 version = "0.1.0"
-description = "The release gate's servers: beamtalk-http on Buccaneer and on cowboy, and Buccaneer standalone (not published)"
+description = "The release gate's servers: beamtalk-http on Buccaneer and Buccaneer standalone (not published)"
 
 [dependencies]
 http = { path = "../../_build/bench/beamtalk-http" }
 buccaneer = { path = "../.." }
+
+[native.dependencies]
+# Pinned engine for the bare-cowboy gate baseline (BT-4509): the same
+# versions beamtalk-http 0.2.x ran, so the baseline does not move when
+# beamtalk-http drops cowboy.
+cowboy = "2.20.0"
+cowlib = "2.21.0"
+ranch = "2.2.1"
 
 [diagnostics]
 type = "error"

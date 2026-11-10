@@ -25,7 +25,7 @@ TestCase subclass: AutobahnTest
     out := backend =:= #docker ifTrue: [
       (Erlang os) cmd: (self dockerCmd: dir port: port)
     ] ifFalse: [(Erlang os) cmd: (self localCmd: dir port: port)]
-    self assert: (out includesSubstring: "EXIT:0") equals: true
+    self assert: (out asString includesSubstring: "EXIT:0") equals: true
     failures := self failuresIn: dir
     self assert: (srv stop: 5000) isOk
     self assert: failures equals: #()
@@ -42,8 +42,8 @@ TestCase subclass: AutobahnTest
   /// local wstest (`pipx install autobahntestsuite`). Fail fast
   /// naming both options.
   backend -> Symbol =>
-    dockerFound := (((Erlang os) cmd: "command -v docker; echo EXIT:$?") includesSubstring: "EXIT:0")
-    localFound := (((Erlang os) cmd: "command -v wstest; echo EXIT:$?") includesSubstring: "EXIT:0")
+    dockerFound := (((Erlang os) cmd: "command -v docker; echo EXIT:$?") asString includesSubstring: "EXIT:0")
+    localFound := (((Erlang os) cmd: "command -v wstest; echo EXIT:$?") asString includesSubstring: "EXIT:0")
     (dockerFound or: [localFound])
       ifFalse: [
         self fail: "autobahn needs docker or wstest (pipx install autobahntestsuite) with AUTOBAHN=1"
@@ -56,9 +56,11 @@ TestCase subclass: AutobahnTest
   /// valid Beamtalk symbols.
   specJson -> String =>
     v := (Erlang os) getenv: "AUTOBAHN_CASES"
-    cases := (v =:= false or: [
-      v isNil
-    ]) ifTrue: [#("*")] ifFalse: [v split: ","]
+    cases := v match: [
+      s :: String -> s split: ",";
+      l :: List -> l asString split: ",";
+      _ -> #("*")
+    ]
     "\{""outdir"": ""./reports"", ""cases"": ["
       ++ (self quoted: cases)
       ++ "], ""exclude-cases"": ["
@@ -103,7 +105,8 @@ TestCase subclass: AutobahnTest
   failuresIn: dir :: String -> List =>
     index := (File readAll: (dir ++ "/reports/index.json")) unwrap
     report := (Json parse: index) unwrap
-    cases := report at: "UnknownServer" ifAbsent: [
+    parsed :: Dictionary := report
+    cases := parsed at: "UnknownServer" ifAbsent: [
       self fail: "no UnknownServer in autobahn index.json"
     ]
     failures := #()

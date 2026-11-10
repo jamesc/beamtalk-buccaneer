@@ -111,9 +111,8 @@ Object subclass: Buccaneer
     (address isKindOf: Tuple) ifFalse: [
       ^(address printString) ++ " " ++ port printString ++ " (" ++ tag ++ ")"
     ]
-    ((Erlang inet) ntoa: address) asString
-      ++ ":"
-      ++ port printString
-      ++ " ("
-      ++ tag
-      ++ ")"
+    host := ((Erlang inet) ntoa: address) match: [
+      r :: Result -> address printString;
+      h -> h asString
+    ]
+    host ++ ":" ++ port printString ++ " (" ++ tag ++ ")"

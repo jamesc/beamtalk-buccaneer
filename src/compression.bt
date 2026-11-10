@@ -68,7 +68,12 @@ sealed typed Value subclass: Compression
     (self enabled: http) ifFalse: [^nil]
     accepted := self parseAcceptEncoding: text
     wildcard := self quality: accepted coding: "*"
-    preferred := http at: #responseEncodings ifAbsent: [self defaultEncodings]
+    preferred := (http at: #responseEncodings ifAbsent: [
+      self defaultEncodings
+    ]) match: [
+      l :: List -> l;
+      _ -> self defaultEncodings
+    ]
     preferred
       do: [:encoding :: String |
         q := self quality: accepted coding: encoding

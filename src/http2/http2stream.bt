@@ -545,11 +545,16 @@ sealed typed Value subclass: HTTP2Stream
       with: position
       with: size
     read match: [
-      r :: Result -> r isOk ifTrue: [
-        r value
-      ] ifFalse: [
-        Error signal: ("Error reading file for sendfile: " ++ r error printString)
-      ];
+      r :: Result -> r isOk
+        ifTrue: [
+          r value match: [
+            b :: Binary -> b;
+            _ -> Error signal: "Error reading file for sendfile: not a binary"
+          ]
+        ]
+        ifFalse: [
+          Error signal: ("Error reading file for sendfile: " ++ r error printString)
+        ];
       _ -> Error signal: "Error reading file for sendfile: eof"
     ]
 

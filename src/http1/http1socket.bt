@@ -502,7 +502,8 @@ sealed typed Value subclass: HTTP1Socket
       with: #({#packet_size, packetSize})
     decoded isError
       ifTrue: [
-        reason := decoded error reason
+        failure :: Result := decoded
+        reason := failure error reason
         reason =:= #invalid ifTrue: [
           HTTPError signal: "Request URI is too long" reason: 414
         ]
@@ -595,7 +596,8 @@ sealed typed Value subclass: HTTP1Socket
       with: #({#packet_size, packetSize})
     decoded isError
       ifTrue: [
-        reason := decoded error reason
+        failure :: Result := decoded
+        reason := failure error reason
         reason =:= #invalid ifTrue: [
           HTTPError signal: "Header too long" reason: 431
         ]

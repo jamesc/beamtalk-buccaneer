@@ -36,7 +36,8 @@ TestCase subclass: HTTP2ProtocolTest
       #http2 => #{}
     }
     merged := base merge: extra
-    merged at: #catalina put: ((base at: #catalina) merge: (extra at: #catalina ifAbsent: [
+    baseCatalina :: Dictionary := base at: #catalina
+    merged at: #catalina put: (baseCatalina merge: (extra at: #catalina ifAbsent: [
       #{}
     ]))
 
@@ -98,7 +99,7 @@ TestCase subclass: HTTP2ProtocolTest
     srv := self startTls: self hello
     sock := H2Client connectTls: (self portOf: srv) alpn: #((Binary fromBytes: #(104, 50)))
     H2Client sendTls: sock bytes: H2Client magic
-    bytes := (H2Frame serialize: (H2Settings new withAck: false) maxFrameSize: 16384) concat: (H2Frame serialize: ((H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8)))) maxFrameSize: 16384)
+    bytes := (H2Frame serialize: (H2Settings new withAck: false) maxFrameSize: 16384) concat: (H2Frame serialize: (H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8))) maxFrameSize: 16384)
     self sendBytes: sock bytes: bytes
     self assert: (H2Client recvRawTls: sock) equals: {4, 0, 0, (Binary fromBytes: #())}
     self assert: (H2Client recvRawTls: sock) equals: {4, 1, 0, (Binary fromBytes: #())}
@@ -116,7 +117,7 @@ TestCase subclass: HTTP2ProtocolTest
     sock := H2Client connectTls: (self portOf: srv) alpn: #((Binary fromBytes: #(104, 50)))
     H2Client sendTls: sock bytes: H2Client magic
     settings := H2Frame serialize: (H2Settings new withAck: false) maxFrameSize: 16384
-    ping := H2Frame serialize: ((H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8)))) maxFrameSize: 16384
+    ping := H2Frame serialize: (H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8))) maxFrameSize: 16384
     H2Client sendTls: sock bytes: (settings concat: ping)
     self assert: (H2Client recvRawTls: sock) equals: {4, 0, 0, (Binary fromBytes: #())}
     self assert: (H2Client recvRawTls: sock) equals: {4, 1, 0, (Binary fromBytes: #())}

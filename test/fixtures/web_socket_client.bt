@@ -9,17 +9,17 @@ sealed typed Object subclass: WebSocketClient
 
   /// A connected pair over TCP.
   class sealed connect: port :: Integer -> Tuple =>
-    {#genTcp, (((Erlang gen_tcp)
+    {#genTcp, ((Erlang gen_tcp)
       connect: {127, 0, 0, 1}
       with: port
-      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap)}
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap}
 
   /// A connected pair over TLS.
   class sealed connectTls: port :: Integer -> Tuple =>
-    {#ssl, (((Erlang ssl)
+    {#ssl, ((Erlang ssl)
       connect: {127, 0, 0, 1}
       with: port
-      with: #(#binary, {#packet, #raw}, {#active, false}, {#verify, #verify_none})) unwrap)}
+      with: #(#binary, {#packet, #raw}, {#active, false}, {#verify, #verify_none})) unwrap}
 
   /// Answered as a Result: a bare ok becomes ok: nil.
   class sealed send: client :: Tuple bytes: data :: Binary -> Result(Nil, Object) =>
@@ -36,15 +36,15 @@ sealed typed Object subclass: WebSocketClient
     {transport, socket} := client
     transport =:= #genTcp
       ifTrue: [
-        ^(((Erlang gen_tcp)
+        ^((Erlang gen_tcp)
           recv: socket
           with: n
-          with: 5000) unwrap)
+          with: 5000) unwrap
       ]
-    (((Erlang ssl)
+    ((Erlang ssl)
       recv: socket
       with: n
-      with: 5000) unwrap)
+      with: 5000) unwrap
 
   class sealed close: client :: Tuple -> Object =>
     {transport, socket} := client
@@ -53,7 +53,7 @@ sealed typed Object subclass: WebSocketClient
 
   /// Send the handshake request and answer {statusLine, headers}.
   class sealed handshake: client :: Tuple -> Tuple =>
-    self send: client bytes: ("GET / HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n")
+    self send: client bytes: "GET / HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: UpGrAdE\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
     status := self readLine: client
     {status, self readHeaders: client}
 

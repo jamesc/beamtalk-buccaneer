@@ -169,7 +169,7 @@ sealed typed Value subclass: TestSock
     data match: [
       b :: Binary -> ((b asStringUnchecked) =:= "dump")
         ifTrue: [
-          ^WebSocketResult push: {op, Binary fromIolist: #((self log printString))} state: (self withLog: (self log addFirst: message))
+          ^WebSocketResult push: {op, Binary fromIolist: #(self log printString)} state: (self withLog: (self log addFirst: message))
         ]
         ifFalse: [
           WebSocketResult ok: (self withLog: (self log addFirst: message))

@@ -18,7 +18,8 @@ typed Object subclass: SocketHelpers
         reason := peer isError ifTrue: [peer error] ifFalse: [#no_peername]
         TransportError signal: ("Unable to obtain conn_data: " ++ reason printString) reason: reason
       ]
-    {sock isSecure, (peer value) at: 1}
+    address :: Tuple := peer value
+    {sock isSecure, address at: 1}
 
   /// Whether iodata holds no bytes (Bandit's iodata_empty?).
   class sealed iodataEmpty: data :: Object -> Boolean =>

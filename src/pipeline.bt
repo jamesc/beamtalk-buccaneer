@@ -103,8 +103,13 @@ sealed typed Object subclass: Pipeline
 
   /// Call the handler; its answer is ignored.
   class sealed callHandler: handler :: ExchangeHandlerLike with: ex :: Exchange -> Object =>
-    (handler isKindOf: Block) ifTrue: [^handler value: ex]
-    (handler respondsTo: #call:) ifFalse: [
+    (handler isKindOf: Block)
+      ifTrue: [
+        block :: Block(Exchange, Object) := handler
+        ^block value: ex
+      ]
+    candidate :: Object := handler
+    (candidate respondsTo: #call:) ifFalse: [
       Error signal: "Invalid request handler"
     ]
     handler call: ex
@@ -174,7 +179,7 @@ sealed typed Object subclass: Pipeline
   class sealed upgrade: ex :: Exchange span: span :: BuccaneerTelemetry transport: _transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     (config websocket at: #enabled ifAbsent: [
       true
-    ]) ifFalse: [
+    ]) =:= false ifTrue: [
       Error signal: "upgrade to websocket not supported by Buccaneer"
     ]
     st := ex load

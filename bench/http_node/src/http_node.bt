@@ -140,6 +140,9 @@ sealed typed Object subclass: HttpNode
   /// The listening port of a Buccaneer server.
   class sealed port: srv :: ServerSupervisor -> Integer =>
     {_ip, port} := srv listenerInfo unwrap
+    (port isKindOf: Integer) ifFalse: [
+      Error signal: "port: needs an IP listener, not a Unix socket"
+    ]
     port
 
   class sealed stop: srv :: ServerSupervisor timeout: ms :: Integer -> Object =>

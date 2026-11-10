@@ -72,7 +72,7 @@ TestCase subclass: SockTest
 
   /// The terminate reason recorded by the websock, waiting up to two
   /// seconds for the connection process to get there.
-  awaitTerm =>
+  awaitTerm -> Dynamic =>
     40
       timesRepeat: [
         term := (Ets named: self termTable) at: #terminate ifAbsent: [nil]
@@ -149,7 +149,7 @@ TestCase subclass: SockTest
   testInitPush =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withInitAnswer: #push) withInitFrames: #({#text, "init"})) withInAnswer: #record))
+        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#text, "init"})) withInAnswer: #record)
         srv := self
           serverWith: sock
           options: opts
@@ -167,7 +167,7 @@ TestCase subclass: SockTest
   testInitReply =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withInitAnswer: #reply) withInitFrames: #({#text, "init"})) withInAnswer: #record))
+        sock := (((self testSock withInitAnswer: #reply) withInitFrames: #({#text, "init"})) withInAnswer: #record)
         srv := self
           serverWith: sock
           options: opts
@@ -185,7 +185,7 @@ TestCase subclass: SockTest
   testInitText =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#text, "TEXT"})))
+        sock := ((self testSock withInitAnswer: #push) withInitFrames: #({#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -200,7 +200,7 @@ TestCase subclass: SockTest
   testInitBinary =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#binary, "BINARY"})))
+        sock := ((self testSock withInitAnswer: #push) withInitFrames: #({#binary, "BINARY"}))
         srv := self
           serverWith: sock
           options: opts
@@ -215,7 +215,7 @@ TestCase subclass: SockTest
   testInitPing =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#ping, "PING"})))
+        sock := ((self testSock withInitAnswer: #push) withInitFrames: #({#ping, "PING"}))
         srv := self
           serverWith: sock
           options: opts
@@ -230,7 +230,7 @@ TestCase subclass: SockTest
   testInitPong =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"})))
+        sock := ((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"}))
         srv := self
           serverWith: sock
           options: opts
@@ -245,7 +245,7 @@ TestCase subclass: SockTest
   testInitList =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        sock := ((self testSock withInitAnswer: #push) withInitFrames: #({#pong, "PONG"}, {#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -261,7 +261,7 @@ TestCase subclass: SockTest
   testInitClose =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withInitAnswer: #stop))
+        sock := (self testSock withInitAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -278,7 +278,7 @@ TestCase subclass: SockTest
     self
       eachScheme: [:opts :scheme |
         log := LogCapture attach: #sockAbnormal
-        sock := (((self testSock withInitAnswer: #stopError) withInitCode: 1011))
+        sock := ((self testSock withInitAnswer: #stopError) withInitCode: 1011)
         srv := self
           serverWith: sock
           options: opts
@@ -295,7 +295,7 @@ TestCase subclass: SockTest
   testInitCloseWithCode =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555))
+        sock := ((self testSock withInitAnswer: #stop) withInitCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -311,7 +311,7 @@ TestCase subclass: SockTest
   testInitCloseWithCodeAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitFrames: #({#text, "first"}, {#text, "second"})))
+        sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -329,7 +329,7 @@ TestCase subclass: SockTest
   testInitCloseWithRestart =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #stop) withInitCode: 1012))
+        sock := ((self testSock withInitAnswer: #stop) withInitCode: 1012)
         srv := self
           serverWith: sock
           options: opts
@@ -345,7 +345,7 @@ TestCase subclass: SockTest
   testInitCloseWithDisconnected =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withInitAnswer: #stop))
+        sock := (self testSock withInitAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -361,7 +361,7 @@ TestCase subclass: SockTest
   testInitCloseWithCodeAndNilDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555))
+        sock := ((self testSock withInitAnswer: #stop) withInitCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -377,7 +377,7 @@ TestCase subclass: SockTest
   testInitCloseWithCodeAndDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM"))
+        sock := (((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM")
         srv := self
           serverWith: sock
           options: opts
@@ -393,7 +393,7 @@ TestCase subclass: SockTest
   testInitCloseWithCodeAndDetailAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM") withInitFrames: #({#text, "first"}, {#text, "second"})))
+        sock := ((((self testSock withInitAnswer: #stop) withInitCode: 5555) withInitDetail: "BOOM") withInitFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -412,7 +412,7 @@ TestCase subclass: SockTest
   testHandleInEchoText =>
     self
       eachScheme: [:opts :scheme |
-        sock := (self testSock)
+        sock := self testSock
         srv := self
           serverWith: sock
           options: opts
@@ -428,7 +428,7 @@ TestCase subclass: SockTest
   testHandleInEchoBinary =>
     self
       eachScheme: [:opts :scheme |
-        sock := (self testSock)
+        sock := self testSock
         srv := self
           serverWith: sock
           options: opts
@@ -498,7 +498,7 @@ TestCase subclass: SockTest
   testHandleInText =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #push) withInFrames: #({#text, "TEXT"})))
+        sock := ((self testSock withInAnswer: #push) withInFrames: #({#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -514,7 +514,7 @@ TestCase subclass: SockTest
   testHandleInBinary =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #push) withInFrames: #({#binary, "BINARY"})))
+        sock := ((self testSock withInAnswer: #push) withInFrames: #({#binary, "BINARY"}))
         srv := self
           serverWith: sock
           options: opts
@@ -530,7 +530,7 @@ TestCase subclass: SockTest
   testHandleInPing =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #push) withInFrames: #({#ping, "PING"})))
+        sock := ((self testSock withInAnswer: #push) withInFrames: #({#ping, "PING"}))
         srv := self
           serverWith: sock
           options: opts
@@ -546,7 +546,7 @@ TestCase subclass: SockTest
   testHandleInPong =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"})))
+        sock := ((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"}))
         srv := self
           serverWith: sock
           options: opts
@@ -562,7 +562,7 @@ TestCase subclass: SockTest
   testHandleInList =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        sock := ((self testSock withInAnswer: #push) withInFrames: #({#pong, "PONG"}, {#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -579,7 +579,7 @@ TestCase subclass: SockTest
   testHandleInClose =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withInAnswer: #stop))
+        sock := (self testSock withInAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -597,7 +597,7 @@ TestCase subclass: SockTest
     self
       eachScheme: [:opts :scheme |
         log := LogCapture attach: #sockAbnormal
-        sock := (((self testSock withInAnswer: #stopError) withInCode: 1011))
+        sock := ((self testSock withInAnswer: #stopError) withInCode: 1011)
         srv := self
           serverWith: sock
           options: opts
@@ -615,7 +615,7 @@ TestCase subclass: SockTest
   testHandleInCloseWithCode =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #stop) withInCode: 5555))
+        sock := ((self testSock withInAnswer: #stop) withInCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -632,7 +632,7 @@ TestCase subclass: SockTest
   testHandleInCloseWithCodeAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withInAnswer: #stop) withInCode: 5555) withInFrames: #({#text, "first"}, {#text, "second"})))
+        sock := (((self testSock withInAnswer: #stop) withInCode: 5555) withInFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -651,7 +651,7 @@ TestCase subclass: SockTest
   testHandleInCloseWithRestart =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #stop) withInCode: 1012))
+        sock := ((self testSock withInAnswer: #stop) withInCode: 1012)
         srv := self
           serverWith: sock
           options: opts
@@ -668,7 +668,7 @@ TestCase subclass: SockTest
   testHandleInCloseWithDisconnected =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withInAnswer: #stop))
+        sock := (self testSock withInAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -685,7 +685,7 @@ TestCase subclass: SockTest
   testHandleInCloseWithCodeAndNilDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withInAnswer: #stop) withInCode: 5555))
+        sock := ((self testSock withInAnswer: #stop) withInCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -702,7 +702,7 @@ TestCase subclass: SockTest
   testHandleInCloseWithCodeAndDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM"))
+        sock := (((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM")
         srv := self
           serverWith: sock
           options: opts
@@ -719,7 +719,7 @@ TestCase subclass: SockTest
   testHandleInCloseWithCodeAndDetailAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM") withInFrames: #({#text, "first"}, {#text, "second"})))
+        sock := ((((self testSock withInAnswer: #stop) withInCode: 5555) withInDetail: "BOOM") withInFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -757,7 +757,7 @@ TestCase subclass: SockTest
   testHandleControlEchoPing =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withControlAnswer: #echo))
+        sock := (self testSock withControlAnswer: #echo)
         srv := self
           serverWith: sock
           options: opts
@@ -774,7 +774,7 @@ TestCase subclass: SockTest
   testHandleControlEchoPong =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withControlAnswer: #echo))
+        sock := (self testSock withControlAnswer: #echo)
         srv := self
           serverWith: sock
           options: opts
@@ -790,7 +790,7 @@ TestCase subclass: SockTest
   testHandleControlOk =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withControlAnswer: #record))
+        sock := (self testSock withControlAnswer: #record)
         srv := self
           serverWith: sock
           options: opts
@@ -809,7 +809,7 @@ TestCase subclass: SockTest
   testHandleControlPush =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withControlAnswer: #record))
+        sock := (self testSock withControlAnswer: #record)
         srv := self
           serverWith: sock
           options: opts
@@ -829,7 +829,7 @@ TestCase subclass: SockTest
   testHandleControlReply =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #reply) withControlFrames: #({#ping, "dump"})))
+        sock := ((self testSock withControlAnswer: #reply) withControlFrames: #({#ping, "dump"}))
         srv := self
           serverWith: sock
           options: opts
@@ -849,7 +849,7 @@ TestCase subclass: SockTest
   testHandleControlText =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#text, "TEXT"})))
+        sock := ((self testSock withControlAnswer: #push) withControlFrames: #({#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -866,7 +866,7 @@ TestCase subclass: SockTest
   testHandleControlBinary =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#binary, "BINARY"})))
+        sock := ((self testSock withControlAnswer: #push) withControlFrames: #({#binary, "BINARY"}))
         srv := self
           serverWith: sock
           options: opts
@@ -883,7 +883,7 @@ TestCase subclass: SockTest
   testHandleControlPing =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#ping, "PING"})))
+        sock := ((self testSock withControlAnswer: #push) withControlFrames: #({#ping, "PING"}))
         srv := self
           serverWith: sock
           options: opts
@@ -900,7 +900,7 @@ TestCase subclass: SockTest
   testHandleControlPong =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"})))
+        sock := ((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"}))
         srv := self
           serverWith: sock
           options: opts
@@ -917,7 +917,7 @@ TestCase subclass: SockTest
   testHandleControlList =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        sock := ((self testSock withControlAnswer: #push) withControlFrames: #({#pong, "PONG"}, {#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -935,7 +935,7 @@ TestCase subclass: SockTest
   testHandleControlClose =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withControlAnswer: #stop))
+        sock := (self testSock withControlAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -954,7 +954,7 @@ TestCase subclass: SockTest
     self
       eachScheme: [:opts :scheme |
         log := LogCapture attach: #sockAbnormal
-        sock := (((self testSock withControlAnswer: #stopError) withControlCode: 1011))
+        sock := ((self testSock withControlAnswer: #stopError) withControlCode: 1011)
         srv := self
           serverWith: sock
           options: opts
@@ -973,7 +973,7 @@ TestCase subclass: SockTest
   testHandleControlCloseWithCode =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555))
+        sock := ((self testSock withControlAnswer: #stop) withControlCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -991,7 +991,7 @@ TestCase subclass: SockTest
   testHandleControlCloseWithCodeAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlFrames: #({#text, "first"}, {#text, "second"})))
+        sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1011,7 +1011,7 @@ TestCase subclass: SockTest
   testHandleControlCloseWithRestart =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #stop) withControlCode: 1012))
+        sock := ((self testSock withControlAnswer: #stop) withControlCode: 1012)
         srv := self
           serverWith: sock
           options: opts
@@ -1029,7 +1029,7 @@ TestCase subclass: SockTest
   testHandleControlCloseWithDisconnected =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((self testSock withControlAnswer: #stop))
+        sock := (self testSock withControlAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -1047,7 +1047,7 @@ TestCase subclass: SockTest
   testHandleControlCloseWithCodeAndNilDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555))
+        sock := ((self testSock withControlAnswer: #stop) withControlCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -1065,7 +1065,7 @@ TestCase subclass: SockTest
   testHandleControlCloseWithCodeAndDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM"))
+        sock := (((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM")
         srv := self
           serverWith: sock
           options: opts
@@ -1083,7 +1083,7 @@ TestCase subclass: SockTest
   testHandleControlCloseWithCodeAndDetailAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM") withControlFrames: #({#text, "first"}, {#text, "second"})))
+        sock := ((((self testSock withControlAnswer: #stop) withControlCode: 5555) withControlDetail: "BOOM") withControlFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1104,7 +1104,7 @@ TestCase subclass: SockTest
   testHandleInfoOk =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self pidSock) withInfoAnswer: #record))
+        sock := ((self pidSock) withInfoAnswer: #record)
         srv := self
           serverWith: sock
           options: opts
@@ -1124,7 +1124,7 @@ TestCase subclass: SockTest
   testHandleInfoPush =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self pidSock) withInfoAnswer: #record))
+        sock := ((self pidSock) withInfoAnswer: #record)
         srv := self
           serverWith: sock
           options: opts
@@ -1145,7 +1145,7 @@ TestCase subclass: SockTest
   testHandleInfoText =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#text, "TEXT"})))
+        sock := (((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1164,7 +1164,7 @@ TestCase subclass: SockTest
   testHandleInfoBinary =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#binary, "BINARY"})))
+        sock := (((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#binary, "BINARY"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1183,7 +1183,7 @@ TestCase subclass: SockTest
   testHandleInfoPing =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#ping, "PING"})))
+        sock := (((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#ping, "PING"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1202,7 +1202,7 @@ TestCase subclass: SockTest
   testHandleInfoPong =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"})))
+        sock := (((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1221,7 +1221,7 @@ TestCase subclass: SockTest
   testHandleInfoList =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"}, {#text, "TEXT"})))
+        sock := (((self pidSock) withInfoAnswer: #push) withInfoFrames: #({#pong, "PONG"}, {#text, "TEXT"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1241,7 +1241,7 @@ TestCase subclass: SockTest
   testHandleInfoClose =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self pidSock) withInfoAnswer: #stop))
+        sock := ((self pidSock) withInfoAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -1262,7 +1262,7 @@ TestCase subclass: SockTest
     self
       eachScheme: [:opts :scheme |
         log := LogCapture attach: #sockAbnormal
-        sock := ((((self pidSock) withInfoAnswer: #stopError) withInfoCode: 1011))
+        sock := (((self pidSock) withInfoAnswer: #stopError) withInfoCode: 1011)
         srv := self
           serverWith: sock
           options: opts
@@ -1283,7 +1283,7 @@ TestCase subclass: SockTest
   testHandleInfoCloseWithCode =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555))
+        sock := (((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -1303,7 +1303,7 @@ TestCase subclass: SockTest
   testHandleInfoCloseWithCodeAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoFrames: #({#text, "first"}, {#text, "second"})))
+        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1325,7 +1325,7 @@ TestCase subclass: SockTest
   testHandleInfoCloseWithRestart =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 1012))
+        sock := (((self pidSock) withInfoAnswer: #stop) withInfoCode: 1012)
         srv := self
           serverWith: sock
           options: opts
@@ -1345,7 +1345,7 @@ TestCase subclass: SockTest
   testHandleInfoCloseWithDisconnected =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self pidSock) withInfoAnswer: #stop))
+        sock := ((self pidSock) withInfoAnswer: #stop)
         srv := self
           serverWith: sock
           options: opts
@@ -1365,7 +1365,7 @@ TestCase subclass: SockTest
   testHandleInfoCloseWithCodeAndNilDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555))
+        sock := (((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555)
         srv := self
           serverWith: sock
           options: opts
@@ -1385,7 +1385,7 @@ TestCase subclass: SockTest
   testHandleInfoCloseWithCodeAndDetail =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM"))
+        sock := ((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM")
         srv := self
           serverWith: sock
           options: opts
@@ -1405,7 +1405,7 @@ TestCase subclass: SockTest
   testHandleInfoCloseWithCodeAndDetailAndMessages =>
     self
       eachScheme: [:opts :scheme |
-        sock := ((((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM") withInfoFrames: #({#text, "first"}, {#text, "second"})))
+        sock := (((((self pidSock) withInfoAnswer: #stop) withInfoCode: 5555) withInfoDetail: "BOOM") withInfoFrames: #({#text, "first"}, {#text, "second"}))
         srv := self
           serverWith: sock
           options: opts
@@ -1447,7 +1447,7 @@ TestCase subclass: SockTest
     self assert: (srv stop: 5000) isOk
 
   testTerminateNormal =>
-    sock := ((self testSock withStopOn: "normal"))
+    sock := (self testSock withStopOn: "normal")
     srv := self
       serverWith: sock
       options: #{#port => 0}
@@ -1462,7 +1462,7 @@ TestCase subclass: SockTest
 
   testTerminateError =>
     log := LogCapture attach: #sockTerminate
-    sock := (((self testSock withStopOn: "boom") withStopReason: #boom))
+    sock := ((self testSock withStopOn: "boom") withStopReason: #boom)
     srv := self
       serverWith: sock
       options: #{#port => 0}
@@ -1477,7 +1477,7 @@ TestCase subclass: SockTest
     self assert: (srv stop: 5000) isOk
 
   testTerminateShutdown =>
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0}
@@ -1488,7 +1488,7 @@ TestCase subclass: SockTest
     self assert: self awaitTerm equals: #shutdown
 
   testTerminateRemote =>
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0}
@@ -1502,7 +1502,7 @@ TestCase subclass: SockTest
     self assert: (srv stop: 5000) isOk
 
   testTerminateProtocolError =>
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0}
@@ -1514,7 +1514,7 @@ TestCase subclass: SockTest
     self assert: (srv stop: 5000) isOk
 
   testTerminateTimeout =>
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0}
@@ -1528,7 +1528,7 @@ TestCase subclass: SockTest
   // ===== telemetry =====
   testTelemetryStart =>
     self teleBegin
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1551,7 +1551,7 @@ TestCase subclass: SockTest
 
   testTelemetryMetrics =>
     self teleBegin
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1592,7 +1592,7 @@ TestCase subclass: SockTest
 
   testTelemetryClientDisconnect =>
     self teleBegin
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1631,7 +1631,7 @@ TestCase subclass: SockTest
 
   testTelemetryServerShutdown =>
     self teleBegin
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1651,7 +1651,7 @@ TestCase subclass: SockTest
   testTelemetryAbnormalDisconnect =>
     self teleBegin
     log := LogCapture attach: #sockTelemetryLog
-    sock := (((self testSock withStopOn2: "abnormal_close") withStopReason2: #nope))
+    sock := ((self testSock withStopOn2: "abnormal_close") withStopReason2: #nope)
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1673,7 +1673,7 @@ TestCase subclass: SockTest
 
   testTelemetryTimeout =>
     self teleBegin
-    sock := (self testSock)
+    sock := self testSock
     srv := self
       serverWith: sock
       options: #{#port => 0, #displayHandler => self telePlug}
@@ -1762,7 +1762,7 @@ TestCase subclass: SockTest
   testHandleInfoRaisesCloses1011 =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self pidSock) withInfoAnswer: #raise))
+        sock := ((self pidSock) withInfoAnswer: #raise)
         srv := self
           serverWith: sock
           options: opts
@@ -1803,7 +1803,7 @@ TestCase subclass: SockTest
   testTerminateRaisesStillCloses =>
     self
       eachScheme: [:opts :scheme |
-        sock := (((self testSock withStopOn: "boom") withTerminateAnswer: #raise))
+        sock := ((self testSock withStopOn: "boom") withTerminateAnswer: #raise)
         srv := self
           serverWith: sock
           options: opts

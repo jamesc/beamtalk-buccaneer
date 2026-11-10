@@ -945,10 +945,10 @@ sealed typed Value subclass: HTTP2Protocol
     // Trailers (a later HEADERS on an open stream) carry no pseudo-headers,
     // so the request-head checks apply to the first block only.
     isHead := known =:= #new
-    checked := isHead ifTrue: [
+    checked :: Tuple := isHead ifTrue: [
       validator checkRequestHeaders: headers
     ] ifFalse: [{nil, nil, nil, nil}]
-    contentLength := checked at: 4
+    contentLength :: Integer | Nil := checked at: 4
     sized := isHead ifTrue: [
       conn withContentLength: sid length: contentLength
     ] ifFalse: [conn]

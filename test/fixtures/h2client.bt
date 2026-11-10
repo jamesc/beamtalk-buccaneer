@@ -245,7 +245,7 @@ sealed Object subclass: H2Client
   class sealed recvGoawayCloseTls: sock =>
     frame := self recvFrameTls: sock
     pair := frame match: [
-      g :: H2Goaway -> {(g lastStreamId), (g errorCode)};
+      g :: H2Goaway -> {g lastStreamId, g errorCode};
       _ -> Error signal: ("expected GOAWAY, got " ++ frame class printString)
     ]
     self expectClosedTls: sock
@@ -284,7 +284,7 @@ sealed Object subclass: H2Client
   class sealed recvRstTls: sock =>
     frame := self recvFrameTls: sock
     frame match: [
-      r :: H2RstStream -> {(r streamId), (r errorCode)};
+      r :: H2RstStream -> {r streamId, r errorCode};
       w :: H2WindowUpdate -> self recvRstTls: sock;
       _ -> Error signal: ("expected RST_STREAM, got " ++ frame class printString)
     ]
@@ -292,14 +292,14 @@ sealed Object subclass: H2Client
   class sealed recvWindowUpdateTls: sock =>
     frame := self recvFrameTls: sock
     frame match: [
-      w :: H2WindowUpdate -> {(w streamId), (w sizeIncrement)};
+      w :: H2WindowUpdate -> {w streamId, w sizeIncrement};
       _ -> Error signal: ("expected WINDOW_UPDATE, got " ++ frame class printString)
     ]
 
   class sealed recvPingTls: sock =>
     frame := self recvFrameTls: sock
     frame match: [
-      p :: H2Ping -> {(p ack), (p payload)};
+      p :: H2Ping -> {p ack, p payload};
       _ -> Error signal: ("expected PING, got " ++ frame class printString)
     ]
 
@@ -348,7 +348,7 @@ sealed Object subclass: H2Client
 
   class sealed decodeHeadersTls: _sock head: f dec: dec =>
     cooked := self decode: f fragment table: dec
-    {(f streamId), (f endStream), (cooked at: 1), (cooked at: 2)}
+    {f streamId, f endStream, (cooked at: 1), (cooked at: 2)}
 
   /// Read DATA frames until END_STREAM, concatenating. Answers {sid, data}.
   class sealed recvBodyTls: sock =>
@@ -378,7 +378,7 @@ sealed Object subclass: H2Client
     ]
     got := acc concat: (d data)
     d endStream
-      ifTrue: [^{(d streamId), got}]
+      ifTrue: [^{d streamId, got}]
       ifFalse: [
         self
           recvBodyTls: sock

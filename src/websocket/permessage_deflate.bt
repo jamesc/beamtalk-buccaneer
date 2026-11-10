@@ -110,13 +110,21 @@ sealed typed Value subclass: PermessageDeflate
     clientTakeover := self at: params name: "client_no_context_takeover"
     (clientTakeover isNil or: [clientTakeover =:= true]) ifFalse: [^false]
     serverBits := self at: params name: "server_max_window_bits"
-    (serverBits isNil or: [
-      (serverBits isKindOf: Integer) and: [serverBits between: 8 and: 15]
-    ]) ifFalse: [^false]
+    (serverBits isNil
+      or: [
+        serverBits match: [
+          bits :: Integer -> bits between: 8 and: 15;
+          _ -> false
+        ]
+      ]) ifFalse: [^false]
     clientBits := self at: params name: "client_max_window_bits"
-    (clientBits isNil or: [
-      (clientBits isKindOf: Integer) and: [clientBits between: 8 and: 15]
-    ]) ifFalse: [^false]
+    (clientBits isNil
+      or: [
+        clientBits match: [
+          bits :: Integer -> bits between: 8 and: 15;
+          _ -> false
+        ]
+      ]) ifFalse: [^false]
     ratio := self at: params name: "max_inflate_ratio"
     ratio isNil ifTrue: [^true]
     (self ratioOf: params) isNil ifTrue: [^false]

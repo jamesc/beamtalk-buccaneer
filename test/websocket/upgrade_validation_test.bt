@@ -83,7 +83,7 @@ TestCase subclass: UpgradeValidationTest
   testRejectsNonUpgrade =>
     srv := self server
     port := (srv listenerInfo unwrap) at: 2
-    resp := self scenario: port request: ("GET /validate_upgrade HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: close\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n")
+    resp := self scenario: port request: "GET /validate_upgrade HTTP/1.1\r\nhost: server.example.com\r\nupgrade: WeBsOcKeT\r\nconnection: close\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\r\n"
     self assert: (resp endsWith: "'connection' header must contain 'upgrade', got #(""close"")")
     self assert: (srv stop: 5000) isOk
 

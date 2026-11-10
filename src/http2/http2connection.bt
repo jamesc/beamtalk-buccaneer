@@ -330,20 +330,20 @@ sealed typed Value subclass: HTTP2Connection
 
   /// Append DATA to a stream's buffer: {bytes, endStream}.
   withDataBuffered: sid :: Integer data: d :: Binary endStream: end :: Boolean -> HTTP2Connection =>
-    prior := self dataBuffer at: sid ifAbsent: [
+    prior :: Tuple(Binary, Boolean) := self dataBuffer at: sid ifAbsent: [
       {(Binary fromBytes: #()), false}
     ]
-    merged := {(prior at: 1) concat: d, (prior at: 2) or: [end]}
+    {held, ended} := prior
+    merged := {held concat: d, ended or: [end]}
     self withDataBuffer: (self dataBuffer at: sid put: merged)
 
   /// Take up to maxBytes from a stream's buffer: {conn, {data, drained,
   /// endStream}} where drained means the buffer is empty.
   takeBufferedData: sid :: Integer maxBytes: max :: Integer -> Tuple(HTTP2Connection, Tuple) =>
-    prior := self dataBuffer at: sid ifAbsent: [
+    prior :: Tuple(Binary, Boolean) := self dataBuffer at: sid ifAbsent: [
       {(Binary fromBytes: #()), false}
     ]
-    bytes := prior at: 1
-    done := prior at: 2
+    {bytes, done} := prior
     bytes size <= max
       ifTrue: [
         ^{(self withDataBuffer: (self dataBuffer removeKey: sid)), {bytes, true, done}}

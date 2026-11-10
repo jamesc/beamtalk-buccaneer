@@ -10,7 +10,7 @@
 /// second callback during Catalina's teardown cannot resend.
 sealed typed Value subclass: WebSocketConnection
   field: websock :: Object = nil
-  field: websockState :: Object = nil
+  field: websockState :: Dynamic = nil
   field: connState :: Symbol = #open
   field: compress :: PermessageDeflate | Nil = nil
   field: fragmentFrame :: Object = nil
@@ -354,7 +354,7 @@ sealed typed Value subclass: WebSocketConnection
 
   /// Inflate one compressed frame, then handle it uncompressed
   /// (Bandit's do_inflate).
-  doInflate: frame :: Object socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
+  doInflate: frame :: TextFrame | BinaryFrame socket: sock :: Socket -> Tuple(WebSocketConnection, Object) =>
     (PermessageDeflate inflate: frame data with: self compress) match: [ok :: Result -> ok isError
       ifTrue: [
         ok error match: [

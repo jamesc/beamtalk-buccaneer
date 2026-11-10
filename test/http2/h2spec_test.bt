@@ -33,7 +33,7 @@ TestCase subclass: H2SpecTest
       (Erlang os) cmd: (self dockerCmd: port)
     ] ifFalse: [(Erlang os) cmd: (self localCmd: port)]
     self assert: (srv stop: 5000) isOk
-    self assert: (out includesSubstring: "EXIT:0") equals: true
+    self assert: (out asString includesSubstring: "EXIT:0") equals: true
 
   /// Run only with H2SPEC=1.
   enabled -> Boolean =>
@@ -44,14 +44,18 @@ TestCase subclass: H2SpecTest
   /// One h2spec section (as "http2/6.5"), or everything.
   section -> String =>
     v := (Erlang os) getenv: "H2SPEC_SECTION"
-    (v =:= false or: [v isNil]) ifTrue: [^""]
-    v ++ " "
+    v match: [
+      f :: False -> "";
+      s :: String -> s ++ " ";
+      l :: List -> l asString ++ " ";
+      _ -> ""
+    ]
 
   /// Pick the h2spec backend: a local binary when present, else the
   /// summerwind/h2spec docker image. Fail fast naming both options.
   backend -> Symbol =>
-    binFound := (((Erlang os) cmd: "command -v h2spec; echo EXIT:$?") includesSubstring: "EXIT:0")
-    dockerFound := (((Erlang os) cmd: "command -v docker; echo EXIT:$?") includesSubstring: "EXIT:0")
+    binFound := (((Erlang os) cmd: "command -v h2spec; echo EXIT:$?") asString includesSubstring: "EXIT:0")
+    dockerFound := (((Erlang os) cmd: "command -v docker; echo EXIT:$?") asString includesSubstring: "EXIT:0")
     (binFound or: [dockerFound])
       ifFalse: [
         self fail: "h2spec needs docker or an h2spec binary (go install github.com/summerwind/h2spec) with H2SPEC=1"

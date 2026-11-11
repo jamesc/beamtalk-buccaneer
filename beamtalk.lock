@@ -3,11 +3,11 @@
 
 [[package]]
 name = "catalina"
-version = "0.2.3"
+version = "0.2.5"
 registry = "https://github.com/jamesc/beamtalk-registry"
 url = "https://github.com/jamesc/beamtalk-catalina.git"
-reference = "tag:v0.2.3"
-sha = "bb43c4cc3034688f6a115f344aa679af1393ddef"
+reference = "tag:v0.2.5"
+sha = "78a3edecb20150fce72a9fe6cb6685b535783b07"
 
 [[package]]
 name = "hpack"

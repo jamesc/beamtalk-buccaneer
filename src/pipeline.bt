@@ -201,6 +201,12 @@ sealed typed Object subclass: Pipeline
       }
       metadata: (meta at: #websock put: st websock)
     ws := config websocket
+    // Types checked in BuccaneerConfig>>checkWebSocketOptions:.
+    validateText :: Boolean := ws at: #validateTextFrames ifAbsent: [true]
+    maxFrameSize :: Integer := ws at: #maxFrameSize ifAbsent: [8000000]
+    maxMessageSize :: Integer := ws at: #maxFragmentedMessageSize ifAbsent: [
+      8000000
+    ]
     connection := WebSocketConnection
       websock: st websock
       websockState: st websockState
@@ -209,10 +215,8 @@ sealed typed Object subclass: Pipeline
       fragmentFrame: nil
       fragmentChunks: #()
       fragmentSize: 0
-      validateTextFrames: (ws at: #validateTextFrames ifAbsent: [true])
-      maxFragmentedMessageSize: (ws at: #maxFragmentedMessageSize ifAbsent: [
-        8000000
-      ])
+      validateTextFrames: validateText
+      maxFragmentedMessageSize: maxMessageSize
       logErrors: ((ws at: #logProtocolErrors ifAbsent: [
         true
       ]) =:= false ifTrue: [false] ifFalse: [true])
@@ -221,9 +225,7 @@ sealed typed Object subclass: Pipeline
     protocol := WebSocketProtocol
       config: config
       connection: connection
-      extractor: (FrameExtractor new withMaxFrameSize: (ws at: #maxFrameSize ifAbsent: [
-        8000000
-      ]))
+      extractor: (FrameExtractor new withMaxFrameSize: maxFrameSize)
       buffer: buffer
       started: false
       timeoutMs: (st websocketOptions at: #timeout ifAbsent: [nil])

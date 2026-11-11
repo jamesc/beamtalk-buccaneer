@@ -232,8 +232,6 @@ sealed typed Value subclass: Compression
   /// A zstd compression context from `#zstdOptions` (zstd's own
   /// parameter names, e.g. `#checksumFlag`).
   class sealed openZstd: opts :: Dictionary -> Compression =>
-    // zstd is OTP 28's; the FFI checker's module list lacks it (BT-4457).
-    @expect unresolved_ffi
     context := ((Erlang zstd) context: #compress with: opts) unwrap
     (Compression new withMethod: #zstd) withLibContext: context
 
@@ -253,8 +251,6 @@ sealed typed Value subclass: Compression
     {encoded, (self withBytesIn: self bytesIn + size)}
 
   zstdCompress: chunk :: Object -> Object =>
-    // compress/2 takes the context; the FFI spec types it as options (BT-4457).
-    @expect unresolved_ffi, type
     (Erlang zstd) compress: chunk with: self libContext
 
   /// Finish the body: the trailing iodata (empty unless deflate), with
@@ -276,7 +272,6 @@ sealed typed Value subclass: Compression
     last
 
   closeZstd -> Object =>
-    @expect unresolved_ffi
     (Erlang zstd) close: self libContext
     #()
 

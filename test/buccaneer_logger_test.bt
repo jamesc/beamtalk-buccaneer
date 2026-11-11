@@ -52,6 +52,13 @@ TestCase subclass: BuccaneerLoggerTest
   testBanner =>
     self assert: (BuccaneerLogger banner: self httpError) equals: "** (HTTPError) bad thing"
 
+  /// A raw throw has no error class (`errorClass` is nil); the banner must
+  /// still build rather than crash while logging the real failure.
+  testBannerForThrow =>
+    thrown := [Erlang erlang throw: #oops] on: ThrowError do: [:e | e]
+    self assert: (BuccaneerLogger banner: thrown) equals: "** (nil) oops"
+    self assert: ((BuccaneerLogger banner: thrown stacktrace: #()) startsWith: "** (nil) oops\n")
+
   testCrashReason =>
     self
       assert: (BuccaneerLogger

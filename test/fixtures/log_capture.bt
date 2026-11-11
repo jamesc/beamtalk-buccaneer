@@ -11,21 +11,36 @@ sealed typed Object subclass: LogCapture
   /// Start capturing into a file under TMPDIR. Answers the path.
   class sealed attach: name :: Symbol -> String =>
     path := (System getEnv: "TMPDIR" default: "/tmp") ++ "/" ++ name asString ++ ".log"
-    (Erlang logger) remove_handler: name
-    (File exists: path) ifTrue: [File delete: path]
     chars := path toBytes
-    result := (Erlang logger)
-      add_handler: name
-      with: #logger_std_h
-      with: #{#level => #debug, #config => #{#type => #file, #file => chars}}
+    result := self
+      serialized: [
+        (Erlang logger) remove_handler: name
+        (File exists: path) ifTrue: [File delete: path]
+        (Erlang logger)
+          add_handler: name
+          with: #logger_std_h
+          with: #{
+            #level => #debug,
+            #config => #{#type => #file, #file => chars}
+          }
+      ]
     result isError ifTrue: [
       Error signal: "LogCapture attach failed: " ++ result error printString
     ]
     path
 
   class sealed detach: name :: Symbol -> Nil =>
-    (Erlang logger) remove_handler: name
+    self serialized: [(Erlang logger) remove_handler: name]
     nil
+
+  /// Run `block`, which adds or removes handlers, under a node-wide lock.
+  /// logger_server's remove_handler reads the primary handler list when
+  /// the request arrives but writes it back after any queued add has
+  /// finished, so a concurrent add_handler from another test class is
+  /// silently dropped (its process lives on, unregistered, and the test
+  /// waits on an empty file).
+  class sealed serialized: block :: Block -> Result =>
+    (Erlang global) trans: {#buccaneerLogCapture, (Erlang erlang) make_ref} with: block
 
   /// The captured output, waiting up to three seconds for `token`
   /// (other test classes share the node, so logging under parallel

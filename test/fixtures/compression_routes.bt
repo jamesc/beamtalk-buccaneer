@@ -152,10 +152,8 @@ sealed Object subclass: CompressionRoutes
 
   /// The zstd frame of the big body, as `:zstd.compress/1` makes it.
   class sealed zstdBigBody =>
-    @expect unresolved_ffi
     Binary fromIolist: ((Erlang zstd) compress: self bigBody)
 
   /// Decompress a zstd body.
   class sealed unzstd: body =>
-    @expect unresolved_ffi
     Binary fromIolist: ((Erlang zstd) decompress: body)

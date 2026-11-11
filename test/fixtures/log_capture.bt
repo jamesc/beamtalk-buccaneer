@@ -39,7 +39,7 @@ sealed typed Object subclass: LogCapture
   /// finished, so a concurrent add_handler from another test class is
   /// silently dropped (its process lives on, unregistered, and the test
   /// waits on an empty file).
-  class sealed serialized: block :: Block -> Result =>
+  class sealed serialized: block :: Block(Result(Object, Object)) -> Result(Object, Object) =>
     (Erlang global) trans: {#buccaneerLogCapture, (Erlang erlang) make_ref} with: block
 
   /// The captured output, waiting up to three seconds for `token`

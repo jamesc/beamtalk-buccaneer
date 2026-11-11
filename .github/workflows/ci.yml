@@ -8,8 +8,41 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly: Autobahn against the current edge compiler, whatever changed.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 jobs:
+  # Which areas a pull request touches, so slow conformance suites run
+  # only when they can be affected. Pushes to main, the nightly run and
+  # manual runs always run them.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      websocket: ${{ steps.filter.outputs.websocket }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            websocket:
+              - 'src/websocket/**'
+              - 'src/http1/**'
+              - 'src/pipeline.bt'
+              - 'src/connection_handler.bt'
+              - 'src/buccaneer_config.bt'
+              - 'src/compression.bt'
+              - 'test/websocket/**'
+              - 'test/fixtures/**'
+              - 'beamtalk.toml'
+              - 'beamtalk.lock'
+              - 'Justfile'
+              - '.github/workflows/ci.yml'
+
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -61,12 +94,14 @@ jobs:
         continue-on-error: true
 
   # Phase 4: Autobahn Testsuite fuzzingclient against the echo server.
-  # Non-blocking until green (BT-4084), then promote by dropping
-  # continue-on-error. Needs docker (present on ubuntu-latest) and the
+  # Required check (BT-4084 promoted it once green). On a pull request it
+  # runs only when the WebSocket path changes (see `changes`); a skipped
+  # run counts as passing. Needs docker (present on ubuntu-latest) and the
   # AUTOBAHN=1 gate in test/websocket/autobahn_test.bt.
   autobahn:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.websocket == 'true'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

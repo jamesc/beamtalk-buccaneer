@@ -18,6 +18,7 @@ jobs:
   # only when they can be affected. Pushes to main, the nightly run and
   # manual runs always run them.
   changes:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
@@ -96,11 +97,19 @@ jobs:
   # Phase 4: Autobahn Testsuite fuzzingclient against the echo server.
   # Required check (BT-4084 promoted it once green). On a pull request it
   # runs only when the WebSocket path changes (see `changes`); a skipped
-  # run counts as passing. Needs docker (present on ubuntu-latest) and the
-  # AUTOBAHN=1 gate in test/websocket/autobahn_test.bt.
+  # run counts as passing. Off pull requests `changes` is skipped, so
+  # `!cancelled()` keeps that skip from skipping this job too; if the
+  # filter itself fails, the suite runs rather than silently passing.
+  # Needs docker (present on ubuntu-latest) and the AUTOBAHN=1 gate in
+  # test/websocket/autobahn_test.bt.
   autobahn:
     needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.websocket == 'true'
+    if: >-
+      !cancelled() && (
+        github.event_name != 'pull_request' ||
+        needs.changes.result != 'success' ||
+        needs.changes.outputs.websocket == 'true'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

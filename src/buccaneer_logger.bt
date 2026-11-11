@@ -44,7 +44,7 @@ typed Object subclass: BuccaneerLogger
 
   /// One line: the class and the message (Bandit's format_banner).
   class sealed banner: error :: Exception -> String =>
-    "** (" ++ error errorClass asString ++ ") " ++ error message
+    "** (" ++ error errorClass displayString ++ ") " ++ error message
 
   /// The banner plus the stacktrace (Bandit's format/3).
   class sealed banner: error :: Exception stacktrace: stacktrace :: List(StackFrame) -> String =>

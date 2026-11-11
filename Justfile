@@ -68,8 +68,11 @@ fmt-fix:
     beamtalk fmt
 
 # Lint source files
+# src and test only: bench/*_node are separate projects whose path deps
+# exist only after bench/run.sh stages them.
 lint:
-    beamtalk lint
+    beamtalk lint src
+    beamtalk lint test
 
 # Remove build artifacts
 clean:

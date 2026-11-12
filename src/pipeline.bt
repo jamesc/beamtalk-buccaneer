@@ -201,12 +201,11 @@ sealed typed Object subclass: Pipeline
       }
       metadata: (meta at: #websock put: st websock)
     ws := config websocket
-    // Types checked in BuccaneerConfig>>checkWebSocketOptions:.
-    validateText :: Boolean := ws at: #validateTextFrames ifAbsent: [true]
-    maxFrameSize :: Integer := ws at: #maxFrameSize ifAbsent: [8000000]
-    maxMessageSize :: Integer := ws at: #maxFragmentedMessageSize ifAbsent: [
-      8000000
-    ]
+    // Value types come from the WebSocketOptions shape; the runtime
+    // check is BuccaneerConfig>>checkWebSocketOptions:.
+    validateText := ws at: #validateTextFrames ifAbsent: [true]
+    maxFrameSize := ws at: #maxFrameSize ifAbsent: [8000000]
+    maxMessageSize := ws at: #maxFragmentedMessageSize ifAbsent: [8000000]
     connection := WebSocketConnection
       websock: st websock
       websockState: st websockState

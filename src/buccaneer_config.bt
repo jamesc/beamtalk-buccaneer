@@ -65,7 +65,17 @@ type Http2Options = Dictionary(Symbol, Object)
 /// - `#deflateOptions` (Dictionary, default empty) — server-wide `#level`, `#memLevel` and `#strategy` for permessage-deflate; per-upgrade options override them.
 /// - `#primitiveOpsModule` (reserved) — accepted for Bandit parity, currently unused.
 /// - `#logProtocolErrors` (reserved) — accepted for Bandit parity; `#http` logging covers WebSocket errors.
-type WebSocketOptions = Dictionary(Symbol, Object)
+type WebSocketOptions = #{
+  ?#enabled => Boolean,
+  ?#maxFrameSize => Integer,
+  ?#maxFragmentedMessageSize => Integer,
+  ?#validateTextFrames => Boolean,
+  ?#compress => Boolean,
+  ?#deflateOptions => Dictionary(Symbol, Object),
+  ?#maxInflateRatio => Integer,
+  ?#primitiveOpsModule => Object,
+  ?#logProtocolErrors => Object
+}
 
 /// The `#catalina` section: Catalina `ServerConfig` options plus the
 /// transport conveniences folded in (`#port`, `#transport`). See
@@ -157,7 +167,8 @@ typed Value subclass: BuccaneerConfig
       section: options
       name: #http2
       keys: self http2Keys
-    websocket := self
+    // The one cast: the section is an untyped map until validated.
+    websocket :: WebSocketOptions := self
       section: options
       name: #websocket
       keys: self websocketKeys

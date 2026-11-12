@@ -111,7 +111,12 @@ sealed typed Value subclass: HTTP2Stream
               code: HTTP2Errors protocolError
               streamId: self streamId
           ]
-        {name, (Headers stringOrOpaque: (h at: 2))}
+        // The HPACK static table decodes an entry with no value (an
+        // indexed user-agent, say) as nil: an empty value.
+        value := h at: 2
+        {name, (value isNil ifTrue: [
+          ""
+        ] ifFalse: [Headers stringOrOpaque: value])}
       ]
 
   /// Split leading pseudo-headers from regular ones; a pseudo-header

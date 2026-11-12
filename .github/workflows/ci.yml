@@ -162,3 +162,49 @@ jobs:
 
       - name: h2spec
         run: just h2spec
+
+  # h2spec built from master (a pinned commit), which has cases the 2.6.0
+  # docker image above does not run (BT-4478). Non-blocking until green;
+  # then make it blocking and drop the docker job. A local h2spec binary
+  # on PATH is preferred by test/http2/h2spec_test.bt over docker.
+  h2spec-master:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build h2spec master
+        run: |
+          git clone https://github.com/summerwind/h2spec "$RUNNER_TEMP/h2spec-src"
+          cd "$RUNNER_TEMP/h2spec-src"
+          git checkout af83a65f0b6273ef38bf778d400d98892e7653d8
+          # The pinned x/net of that commit does not build on Go 1.24.
+          go mod edit -require=golang.org/x/net@v0.30.0
+          go mod tidy
+          mkdir -p "$HOME/bin"
+          go build -o "$HOME/bin/h2spec" ./cmd/h2spec
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+
+      - name: Install Beamtalk
+        run: |
+          curl -fsSL https://beamtalk.dev/install.sh | sudo sh -s -- --edge --prefix /usr/local
+          beamtalk --version
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: Build
+        run: just build
+
+      - name: h2spec (master)
+        run: just h2spec

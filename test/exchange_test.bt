@@ -117,6 +117,72 @@ TestCase subclass: ExchangeTest
     ex finish
     Loopback close: pair
 
+  testBodyCompleteNoBody =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    self assert: ex bodyComplete
+    ex finish
+    Loopback close: pair
+
+  testBodyCompleteNotReadYet =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello")
+    self deny: ex bodyComplete
+    ex finish
+    Loopback close: pair
+
+  testBodyCompleteAfterFullRead =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello")
+    ex readBody unwrap
+    self assert: ex bodyComplete
+    // Idempotent, and finish still answers the next transport.
+    self assert: ex bodyComplete
+    self assert: ex finish readState equals: #read
+    Loopback close: pair
+
+  testBodyCompletePartialRead =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello world")
+    (ex readBody: #{#length => 5}) unwrap
+    self deny: ex bodyComplete
+    ex readBody unwrap
+    self assert: ex bodyComplete
+    ex finish
+    Loopback close: pair
+
+  testBodyCompleteChunked =>
+    pair := Loopback pairWithReadTimeout: 5000
+    head := "POST /p HTTP/1.1"
+      ++ self nl
+      ++ "host: x"
+      ++ self nl
+      ++ "transfer-encoding: chunked"
+      ++ self nl
+      ++ self nl
+      ++ "3"
+      ++ self nl
+      ++ "abc"
+      ++ self nl
+      ++ "0"
+      ++ self nl
+      ++ self nl
+    ex := self open: pair request: head
+    self deny: ex bodyComplete
+    ex readBody unwrap
+    self assert: ex bodyComplete
+    ex finish
+    Loopback close: pair
+
+  testBodyCompleteDrainedByFinish =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: (self postHead: "hello") ++ "GET /next"
+    self deny: ex bodyComplete
+    next := ex finish
+    self assert: next bodyComplete
+    self assert: next buffer asStringUnchecked equals: "GET /next"
+    Loopback close: pair
+
   testReadBodyCountsBytesNotGraphemes =>
     pair := Loopback pairWithReadTimeout: 5000
     body := "a\r\nb\r\nc"

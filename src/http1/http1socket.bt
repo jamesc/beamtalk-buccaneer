@@ -447,6 +447,9 @@ sealed typed Value subclass: HTTP1Socket
       ]
     cleared withWriteState: #sent
 
+  /// Whether the request body is fully read, or the request had none.
+  bodyComplete -> Boolean => self readState =:= #read
+
   /// Drain the rest of the request body so the next keepalive request
   /// starts clean (Bandit's ensure_completed). Read up to readData:'s
   /// default 8 MB; more is a 400. A timeout re-checks for a disconnect,

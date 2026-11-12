@@ -130,3 +130,30 @@ TestCase subclass: HTTP2StreamTest
     {method, _, _, length} := self stream checkHead: headers endStream: true
     self assert: method equals: "POST"
     self assert: length equals: 0
+
+  // ----- bodyComplete -----
+  testBodyCompleteFalseUntilRequestEnds =>
+    self deny: self stream bodyComplete
+    open := self stream withRequestEnded: false
+    self deny: open bodyComplete
+
+  testBodyCompleteAfterBodylessHead =>
+    // END_STREAM on the head: there is no body, so nothing to drain.
+    head := {#({":method", "GET"}, {":scheme", "https"}, {":path", "/"}), true}
+    {_, _, _, next} := (self stream withRequestHead: head) readHeaders
+    self assert: next bodyComplete
+
+  testBodyIncompleteAfterHeadWithoutEndStream =>
+    head := {#({":method", "POST"}, {":scheme", "https"}, {":path", "/"}), false}
+    {_, _, _, next} := (self stream withRequestHead: head) readHeaders
+    self deny: next bodyComplete
+
+  testBodyCompleteStreamDrainNeedsNoConnection =>
+    // The stream has no connection: a drain that reached for one would fail.
+    done := self stream withRequestEnded: true
+    self assert: done bodyComplete
+    self assert: done ensureCompleted equals: done
+    {tag, data, after} := done readData: #{}
+    self assert: tag equals: #ok
+    self assert: data size equals: 0
+    self assert: after bodyComplete

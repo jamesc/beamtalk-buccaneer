@@ -586,6 +586,10 @@ sealed typed Value subclass: HTTP2Stream
       _ -> Error signal: "Error reading file for sendfile: eof"
     ]
 
+  /// Whether the request ended and its body was fully read (or there was
+  /// none): the drain is then a no-op. Reads local state only.
+  bodyComplete -> Boolean => self requestEnded
+
   /// Drain an unread body within limits; answers the next transport.
   /// Bandit only messages the connection here, which cannot fail when the
   /// connection has gone, so a call to a dead connection actor is ignored

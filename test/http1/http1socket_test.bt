@@ -872,6 +872,12 @@ TestCase subclass: HTTP1SocketTest
     self assert: (kept at: 1) equals: #({"upgrade", "websocket"})
     self assert: (kept at: 2) keepalive isNil
 
+  // ----- bodyComplete -----
+  testBodyCompleteByReadState =>
+    self assert: (HTTP1Socket new withReadState: #read) bodyComplete
+    self deny: (HTTP1Socket new withReadState: #headersRead) bodyComplete
+    self deny: (HTTP1Socket new withReadState: #unread) bodyComplete
+
   // ----- ensureCompleted -----
   testEnsureCompletedReadIsNoop =>
     sock := HTTP1Socket new withReadState: #read

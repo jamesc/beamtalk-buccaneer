@@ -32,6 +32,10 @@ Protocol define: HTTPTransport
   /// A file response; answers the next transport.
   sendfile: path :: String offset: offset :: Integer length: length :: Object -> Object
 
+  /// Whether the request body is fully read (or there is none), so a
+  /// drain would be a no-op. Cheap: no I/O and no connection call.
+  bodyComplete -> Boolean
+
   /// Drain an unread body within limits; answers the next transport.
   ensureCompleted -> Object
 

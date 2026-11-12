@@ -142,6 +142,13 @@ sealed typed Value subclass: Exchange
     self store: ((stamped withTransport: transport) withReqBodyBytes: st reqBodyBytes + data size)
     Result ok: (BodyPart data: data done: tag =:= #ok)
 
+  /// Whether the request body has been read to its end (or there was
+  /// none), so draining it again is a no-op. A cheap check on local state:
+  /// no I/O, and a body that is only partly read answers false. Callers
+  /// that would otherwise read the body just to discard it (a post-handler
+  /// drain) can skip that when this answers true.
+  bodyComplete -> Boolean => self load transport bodyComplete
+
   /// The rest of the body in one read, or error: #body_too_large when it
   /// is longer than maxBytes.
   readAll: maxBytes :: Integer -> Result(Binary, Object) =>

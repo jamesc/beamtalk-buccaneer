@@ -1000,16 +1000,17 @@ sealed typed Value subclass: HTTP2Protocol
         ];
       _ -> nil
     ]
-    // Trailers (a later HEADERS on an open stream) carry no pseudo-headers,
-    // so the request-head checks apply to the first block only.
-    isHead := known =:= #new
-    checked :: Tuple := isHead ifTrue: [
-      validator checkRequestHeaders: headers
-    ] ifFalse: [{nil, nil, nil, nil}]
-    contentLength :: Integer | Nil := checked at: 4
-    sized := isHead ifTrue: [
-      conn withContentLength: sid length: contentLength
-    ] ifFalse: [conn]
+    // The request-head checks (pseudo-headers, names, TE, content-length
+    // agreement) run once, in the stream process (HTTP2Stream readHeaders),
+    // which resets the stream on a failure. Here the first block only
+    // yields the content-length that DATA frames are checked against.
+    // Trailers (a later HEADERS on an open stream) carry none.
+    contentLength :: Integer | Nil := known =:= #new ifTrue: [
+      self headContentLength: stringed
+    ] ifFalse: [nil]
+    sized := contentLength isNil ifTrue: [
+      conn
+    ] ifFalse: [conn withContentLength: sid length: contentLength]
     conn2 := sized withFragmentFrame: nil
     conn3 := frame endStream ifTrue: [conn2 markReqEnded: sid] ifFalse: [conn2]
     known match: [
@@ -1024,6 +1025,14 @@ sealed typed Value subclass: HTTP2Protocol
         endStream: frame endStream
         conn: conn3
     ]
+
+  /// The content-length of a request head, nil when absent or invalid:
+  /// the stream process's validation reports an invalid or disagreeing
+  /// value as a stream error.
+  headContentLength: headers :: List(Tuple) -> Integer | Nil =>
+    result := Headers getContentLength: headers
+    result isOk ifFalse: [^nil]
+    result value
 
   /// First HEADERS for a stream: admit, open windows, buffer, wake a
   /// parked header reader, spawn.

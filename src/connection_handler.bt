@@ -91,18 +91,17 @@ typed Handler subclass: ConnectionHandler
       proto connectionFailed: e
     ]
     {bytes, spawns, close, proto2} := result
-    self h2SendBytes: bytes socket: sock
+    // A read's answer goes out at the end of this call: no #h2Flush
+    // self-message is needed for it (BT-4476).
+    self h2Gather: bytes
     proto3 := self
       h2SpawnAll: spawns
       proto: proto2
       socket: sock
     {outbox, clean} := proto3 takeOutbox
     self h2Deliver: outbox
-    close
-      ifTrue: [
-        self h2Flush
-        ^HandlerResult close: clean
-      ]
+    self h2Flush
+    close ifTrue: [^HandlerResult close: clean]
     HandlerResult continue: clean
 
   /// A message for the connection: a WebSocket protocol handles it in
@@ -219,6 +218,19 @@ typed Handler subclass: ConnectionHandler
       ifFalse: [
         ProcessDictionary at: ConnectionHandler h2OutKey put: #(pending, bytes)
       ]
+    nil
+
+  /// Gather bytes like h2SendBytes:socket: but post no #h2Flush: the
+  /// caller flushes (h2Flush) before it returns. For socket reads, whose
+  /// answer is complete at the end of the call.
+  h2Gather: bytes :: Binary -> Nil =>
+    bytes size =:= 0 ifTrue: [^nil]
+    pending := ProcessDictionary at: ConnectionHandler h2OutKey
+    pending isNil ifTrue: [
+      ProcessDictionary at: ConnectionHandler h2OutKey put: bytes
+    ] ifFalse: [
+      ProcessDictionary at: ConnectionHandler h2OutKey put: #(pending, bytes)
+    ]
     nil
 
   /// Socket-send the gathered bytes (see h2SendBytes:socket:), ignoring
@@ -484,6 +496,12 @@ typed Handler subclass: ConnectionHandler
     self h2SendBytes: rst socket: self socket
     self h2Store: (proto2 failAll: failed)
     nil
+
+  /// h2ResetStream:code: after logging the stream error that caused it
+  /// (#logStreamErrors).
+  h2ResetStream: sid :: Integer code: code :: Integer error: e :: H2StreamError -> Nil =>
+    self h2Protocol logStreamError: e streamId: sid
+    self h2ResetStream: sid code: code
 
   /// Spawn (monitored) a StreamProcess per new stream id.
   h2SpawnAll: spawns :: List(Integer) proto: proto :: HTTP2Protocol socket: sock :: Socket -> HTTP2Protocol =>

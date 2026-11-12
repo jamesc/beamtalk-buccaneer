@@ -197,23 +197,30 @@ TestCase subclass: HTTP2ProtocolTest
     self assert: (srv stop: 5000) isOk
 
   // RFC 7541 §2.2 / Bandit: every header block is decoded, even one for a
-  // stream we have closed, or the next block decodes against a stale
-  // table. Stream 1's block adds x-new to both tables; stream 3 refers to it.
-  testHeadersOnClosedStreamKeepHpackInSync =>
-    srv := self startTls: self hello
+  // stream we have reset (late frames on it are tolerated), or the next
+  // block decodes against a stale table. Stream 1 is reset by us (trailers
+  // with a pseudo-header); a late HEADERS for it adds x-new to both tables;
+  // stream 3 refers to it. (After the peer's END_STREAM the same HEADERS is a
+  // connection error STREAM_CLOSED instead, RFC 9113 §5.1.)
+  testHeadersOnResetStreamKeepHpackInSync =>
+    srv := self startTls: (self echoHandler)
     triple := self openTls: (self portOf: srv)
     sock := triple at: 1
-    enc := triple at: 2
     dec := triple at: 3
     enc2 := self
-      sendGet: sock
+      sendPost: sock
       sid: 1
-      path: "/a"
-      enc: enc
-    first := H2Client recvHeadersTls: sock dec: dec
-    dec2 := first at: 4
-    H2Client recvRawTls: sock
-    stale := H2Client encode: #({":method", "GET"}, {":scheme", "https"}, {":path", "/b"}, {":authority", "x"}, {"x-new", "v1"}) table: enc2
+      path: "/echo"
+      enc: (triple at: 2)
+    bad := H2Client encode: #({":path", "/foo"}) table: enc2
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (bad at: 1)
+        endStream: true)
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    stale := H2Client encode: #({":method", "GET"}, {":scheme", "https"}, {":path", "/b"}, {":authority", "x"}, {"x-new", "v1"}) table: (bad at: 2)
     H2Client
       sendFrameTls: sock
       frame: (H2Client
@@ -227,7 +234,7 @@ TestCase subclass: HTTP2ProtocolTest
         headersFrame: 3
         hbf: (later at: 1)
         endStream: true)
-    second := H2Client recvHeadersTls: sock dec: dec2
+    second := H2Client recvHeadersTls: sock dec: dec
     self assert: (second at: 1) equals: 3
     self assert: (self statusOf: (second at: 3)) equals: "200"
     H2Client closeTls: sock
@@ -967,6 +974,14 @@ TestCase subclass: HTTP2ProtocolTest
         body: "OK"
     ]
 
+  /// Read frames until a GOAWAY; answers its error code.
+  awaitGoaway: sock =>
+    frame := H2Client recvFrameTls: sock
+    frame match: [
+      g :: H2Goaway -> g errorCode;
+      _ -> self awaitGoaway: sock
+    ]
+
   /// GET on sid and read the whole response; answers the encoder table.
   completeGet: sock sid: s enc: enc dec: dec =>
     enc2 := self
@@ -1205,7 +1220,9 @@ TestCase subclass: HTTP2ProtocolTest
       sendGetAgain: sock
       sid: 3
       enc: enc2
-    self assert: ((H2Client recvGoawayCloseTls: sock) at: 2) equals: 1
+    // Stream 5's response may arrive before the GOAWAY.
+    self assert: (self awaitGoaway: sock) equals: 1
+    H2Client expectClosedTls: sock
     self assert: (srv stop: 5000) isOk
 
   // generic/5: an indexed header field whose static entry has no value

@@ -402,7 +402,10 @@ sealed typed Value subclass: HTTP2Stream
       _ -> HTTP2Errors protocolError
     ]
     self conn h2ResetStream: self streamId code: code
-    TransportError signal: "stream reset"
+    // Reason #closed: the reset is already answered on the wire, so the
+    // pipeline treats it as a closure (silent unless #logClientClosures)
+    // rather than logging a protocol error for every invalid request.
+    TransportError signal: "stream reset" reason: #closed
 
   /// Account a body part against the content length.
   checkData: data :: Binary ended: ended :: Boolean -> HTTP2Stream =>

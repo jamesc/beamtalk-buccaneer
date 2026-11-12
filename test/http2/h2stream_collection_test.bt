@@ -46,7 +46,7 @@ TestCase subclass: H2StreamCollectionTest
 
   testOriginalUnchanged =>
     c := H2StreamCollection default
-    c withInserted: 1 pid: Pid current
+    _ := c withInserted: 1 pid: Pid current
     self assert: (c getPid: 1) equals: #new
     self assert: c openCount equals: 0
 

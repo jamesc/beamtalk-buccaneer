@@ -497,6 +497,12 @@ typed Handler subclass: ConnectionHandler
     self h2Store: (proto2 failAll: failed)
     nil
 
+  /// h2ResetStream:code: after logging the stream error that caused it
+  /// (#logStreamErrors).
+  h2ResetStream: sid :: Integer code: code :: Integer error: e :: H2StreamError -> Nil =>
+    self h2Protocol logStreamError: e streamId: sid
+    self h2ResetStream: sid code: code
+
   /// Spawn (monitored) a StreamProcess per new stream id.
   h2SpawnAll: spawns :: List(Integer) proto: proto :: HTTP2Protocol socket: sock :: Socket -> HTTP2Protocol =>
     acc := proto

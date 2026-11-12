@@ -1292,3 +1292,24 @@ TestCase subclass: HTTP2ProtocolTest
 
   testEndStreamWithContentLengthHeadResetsFromStream =>
     self assertBadHeadReset: #({":method", "POST"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {"content-length", "5"})
+
+  // The stream-side reset of an invalid head is still logged per
+  // #logStreamErrors (#short by default), as the connection did before.
+  testInvalidHeadStreamResetIsLogged =>
+    path := LogCapture attach: #h2headlog
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    bad := H2Client encode: #({":method", "GET"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {"X-Upper-Logged", "y"}) table: (triple at: 2)
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (bad at: 1)
+        endStream: true)
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    logged := LogCapture await: "Received uppercase header" in: path
+    self assert: (logged includesSubstring: "** (H2StreamError)") equals: true
+    LogCapture detach: #h2headlog
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk

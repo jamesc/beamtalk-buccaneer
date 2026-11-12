@@ -134,7 +134,7 @@ sealed typed Object subclass: Pipeline
       final := answered respState =:= #sent
         ifTrue: [answered]
         ifFalse: [
-          ex commit
+          _ := ex commit
           ex load
         ]
       done := ex finish: final
@@ -190,7 +190,7 @@ sealed typed Object subclass: Pipeline
     result isError ifTrue: [HTTPError signal: result error reason: 400]
     {compress, _params} := result value
     final := ex load
-    span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
+    _ := span stopWith: (self metricsFrom: final) metadata: (meta at: #conn put: final)
     buffer := final transport buffer
     ex forget
     wsSpan := BuccaneerTelemetry
@@ -235,7 +235,7 @@ sealed typed Object subclass: Pipeline
   /// error, log per the #http section, answer the error status unless
   /// answered, and ask the handler to close.
   class sealed protocolError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
-    span stopWith: #{} metadata: (meta at: #error put: error message)
+    _ := span stopWith: #{} metadata: (meta at: #error put: error message)
     BuccaneerLogger
       maybeLogProtocolError: error
       stacktrace: error stackTrace
@@ -251,7 +251,7 @@ sealed typed Object subclass: Pipeline
     kind := (error isKindOf: ExitError) ifTrue: [
       #exit
     ] ifFalse: [(error isKindOf: ThrowError) ifTrue: [#throw] ifFalse: [#error]]
-    span
+    _ := span
       exceptionKind: kind
       reason: error
       stacktrace: error stackTrace

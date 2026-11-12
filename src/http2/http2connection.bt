@@ -40,7 +40,18 @@ sealed typed Value subclass: HTTP2Connection
   field: reqEnded :: Dictionary(Integer, Boolean) = #{}
   field: respEnded :: Dictionary(Integer, Boolean) = #{}
   field: contentLengths :: Dictionary(Integer, Integer | Nil) = #{}
-  field: strayWindows :: Dictionary(Integer, Integer) = #{}
+  // === Recently closed streams (RFC 9113 §5.1) ===
+  //
+  // A stream the connection forgot is closed, but frames on it are an
+  // error only when the peer closed it (END_STREAM received with the
+  // response done, or RST_STREAM received); frames racing a reset we sent
+  // are tolerated. Two plain lists of the most recent ids, newest first,
+  // bounded by closedRecordLimit: no Dictionary per stream.
+  field: peerClosed :: List(Integer) = #()
+  field: resetByUs :: List(Integer) = #()
+
+  /// How many closed stream ids each record keeps.
+  class sealed closedRecordLimit -> Integer => 100
 
   /// Bandit's defaults: 65535 windows, HPACK 4096, limits as configured.
   class sealed default -> HTTP2Connection => HTTP2Connection new
@@ -265,12 +276,10 @@ sealed typed Value subclass: HTTP2Connection
   lastStreamId -> Integer => self streams lastStreamId
 
   /// Open stream state when its first HEADERS arrives: seed both
-  /// windows from the negotiated settings plus any stray WINDOW_UPDATE
-  /// that arrived before the stream.
+  /// windows from the negotiated settings.
   withStreamOpened: sid :: Integer -> HTTP2Connection =>
-    {c, stray} := self takeStrayWindow: sid
-    send := c remoteSettings initialWindowSize + stray
-    ((c withStreamSendWindows: (c streamSendWindows at: sid put: send)) withStreamRecvWindows: (c streamRecvWindows at: sid put: (c localSettings initialWindowSize)))
+    send := self remoteSettings initialWindowSize
+    ((self withStreamSendWindows: (self streamSendWindows at: sid put: send)) withStreamRecvWindows: (self streamRecvWindows at: sid put: (self localSettings initialWindowSize)))
 
   /// Forget a stream's windows, buffers and parked readers.
   withStreamForgotten: sid :: Integer -> HTTP2Connection =>
@@ -308,15 +317,26 @@ sealed typed Value subclass: HTTP2Connection
   contentLengthFor: sid :: Integer -> Integer | Nil =>
     self contentLengths at: sid ifAbsent: [nil]
 
-  /// Stash a window increment that arrived before its stream.
-  withStrayWindow: sid :: Integer increment: n :: Integer -> HTTP2Connection =>
-    self withStrayWindows: (self strayWindows at: sid put: ((self strayWindows at: sid ifAbsent: [
-      0
-    ]) + n))
+  /// Remember a stream the peer closed (END_STREAM with the response
+  /// done, or RST_STREAM received).
+  notePeerClosed: sid :: Integer -> HTTP2Connection =>
+    self withPeerClosed: (self recorded: self peerClosed with: sid)
 
-  takeStrayWindow: sid :: Integer -> Tuple(HTTP2Connection, Integer) =>
-    n := self strayWindows at: sid ifAbsent: [0]
-    {(self withStrayWindows: (self strayWindows removeKey: sid)), n}
+  /// Remember a stream we reset.
+  noteResetByUs: sid :: Integer -> HTTP2Connection =>
+    self withResetByUs: (self recorded: self resetByUs with: sid)
+
+  /// Whether the peer closed the stream, recently enough to be recorded.
+  isPeerClosed: sid :: Integer -> Boolean => self peerClosed includes: sid
+
+  /// Whether we reset the stream, recently enough to be recorded.
+  isResetByUs: sid :: Integer -> Boolean => self resetByUs includes: sid
+
+  /// A record with sid in front, the oldest id dropped past the limit.
+  recorded: ids :: List(Integer) with: sid :: Integer -> List(Integer) =>
+    grown := ids addFirst: sid
+    grown size > self class closedRecordLimit ifFalse: [^grown]
+    grown reversed rest reversed
 
   /// Buffer HEADERS for a stream: {headers, endStream}.
   withHeadersBuffered: sid :: Integer headers: h :: List(Tuple) endStream: end :: Boolean -> HTTP2Connection =>

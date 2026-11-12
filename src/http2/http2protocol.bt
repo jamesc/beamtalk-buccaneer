@@ -284,9 +284,19 @@ sealed typed Value subclass: HTTP2Protocol
           H2ConnectionError signal: "Received DATA in idle state" code: HTTP2Errors protocolError
         ];
       #invalid -> H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError;
-      #closed -> {Binary fromBytes: #(), #(), false, self};
+      #closed -> self dataOnClosed: sid;
       _ -> self dataForOpen: frame
     ]
+
+  /// DATA on a closed stream: a connection error STREAM_CLOSED when the
+  /// peer closed it (RFC 9113 §5.1, §6.1); a frame racing a reset we sent
+  /// is dropped.
+  dataOnClosed: sid :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    (self connection isPeerClosed: sid)
+      ifTrue: [
+        H2ConnectionError signal: "Received DATA on a closed stream (RFC9113§5.1)" code: HTTP2Errors streamClosed
+      ]
+    {Binary fromBytes: #(), #(), false, self}
 
   /// The stream collection's verdict for a frame's stream id.
   streamState: sid :: Integer -> Symbol | Pid =>
@@ -296,6 +306,14 @@ sealed typed Value subclass: HTTP2Protocol
     sid := frame streamId
     data := frame data
     conn := self connection
+    // Half-closed (remote): the request already ended (RFC 9113 §5.1).
+    (conn reqEndedFor: sid)
+      ifTrue: [
+        H2StreamError
+          signal: "Received DATA on a half-closed (remote) stream (RFC9113§5.1)"
+          code: HTTP2Errors streamClosed
+          streamId: sid
+      ]
     (data size > conn recvWindowSize)
       ifTrue: [
         H2ConnectionError signal: "Received DATA exceeding connection window" code: HTTP2Errors flowControlError
@@ -387,7 +405,10 @@ sealed typed Value subclass: HTTP2Protocol
   /// readers and end markers.
   forgetStream: sid :: Integer conn: conn :: HTTP2Connection -> HTTP2Connection =>
     pid := conn streams getPid: sid
-    c := conn withStreamForgotten: sid
+    // Both sides ended: the peer closed it, so later DATA and HEADERS on
+    // it are errors (see HTTP2Connection notePeerClosed:).
+    noted := (conn isComplete: sid) ifTrue: [conn notePeerClosed: sid] ifFalse: [conn]
+    c := noted withStreamForgotten: sid
     pid match: [
       p :: Pid -> c withStreams: (c streams withDeleted: p);
       #reserved -> c withStreams: (c streams releasing: sid);
@@ -399,7 +420,8 @@ sealed typed Value subclass: HTTP2Protocol
   resetStream: sid :: Integer code: code :: Integer -> Tuple(Binary, List(ReplyTo), HTTP2Protocol) =>
     {proto, failed} := self takeParked: sid
     bytes := H2Frame serialize: ((H2RstStream new withStreamId: sid) withErrorCode: code) maxFrameSize: self maxSendFrameSize
-    {bytes, failed, (proto withConnection: (self forgetStream: sid conn: proto connection))}
+    forgotten := self forgetStream: sid conn: proto connection
+    {bytes, failed, (proto withConnection: (forgotten noteResetByUs: sid))}
 
   /// Take every parked token for a stream: header/data readers, window
   /// waiters and queued sends. Answers {protocol, tokens}.
@@ -423,7 +445,9 @@ sealed typed Value subclass: HTTP2Protocol
         H2ConnectionError signal: "Received HEADERS with zero stream_id (RFC9113§6.2)" code: HTTP2Errors protocolError
       ]
     // Priority data in HEADERS is deprecated (RFC 9113 §5.3) and
-    // ignored, as Bandit does.
+    // ignored, except that a stream may not depend on itself; that is
+    // checked once the block is decoded (routeDecoded:), so the HPACK
+    // table still sees it.
     frame endHeaders ifFalse: [^self headersFragmented: frame]
     self routeHeaders: frame
 
@@ -487,7 +511,8 @@ sealed typed Value subclass: HTTP2Protocol
     conn := self connection withResetRecorded: (BuccaneerTelemetry monotonicTime)
     {proto, failed} := (self withConnection: conn) takeParked: sid
     proto2 := proto failAll: failed
-    {Binary fromBytes: #(), #(), false, (proto2 withConnection: (self forgetStream: sid conn: proto2 connection))}
+    forgotten := self forgetStream: sid conn: proto2 connection
+    {Binary fromBytes: #(), #(), false, (proto2 withConnection: (forgotten notePeerClosed: sid))}
 
   /// SETTINGS: ack ours, apply theirs (window delta wakes parked work).
   /// The frame layer already rejects nonzero stream ids and
@@ -584,7 +609,7 @@ sealed typed Value subclass: HTTP2Protocol
 
   streamWindowOpened: sid :: Integer increment: inc :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     (self streamState: sid) match: [
-      #new -> {Binary fromBytes: #(), #(), false, (self withConnection: (self connection withStrayWindow: sid increment: inc))};
+      #new -> H2ConnectionError signal: "Received WINDOW_UPDATE in idle state (RFC9113§5.1)" code: HTTP2Errors protocolError;
       #invalid -> H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError;
       #closed -> {Binary fromBytes: #(), #(), false, self};
       _ -> self streamWindowLive: sid increment: inc
@@ -915,7 +940,7 @@ sealed typed Value subclass: HTTP2Protocol
   /// stream's header list"), or the peer's next block decodes wrongly.
   routeCommitted: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     committed := self withConnection: (conn withFragmentFrame: nil)
-    known =:= #closed ifTrue: [^{Binary fromBytes: #(), #(), false, committed}]
+    known =:= #closed ifTrue: [^committed headersOnClosed: sid]
     [
       committed
         routeDecoded: sid
@@ -925,9 +950,39 @@ sealed typed Value subclass: HTTP2Protocol
         known: known
     ] on: H2StreamError do: [:e :: H2StreamError | committed streamFailed: e]
 
+  /// HEADERS on a closed stream (the block is decoded already): STREAM_CLOSED
+  /// when the peer closed it (RFC 9113 §5.1); dropped when it raced a reset
+  /// we sent; otherwise the id is lower than the previous new stream's and
+  /// never opened: PROTOCOL_ERROR (RFC 9113 §5.1.1).
+  headersOnClosed: sid :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    (self connection isPeerClosed: sid)
+      ifTrue: [
+        H2ConnectionError signal: "Received HEADERS on a closed stream (RFC9113§5.1)" code: HTTP2Errors streamClosed
+      ]
+    (self connection isResetByUs: sid)
+      ifTrue: [^{Binary fromBytes: #(), #(), false, self}]
+    H2ConnectionError signal: "Received stream identifier lower than the previous one (RFC9113§5.1.1)" code: HTTP2Errors protocolError
+
   routeDecoded: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     validator := HTTP2Stream new withStreamId: sid
     stringed := validator stringHeaders: headers
+    // A stream cannot depend on itself (RFC 9113 §5.3.1).
+    frame streamDependency =:= sid
+      ifTrue: [
+        H2StreamError
+          signal: "Received HEADERS that depends on itself (RFC9113§5.3.1)"
+          code: HTTP2Errors protocolError
+          streamId: sid
+      ]
+    // Half-closed (remote): only trailers could follow, and they carry
+    // END_STREAM, which the request already sent (RFC 9113 §5.1).
+    (conn reqEndedFor: sid)
+      ifTrue: [
+        H2StreamError
+          signal: "Received HEADERS on a half-closed (remote) stream (RFC9113§5.1)"
+          code: HTTP2Errors streamClosed
+          streamId: sid
+      ]
     // Our own limit bounds what we accept, and is checked first, with
     // ENHANCE_YOUR_CALM, as Bandit does.
     limit := conn localSettings maxHeaderListSize
@@ -996,6 +1051,14 @@ sealed typed Value subclass: HTTP2Protocol
   /// HEADERS on an open stream are trailers: no pseudo-headers allowed,
   /// otherwise ignored (with END_STREAM closing our read side).
   headersTrailers: sid :: Integer headers: cooked :: List(Tuple) endStream: end :: Boolean conn: conn :: HTTP2Connection -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    // Trailers without END_STREAM are malformed (RFC 9113 §8.1).
+    end
+      ifFalse: [
+        H2StreamError
+          signal: "Received trailers without END_STREAM (RFC9113§8.1)"
+          code: HTTP2Errors protocolError
+          streamId: sid
+      ]
     validator := HTTP2Stream new withStreamId: sid
     {pseudo, _} := validator splitPseudo: cooked
     pseudo isEmpty
@@ -1009,6 +1072,19 @@ sealed typed Value subclass: HTTP2Protocol
     proto := (self withConnection: conn2) wakeDataReader: sid
     cleaned := (self withConnection: (proto connectionIsComplete: sid)) keepingRepliesOf: proto
     {Binary fromBytes: #(), #(), false, cleaned}
+
+  /// PRIORITY is otherwise ignored (RFC 9113 §5.3 deprecates it), but a
+  /// stream may not depend on itself: a stream error PROTOCOL_ERROR
+  /// (RFC 9113 §5.3.1). The stream is not opened, only reset.
+  priorityFor: frame :: H2Priority -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    frame dependentStreamId =:= frame streamId
+      ifTrue: [
+        H2StreamError
+          signal: "Received PRIORITY that depends on itself (RFC9113§5.3.1)"
+          code: HTTP2Errors protocolError
+          streamId: frame streamId
+      ]
+    {Binary fromBytes: #(), #(), false, self}
 
   handleFrame: frame :: Object -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     [
@@ -1024,7 +1100,7 @@ sealed typed Value subclass: HTTP2Protocol
       frame match: [
         f :: H2Data -> self dataFor: f;
         f :: H2Headers -> self headersFor: f;
-        f :: H2Priority -> {Binary fromBytes: #(), #(), false, self};
+        f :: H2Priority -> self priorityFor: f;
         f :: H2RstStream -> self rstReceivedFor: f;
         f :: H2Settings -> self settingsFor: f;
         f :: H2Ping -> self pingFor: f;

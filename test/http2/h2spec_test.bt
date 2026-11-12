@@ -33,7 +33,10 @@ TestCase subclass: H2SpecTest
       (Erlang os) cmd: (self dockerCmd: port)
     ] ifFalse: [(Erlang os) cmd: (self localCmd: port)]
     self assert: (srv stop: 5000) isOk
-    self assert: (out asString includesSubstring: "EXIT:0") equals: true
+    // On failure the message carries h2spec's whole report, so CI shows
+    // which cases failed.
+    (out asString includesSubstring: "EXIT:0")
+      ifFalse: [self fail: "h2spec reported failures:\n" ++ out asString]
 
   /// Run only with H2SPEC=1.
   enabled -> Boolean =>

@@ -13,6 +13,23 @@ TestCase subclass: HTTP2ConnectionTest
     tok isNil ifTrue: [Error signal: "park failed"]
     tok
 
+  // The closed-stream records keep the newest ids only (BT-4478).
+  testClosedRecordsAreBounded =>
+    conn := HTTP2Connection default
+    limit := HTTP2Connection closedRecordLimit
+    sid := 1
+    (limit * 3) timesRepeat: [
+      conn := (conn notePeerClosed: sid) noteResetByUs: sid
+      sid := sid + 2
+    ]
+    self assert: conn peerClosed size equals: limit
+    self assert: conn resetByUs size equals: limit
+    newest := sid - 2
+    self assert: (conn isPeerClosed: newest) equals: true
+    self assert: (conn isResetByUs: newest) equals: true
+    self assert: (conn isPeerClosed: 1) equals: false
+    self assert: (conn isResetByUs: 1) equals: false
+
   testApplyRemoteSettingsMergesAndDeltas =>
     conn := HTTP2Connection default
     {conn2, delta} := conn applyRemoteSettings: #{

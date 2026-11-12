@@ -626,7 +626,10 @@ sealed typed Value subclass: HTTP1Socket
   /// reaches every Headers guard as a String, non-UTF-8 values stay
   /// opaque, and a garbage name still falls into the rejecting arm.
   headerRead: field :: Object value: value :: Object rest: rest :: Binary headers: headers :: HttpHeaders count: count :: Integer packetSize: packetSize :: Integer maxCount: maxCount :: Integer -> Tuple(HttpHeaders, HTTP1Socket) =>
-    text := Headers stringOrOpaque: value
+    text := (Headers stringOrOpaque: value) match: [
+      b :: Binary -> b;
+      _ -> HTTPError signal: "Field value contains invalid characters (RFC9110§5.5)"
+    ]
     (Headers fieldValueValid: text) ifFalse: [
       HTTPError signal: "Field value contains invalid characters (RFC9110§5.5)"
     ]

@@ -86,7 +86,7 @@ sealed typed Value subclass: HTTP2Stream
     schemeName := self exactlyOnce: pseudo name: ":scheme"
     path := self exactlyOnce: pseudo name: ":path"
     self atMostOnce: pseudo name: ":authority"
-    self checkRegular: rest
+    _ := self checkRegular: rest
     contentLength := self contentLength: rest
     {host, port} := self hostAndPort: pseudo
     cooked := self combineCookies: rest
@@ -224,7 +224,7 @@ sealed typed Value subclass: HTTP2Stream
               streamId: self streamId
           ]
       ]
-    self checkTe: headers
+    _ := self checkTe: headers
     self checkFieldValues: headers
 
   connectionHeader: name :: String -> Boolean =>
@@ -532,7 +532,7 @@ sealed typed Value subclass: HTTP2Stream
     now := data size
     now =:= 0 ifTrue: [Error signal: "Error reading file for sendfile: eof"]
     ended := (sent + now) >= total
-    self sendData: data end: ended
+    _ := self sendData: data end: ended
     ended
       ifTrue: [self]
       ifFalse: [

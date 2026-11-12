@@ -254,7 +254,7 @@ TestCase subclass: ExchangeTest
       open: pair
       request: head
       method: "HEAD"
-    ex
+    _ := ex
       sendResp: 200
       headers: #()
       body: "hello"
@@ -312,7 +312,7 @@ TestCase subclass: ExchangeTest
   testCommitUnsentRaises =>
     ex := Exchange open: ExchangeState new
     raised := [
-      ex commit
+      _ := ex commit
       nil
     ] on: Error do: [:e | e]
     ex finish
@@ -559,7 +559,7 @@ TestCase subclass: ExchangeTest
     st := (ExchangeState new withTransport: transport) withMethod: "POST"
     st := st withExpectContinue: true
     ex := Exchange open: st
-    ex
+    _ := ex
       sendResp: 401
       headers: #()
       body: "denied"
@@ -578,7 +578,7 @@ TestCase subclass: ExchangeTest
     self assert: (ex inform: 103 headers: #()) equals: (Result ok: nil)
     interim := self chunkedHead: pair
     self assert: (interim startsWith: "HTTP/1.1 103")
-    ex
+    _ := ex
       sendResp: 200
       headers: #()
       body: "hi"

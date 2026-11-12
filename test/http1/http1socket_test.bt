@@ -824,7 +824,7 @@ TestCase subclass: HTTP1SocketTest
 
   testReasonPhraseInStatusLine =>
     pair := self loopbackPair
-    (self writer: pair version: #http10)
+    _ := (self writer: pair version: #http10)
       sendHeaders: 431
       headers: #({"connection", "close"})
       disposition: #noBody
@@ -947,7 +947,7 @@ TestCase subclass: HTTP1SocketTest
   testSendOnErrorOtherErrorIs500 =>
     pair := self loopbackPair
     err := [Error signal: "boom"] on: Error do: [:e | e]
-    (self writer: pair version: #http11) sendOnError: err
+    _ := (self writer: pair version: #http11) sendOnError: err
     expected := "HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n"
     self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair

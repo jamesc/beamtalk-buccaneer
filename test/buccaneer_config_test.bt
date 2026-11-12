@@ -359,6 +359,53 @@ TestCase subclass: BuccaneerConfigTest
       }
     self assert: (config websocket at: #maxFrameSize) equals: 1000
 
+  /// BT-4736: the keys the shapes declare, reserved ones included, are
+  /// accepted by the key validators.
+  testAcceptsEveryShapeKey =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #http => #{
+          #logProtocolErrors => #verbose,
+          #logClientClosures => #short,
+          #logExceptionsWithStatusCodes => 500,
+          #compress => false,
+          #responseEncodings => #("gzip"),
+          #deflateOptions => #{#level => 1},
+          #zstdOptions => #{}
+        },
+        #http1 => #{
+          #enabled => true,
+          #maxRequests => 10,
+          #maxRequestLineLength => 100,
+          #maxHeaderLength => 100,
+          #maxHeaderCount => 5,
+          #gcEveryNKeepaliveRequests => 5,
+          #logUnknownMessages => false,
+          #clearProcessDict => true
+        },
+        #http2 => #{
+          #enabled => true,
+          #maxHeaderBlockSize => 1000,
+          #maxRequests => 10,
+          #maxResetStreamRate => {500, 10000},
+          #sendfileChunkSize => 1000,
+          #defaultLocalSettings => #{},
+          #logStreamErrors => #short
+        },
+        #websocket => #{
+          #primitiveOpsModule => nil,
+          #logProtocolErrors => #verbose
+        },
+        #catalina => #{
+          #numAcceptors => 10,
+          #readTimeout => #infinity
+        }
+      }
+    self assert: (config http1 at: #maxRequests) equals: 10
+    self assert: (config http2 at: #maxHeaderBlockSize) equals: 1000
+    self assert: (config catalina at: #numAcceptors) equals: 10
+
   testAcceptsUpgradeOptions =>
     self assert: (BuccaneerConfig checkUpgradeOptions: #{}) isNil
     self

@@ -15,7 +15,15 @@ type ConfigOptions = Dictionary(Symbol, Object)
 /// - `#responseEncodings` (List of String, default `zstd` (OTP 28+), `gzip`, `x-gzip`, `deflate`) — the codings offered, in preference order; unsupported names are ignored.
 /// - `#deflateOptions` (Dictionary, default empty) — zlib settings for deflate: `#level`, `#windowBits`, `#memLevel`, `#strategy`.
 /// - `#zstdOptions` (Dictionary, default empty) — zstd compression parameters, passed to `zstd:context/2` (e.g. `#checksumFlag`).
-type HttpOptions = Dictionary(Symbol, Object)
+type HttpOptions = #{
+  ?#logProtocolErrors => #short | #verbose | False,
+  ?#logClientClosures => #short | #verbose | False,
+  ?#logExceptionsWithStatusCodes => Object,
+  ?#compress => Boolean,
+  ?#responseEncodings => List(String),
+  ?#deflateOptions => Dictionary(Symbol, Object),
+  ?#zstdOptions => Dictionary(Symbol, Object)
+}
 
 /// The `#http1` section: Bandit's HTTP/1 options, in camelCase.
 ///
@@ -28,7 +36,16 @@ type HttpOptions = Dictionary(Symbol, Object)
 /// - `#gcEveryNKeepaliveRequests` (Integer, default `5`) — garbage-collect every Nth keepalive request; non-Integers skip collection.
 /// - `#logUnknownMessages` (Boolean, default `false`) — log messages the connection does not understand.
 /// - `#clearProcessDict` (reserved) — accepted for Bandit parity; the process dictionary is always cleared between keepalive requests.
-type Http1Options = Dictionary(Symbol, Object)
+type Http1Options = #{
+  ?#enabled => Boolean,
+  ?#maxRequests => Integer,
+  ?#maxRequestLineLength => Integer,
+  ?#maxHeaderLength => Integer,
+  ?#maxHeaderCount => Integer,
+  ?#gcEveryNKeepaliveRequests => Object,
+  ?#logUnknownMessages => Boolean,
+  ?#clearProcessDict => Object
+}
 
 /// The `#http2` section: Bandit's HTTP/2 options, in camelCase.
 /// Accepted, validated and stored; the HTTP/2 engine reads them.
@@ -49,7 +66,15 @@ type Http1Options = Dictionary(Symbol, Object)
 ///   `#initialWindowSize`, `#maxFrameSize`, `#maxHeaderListSize`).
 /// - `#logStreamErrors` (`#short` default, `#verbose` or `false`) — how
 ///   stream errors are logged.
-type Http2Options = Dictionary(Symbol, Object)
+type Http2Options = #{
+  ?#enabled => Boolean,
+  ?#maxHeaderBlockSize => Integer,
+  ?#maxRequests => Integer,
+  ?#maxResetStreamRate => Tuple | Nil,
+  ?#sendfileChunkSize => Integer,
+  ?#defaultLocalSettings => Dictionary(Symbol, Object),
+  ?#logStreamErrors => #short | #verbose | False
+}
 
 /// The `#websocket` section: Bandit's WebSocket options, in camelCase.
 /// Values are type-checked when the server starts: Integers must be
@@ -81,7 +106,24 @@ type WebSocketOptions = #{
 /// transport conveniences folded in (`#port`, `#transport`). See
 /// `ServerConfig` for one bullet per key; unknown keys raise here, as
 /// `fromOptions:` raises there.
-type CatalinaOptions = Dictionary(Symbol, Object)
+type CatalinaOptions = #{
+  ?#port => Integer,
+  ?#transport => Object,
+  ?#transportOptions => Object,
+  ?#handler => Object,
+  ?#handlerOptions => Object,
+  ?#genServerOptions => Object,
+  ?#supervisorOptions => Object,
+  ?#numAcceptors => Integer,
+  ?#numListenSockets => Integer,
+  ?#numConnections => Integer | #infinity,
+  ?#maxConnectionsRetryCount => Integer,
+  ?#maxConnectionsRetryWait => Integer,
+  ?#readTimeout => Integer | #infinity,
+  ?#handshakeTimeout => Integer | #infinity,
+  ?#shutdownTimeout => Integer | #infinity,
+  ?#silentTerminateOnError => Boolean
+}
 
 /// URL schemes served.
 type Scheme = #http | #https
@@ -153,27 +195,28 @@ typed Value subclass: BuccaneerConfig
     handler := self checkHandler: options
     scheme := self checkScheme: options
     port := self parsePort: (options at: #port ifAbsent: [nil]) scheme: scheme
-    http := self
+    // Each section is an untyped map until validated: the shape is
+    // asserted once here, and readers use it without casts.
+    http :: HttpOptions := self
       section: options
       name: #http
       keys: self httpKeys
     self checkHttpLoggingOptions: http
     self checkCompressionOptions: http
-    http1 := self
+    http1 :: Http1Options := self
       section: options
       name: #http1
       keys: self http1Keys
-    http2 := self
+    http2 :: Http2Options := self
       section: options
       name: #http2
       keys: self http2Keys
-    // The one cast: the section is an untyped map until validated.
     websocket :: WebSocketOptions := self
       section: options
       name: #websocket
       keys: self websocketKeys
     self checkWebSocketOptions: websocket
-    catalina := self
+    catalina :: CatalinaOptions := self
       catalinaSection: options
       port: port
       scheme: scheme
@@ -422,7 +465,7 @@ typed Value subclass: BuccaneerConfig
       name: key asString
     dict
 
-  class catalinaSection: opts :: ConfigOptions port: port :: Integer scheme: scheme :: Scheme -> CatalinaOptions =>
+  class catalinaSection: opts :: ConfigOptions port: port :: Integer scheme: scheme :: Scheme -> ConfigOptions =>
     base := self
       section: opts
       name: #catalina

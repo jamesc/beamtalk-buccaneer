@@ -1,0 +1,9 @@
+// TEMPORARY probe for BT-4733; reverted before merge.
+typed Object subclass: ShapeProbe
+  class misspelt -> WebSocketOptions => #{#maxFramSize => 1}
+
+  class wrongType -> WebSocketOptions => #{#maxFrameSize => "big"}
+
+  class widen: o :: WebSocketOptions -> Integer => (self size: o)
+
+  class size: d :: Dictionary(Symbol, Object) -> Integer => d size

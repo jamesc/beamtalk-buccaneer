@@ -21,10 +21,12 @@ typed Object subclass: SocketHelpers
     address :: Tuple := peer value
     {sock isSecure, address at: 1}
 
-  /// Whether iodata holds no bytes (Bandit's iodata_empty?).
+  /// Whether iodata holds no bytes (Bandit's iodata_empty?). A Binary is
+  /// sized in bytes: a String body would answer `isEmpty` by counting its
+  /// graphemes, a walk of the whole body per response (BT-4751).
   class sealed iodataEmpty: data :: Object -> Boolean =>
     data match: [
-      b :: Binary -> b isEmpty;
+      b :: Binary -> (Erlang erlang byte_size: b) =:= 0;
       l :: List -> l allSatisfy: [:each :: Object |
         SocketHelpers iodataEmpty: each
       ];

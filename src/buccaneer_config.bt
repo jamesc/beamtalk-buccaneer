@@ -2,25 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// Option dictionaries: Symbol keys, values checked at each use site.
-type ConfigOptions = #{
-  ?#handler => Object,
-  ?#scheme => Object,
-  ?#port => Object,
-  ?#ip => Object,
-  ?#inet => Object,
-  ?#inet6 => Object,
-  ?#keyfile => Object,
-  ?#certfile => Object,
-  ?#otpApp => Object,
-  ?#cipherSuite => Object,
-  ?#displayHandler => Object,
-  ?#startupLog => Object,
-  ?#catalina => Object,
-  ?#http => Object,
-  ?#http1 => Object,
-  ?#http2 => Object,
-  ?#websocket => WebSocketOptions
-}
+type ConfigOptions = Dictionary(Symbol, Object)
 
 /// The `#http` section: Bandit's top-level HTTP options (logging and
 /// compression), in camelCase.
@@ -185,7 +167,8 @@ typed Value subclass: BuccaneerConfig
       section: options
       name: #http2
       keys: self http2Keys
-    websocket := self
+    // The one cast: the section is an untyped map until validated.
+    websocket :: WebSocketOptions := self
       section: options
       name: #websocket
       keys: self websocketKeys

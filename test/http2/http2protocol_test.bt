@@ -1243,3 +1243,52 @@ TestCase subclass: HTTP2ProtocolTest
     self assert: (head isKindOf: H2Headers) equals: true
     H2Client closeTls: sock
     self assert: (srv stop: 5000) isOk
+
+  // === Request-head validation in the stream process (BT-4476) ===
+  //
+  // The connection no longer validates the first HEADERS block; the stream
+  // process does and resets the stream itself. Each case must still end in
+  // RST_STREAM PROTOCOL_ERROR on that stream, and the HPACK table must stay
+  // in sync: the next request on the connection decodes and is answered.
+  assertBadHeadReset: headers :: List(Tuple) =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    bad := H2Client encode: headers table: (triple at: 2)
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 1
+        hbf: (bad at: 1)
+        endStream: true)
+    self assert: (H2Client recvRstTls: sock) equals: {1, 1}
+    good := H2Client encode: #({":method", "GET"}, {":scheme", "https"}, {":path", "/ok"}, {":authority", "x"}) table: (bad at: 2)
+    H2Client
+      sendFrameTls: sock
+      frame: (H2Client
+        headersFrame: 3
+        hbf: (good at: 1)
+        endStream: true)
+    second := H2Client recvHeadersTls: sock dec: (triple at: 3)
+    self assert: (second at: 1) equals: 3
+    self assert: (self statusOf: (second at: 3)) equals: "200"
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  testBadPseudoHeaderHeadResetsFromStream =>
+    self assertBadHeadReset: #({":method", "GET"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {":custom", "y"})
+
+  testUppercaseHeaderHeadResetsFromStream =>
+    self assertBadHeadReset: #({":method", "GET"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {"X-Upper", "y"})
+
+  testBadTeHeadResetsFromStream =>
+    self assertBadHeadReset: #({":method", "GET"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {"te", "gzip"})
+
+  testConnectionHeaderHeadResetsFromStream =>
+    self assertBadHeadReset: #({":method", "GET"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {"connection", "close"})
+
+  testContentLengthDisagreementHeadResetsFromStream =>
+    self assertBadHeadReset: #({":method", "GET"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {"content-length", "1"}, {"content-length", "2"})
+
+  testEndStreamWithContentLengthHeadResetsFromStream =>
+    self assertBadHeadReset: #({":method", "POST"}, {":scheme", "https"}, {":path", "/x"}, {":authority", "x"}, {"content-length", "5"})

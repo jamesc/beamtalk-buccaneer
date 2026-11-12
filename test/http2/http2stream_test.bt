@@ -117,3 +117,16 @@ TestCase subclass: HTTP2StreamTest
       s checkRequestHeaders: headers
     ] on: H2StreamError do: [:e :: H2StreamError | e reason]
     self assert: (caught at: 2) equals: 7
+
+  testCheckHeadEndStreamWithBytesRemaining =>
+    headers := #({":method", "POST"}, {":scheme", "https"}, {":path", "/"}, {"content-length", "3"})
+    caught := [
+      self stream checkHead: headers endStream: true
+    ] on: H2StreamError do: [:e :: H2StreamError | e message]
+    self assert: (caught includesSubstring: "END_STREAM with bytes remaining")
+
+  testCheckHeadEndStreamWithZeroLengthIsValid =>
+    headers := #({":method", "POST"}, {":scheme", "https"}, {":path", "/"}, {"content-length", "0"})
+    {method, _, _, length} := self stream checkHead: headers endStream: true
+    self assert: method equals: "POST"
+    self assert: length equals: 0

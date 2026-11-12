@@ -341,20 +341,12 @@ sealed typed Value subclass: HTTP2Stream
     {headers, endStream} := head isNil ifTrue: [
       self conn h2ReadHeaders: self streamId
     ] ifFalse: [head]
-    {method, target, cooked, contentLength} := self checkRequestHeaders: headers
-    endStream
-      ifTrue: [
-        contentLength match: [
-          n :: Integer -> n =:= 0
-            ifFalse: [
-              H2StreamError
-                signal: "Received END_STREAM with bytes remaining"
-                code: HTTP2Errors protocolError
-                streamId: self streamId
-            ];
-          _ -> nil
-        ]
-      ]
+    // The connection no longer validates the head (BT-4476): an invalid
+    // one resets the stream from here, as a broken body does in readData:.
+    checked := [
+      self checkHead: headers endStream: endStream
+    ] on: H2StreamError do: [:e :: H2StreamError | self failStream: e]
+    {method, target, cooked, contentLength} := checked
     next := ((self withBytesRemaining: contentLength) withState: #open) withRequestHead: nil
     {method, target, cooked, (next withRequestEnded: endStream)}
 
@@ -370,23 +362,47 @@ sealed typed Value subclass: HTTP2Stream
     // A body that breaks its framing dies here in the stream process,
     // not in serve:: RST it like a frame-path stream error, then fail
     // the read so the handler sees a closed body.
-    checked := [self checkData: data ended: ended]
-      on: H2StreamError
-      do: [:e :: H2StreamError |
-        // Exception-subclass methods do not dispatch on instances (as in
-        // HTTP2Protocol streamCode:), so match the {code, sid} reason.
-        code := e reason match: [
-          {c, _} -> c match: [
-            n :: Integer -> n;
-            _ -> HTTP2Errors protocolError
-          ];
-          _ -> HTTP2Errors protocolError
-        ]
-        self conn h2ResetStream: self streamId code: code
-        TransportError signal: "stream reset"
-      ]
+    checked := [
+      self checkData: data ended: ended
+    ] on: H2StreamError do: [:e :: H2StreamError | self failStream: e]
     status := (more or: [ended not]) ifTrue: [#more] ifFalse: [#ok]
     {status, data, (checked withRequestEnded: status =:= #ok)}
+
+  /// The full request-head validation: answers {method, target, headers,
+  /// contentLength}. Raises H2StreamError.
+  checkHead: headers :: List(Tuple) endStream: endStream :: Boolean -> Tuple(String, Tuple, List(Tuple), Integer | Nil) =>
+    checked := self checkRequestHeaders: headers
+    contentLength := checked at: 4
+    endStream
+      ifTrue: [
+        contentLength match: [
+          n :: Integer -> n =:= 0
+            ifFalse: [
+              H2StreamError
+                signal: "Received END_STREAM with bytes remaining"
+                code: HTTP2Errors protocolError
+                streamId: self streamId
+            ];
+          _ -> nil
+        ]
+      ]
+    checked
+
+  /// RST_STREAM a stream whose request broke the protocol, then fail the
+  /// caller's read so the handler sees a closed stream. The connection
+  /// forgets the stream, so its DOWN sends nothing more.
+  failStream: e :: H2StreamError -> Never =>
+    // Exception-subclass methods do not dispatch on instances (as in
+    // HTTP2Protocol streamCode:), so match the {code, sid} reason.
+    code := e reason match: [
+      {c, _} -> c match: [
+        n :: Integer -> n;
+        _ -> HTTP2Errors protocolError
+      ];
+      _ -> HTTP2Errors protocolError
+    ]
+    self conn h2ResetStream: self streamId code: code
+    TransportError signal: "stream reset"
 
   /// Account a body part against the content length.
   checkData: data :: Binary ended: ended :: Boolean -> HTTP2Stream =>

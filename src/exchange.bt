@@ -8,7 +8,14 @@
 /// the owner first. Phase 1 covers the request, readBody, readAll: and
 /// sendResp:; chunked responses, inform:, sendFile: and the 100-continue
 /// come in Phase 3, upgrade in Phase 4.
-type WebSocketUpgradeOptions = Dictionary(Symbol, Object)
+type WebSocketUpgradeOptions = #{
+  ?#timeout => Integer | Nil,
+  ?#compress => Boolean,
+  ?#maxInflateRatio => Integer,
+  ?#level => Integer | #none | #default | #best_speed | #best_compression,
+  ?#memLevel => Integer,
+  ?#strategy => #default | #filtered | #huffman_only | #rle
+}
 
 sealed typed Value subclass: Exchange
   // Always set by open:; nilable only because a Value field needs a default.

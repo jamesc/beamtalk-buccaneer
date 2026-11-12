@@ -33,3 +33,5 @@ TestCase subclass: SocketHelpersTest
     self deny: (SocketHelpers iodataEmpty: "x")
     self deny: (SocketHelpers iodataEmpty: #("x"))
     self deny: (SocketHelpers iodataEmpty: 65)
+    self assert: (SocketHelpers iodataEmpty: (Binary fromBytes: #()))
+    self deny: (SocketHelpers iodataEmpty: (Binary fromBytes: #(255, 254)))

@@ -282,6 +282,64 @@ busy-waiting (`+sbwt none`, a diagnostic run) raised every server and left
 B/Bandit at 0.91. beamtalk-http's adapter (BT-4466) adds nothing measurable
 on this row: B/standalone is 0.94-1.03.
 
+## Local check of BT-4476 and BT-4500 (BT-4751)
+
+Run 2026-11-12, 21:02-21:25 UTC, on an Apple M5 Max (18 cores, 64 GiB,
+macOS 26.6), OTP 28 with 18 schedulers, beamtalk 0.4.0 at edge e3ff5353e,
+Bandit 1.12.5. 5 rounds of 5 s per measurement. The machine was a
+desktop in use: the 1-minute load average was 4-19 across the rounds,
+most of it the bench's own VMs. This is a different regime from the
+4-core container above: on 18 cores the GET rows are not CPU-bound, so
+their ratios sit near 1 and say little; `h2_get_10x10` and
+`post_echo_64KiB_c10` are the informative rows.
+
+**HTTP/2 (BT-4476, PR #36).** Before is f1f7079, after is 5db844d.
+`just bench-profile --impl buccaneer --row h2_get_10x10` and `just bench
+--only h2_get_10x10 --impls buccaneer,bandit`:
+
+| | Before | After |
+|---|---:|---:|
+| Connection reductions per stream | 5,018 | 4,150 (−17%) |
+| Sequential µs per stream | 87.3 | 80.7 |
+| Buccaneer req/s, median (spread) | 211,883 (210,564-213,651) | 227,422 (224,018-229,919) |
+| Bandit req/s, median | 184,184 | 183,606 |
+| Buccaneer ÷ Bandit | 1.15 | 1.24 |
+| Buccaneer p99 µs (spread) | 660 (654-660) | 667 (641-674) |
+| Buccaneer p99.9 µs (spread) | 751 (744-759) | 806 (744-899) |
+
+p99 is unchanged within the spread; p99.9 is noisier after (one round at
+899 µs). The "before" figure is already under 5,000 reductions, not the
+~7,900 the issue measured on an older compiler.
+
+**beamtalk-http adapter (BT-4500, beamtalk-http PR #36).** Adapter is
+`http_buccaneer` ÷ `buccaneer` req/s. Before is beamtalk-http 37c0d02,
+after is 562622c; "+ fix" is 562622c on this branch, where
+`SocketHelpers iodataEmpty:` sizes a Binary in bytes:
+
+| Row | Before | After | After + fix |
+|---|---:|---:|---:|
+| `get_c10` | 0.97 | 0.98 | 0.97 |
+| `get_c100` | 1.00 | 1.00 | 1.00 |
+| `post_echo_64KiB_c10` | 0.68 (37,848 req/s) | 0.69 (38,769) | 0.76 (42,752) |
+
+The fix: String subclasses Binary, so `iodataEmpty:`'s `b isEmpty` on the
+adapter's String body ran `String>>isEmpty`, which is `self length =:= 0`,
+a grapheme walk of the whole 64 KiB body per response. It was 68% of the
+adapter's profiled time on the echo row. Standalone sends a Binary and
+never paid it.
+
+What the adapter still adds on the echo row, from `just bench-profile
+--row post_echo_64KiB_c10 --top 200` on both servers, per request
+(normalised by `sendResp:headers:body:` calls, one per request):
+
+| Δ µs/req | Δ calls | Function | Candidate |
+|---:|---:|---|---|
+| +52 | +2 | `unicode:characters_to_binary/2` | `HTTPRequest body`'s `data asString` (UTF-8 check of the body) |
+| +27 | +10 | `beamtalk_erlang_proxy:apply_with_coercion/6` | FFI in the adapter |
+| +18 | +1 | `Exchange readBody:` | the post-handler drain re-reads an already-read body |
+| +13 | +13 | `ExchangeState dispatch/3` | the drain and the adapter's exchange reads |
+| ~+10 each | +7 | `send_map`, `tagged_map_dispatch`, `tagged_class_dispatch`, `class_derived_cache:generation` | `HTTPRequest`/`HTTPResponse` constructor dispatch (BT-4473) |
+
 ## Bugs found and fixed in this PR
 
 The stress suite and the profile found these. Each one is small and fixed

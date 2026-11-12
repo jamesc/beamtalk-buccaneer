@@ -33,7 +33,7 @@ TestCase subclass: BuccaneerTelemetryTest
 
   testStartStop =>
     span := self startSpan
-    span stopWith: #{#req_body_bytes => 5} metadata: #{#extra => 1}
+    _ := span stopWith: #{#req_body_bytes => 5} metadata: #{#extra => 1}
     stop := self stopNamed: #stop
     measurements := stop at: 2
     metadata := stop at: 3
@@ -48,7 +48,7 @@ TestCase subclass: BuccaneerTelemetryTest
 
   testExceptionMapsErrorToExit =>
     span := self startSpan
-    span
+    _ := span
       exceptionKind: #error
       reason: "boom"
       stacktrace: #()
@@ -60,7 +60,7 @@ TestCase subclass: BuccaneerTelemetryTest
 
   testExceptionKeepsThrow =>
     span := self startSpan
-    span
+    _ := span
       exceptionKind: #throw
       reason: "x"
       stacktrace: #()

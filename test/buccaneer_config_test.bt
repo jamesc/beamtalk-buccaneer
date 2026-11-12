@@ -397,10 +397,7 @@ TestCase subclass: BuccaneerConfigTest
           #primitiveOpsModule => nil,
           #logProtocolErrors => #verbose
         },
-        #catalina => #{
-          #numAcceptors => 10,
-          #readTimeout => #infinity
-        }
+        #catalina => #{#numAcceptors => 10, #readTimeout => #infinity}
       }
     self assert: (config http1 at: #maxRequests) equals: 10
     self assert: (config http2 at: #maxHeaderBlockSize) equals: 1000

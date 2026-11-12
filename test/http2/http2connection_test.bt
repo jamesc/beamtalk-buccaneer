@@ -18,10 +18,11 @@ TestCase subclass: HTTP2ConnectionTest
     conn := HTTP2Connection default
     limit := HTTP2Connection closedRecordLimit
     sid := 1
-    (limit * 3) timesRepeat: [
-      conn := (conn notePeerClosed: sid) noteResetByUs: sid
-      sid := sid + 2
-    ]
+    (limit * 3)
+      timesRepeat: [
+        conn := (conn notePeerClosed: sid) noteResetByUs: sid
+        sid := sid + 2
+      ]
     self assert: conn peerClosed size equals: limit
     self assert: conn resetByUs size equals: limit
     newest := sid - 2

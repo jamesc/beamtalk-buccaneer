@@ -407,7 +407,9 @@ sealed typed Value subclass: HTTP2Protocol
     pid := conn streams getPid: sid
     // Both sides ended: the peer closed it, so later DATA and HEADERS on
     // it are errors (see HTTP2Connection notePeerClosed:).
-    noted := (conn isComplete: sid) ifTrue: [conn notePeerClosed: sid] ifFalse: [conn]
+    noted := (conn isComplete: sid) ifTrue: [
+      conn notePeerClosed: sid
+    ] ifFalse: [conn]
     c := noted withStreamForgotten: sid
     pid match: [
       p :: Pid -> c withStreams: (c streams withDeleted: p);
@@ -959,8 +961,9 @@ sealed typed Value subclass: HTTP2Protocol
       ifTrue: [
         H2ConnectionError signal: "Received HEADERS on a closed stream (RFC9113§5.1)" code: HTTP2Errors streamClosed
       ]
-    (self connection isResetByUs: sid)
-      ifTrue: [^{Binary fromBytes: #(), #(), false, self}]
+    (self connection isResetByUs: sid) ifTrue: [
+      ^{Binary fromBytes: #(), #(), false, self}
+    ]
     H2ConnectionError signal: "Received stream identifier lower than the previous one (RFC9113§5.1.1)" code: HTTP2Errors protocolError
 
   routeDecoded: sid :: Integer headers: headers :: List(Tuple) conn: conn :: HTTP2Connection frame: frame :: H2Headers known: known :: Symbol | Pid -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>

@@ -979,9 +979,7 @@ TestCase subclass: HTTP2ProtocolTest
     enc2
 
   sendDataOn: sock sid: s =>
-    H2Client
-      sendFrameTls: sock
-      frame: (((H2Data new withStreamId: s) withEndStream: true) withData: (Binary fromBytes: #(116, 101, 115, 116)))
+    H2Client sendFrameTls: sock frame: (((H2Data new withStreamId: s) withEndStream: true) withData: (Binary fromBytes: #(116, 101, 115, 116)))
     nil
 
   sendGetAgain: sock sid: s enc: enc =>

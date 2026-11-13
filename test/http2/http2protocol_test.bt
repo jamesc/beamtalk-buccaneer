@@ -1096,6 +1096,8 @@ TestCase subclass: HTTP2ProtocolTest
         endStream: true)
     self assert: (H2Client recvRstTls: sock) equals: {1, 1}
     self sendDataOn: sock sid: 1
+    // The dropped DATA still counts against the connection window.
+    self assert: ((H2Client recvWindowUpdateTls: sock) at: 1) equals: 0
     H2Client
       sendWindowUpdateTls: sock
       sid: 1

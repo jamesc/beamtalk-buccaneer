@@ -284,32 +284,31 @@ sealed typed Value subclass: HTTP2Protocol
           H2ConnectionError signal: "Received DATA in idle state" code: HTTP2Errors protocolError
         ];
       #invalid -> H2ConnectionError signal: "Received invalid stream identifier" code: HTTP2Errors protocolError;
-      #closed -> self dataOnClosed: sid;
+      #closed -> self dataOnClosed: frame;
       _ -> self dataForOpen: frame
     ]
 
   /// DATA on a closed stream: a connection error STREAM_CLOSED when the
   /// peer closed it (RFC 9113 §5.1, §6.1); a frame racing a reset we sent
-  /// is dropped.
-  dataOnClosed: sid :: Integer -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+  /// is dropped, but still charged to the connection receive window
+  /// (RFC 9113 §5.1); any other id was never opened (or aged out of the
+  /// bounded closed-stream records, as for HEADERS): PROTOCOL_ERROR.
+  dataOnClosed: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
     (self connection isPeerClosed: sid)
       ifTrue: [
         H2ConnectionError signal: "Received DATA on a closed stream (RFC9113§5.1)" code: HTTP2Errors streamClosed
       ]
-    (self connection isResetByUs: sid) ifTrue: [
-      ^{Binary fromBytes: #(), #(), false, self}
-    ]
+    (self connection isResetByUs: sid) ifTrue: [^self dropCharged: frame]
     H2ConnectionError signal: "Received DATA on a stream that was never opened (RFC9113§5.1)" code: HTTP2Errors protocolError
 
   /// The stream collection's verdict for a frame's stream id.
   streamState: sid :: Integer -> Symbol | Pid =>
     self connection streams getPid: sid
 
-  /// DATA on a half-closed (remote) stream: the frame still counts against
-  /// the connection receive window (RFC 9113 §6.9), so charge it and hand
-  /// the credit back before the STREAM_CLOSED stream error resets the stream.
-  dataOnHalfClosed: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
-    sid := frame streamId
+  /// Charge a rejected DATA frame to the connection receive window:
+  /// answers {WINDOW_UPDATE bytes (possibly empty), the updated protocol}.
+  chargeConnection: frame :: H2Data -> Tuple(Binary, HTTP2Protocol) =>
     conn := self connection
     (frame data size > conn recvWindowSize)
       ifTrue: [
@@ -321,14 +320,25 @@ sealed typed Value subclass: HTTP2Protocol
         H2Frame serialize: ((H2WindowUpdate new withStreamId: 0) withSizeIncrement: connIncrement) maxFrameSize: self maxSendFrameSize
       ]
       ifFalse: [Binary fromBytes: #()]
+    {credit, self withConnection: charged}
+
+  /// Drop a DATA frame that raced a reset we sent, keeping the window in sync.
+  dropCharged: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    {credit, proto} := self chargeConnection: frame
+    {credit, #(), false, proto}
+
+  /// DATA on a half-closed (remote) stream: the frame still counts against
+  /// the connection receive window (RFC 9113 §6.9), so charge it and hand
+  /// the credit back before the STREAM_CLOSED stream error resets the stream.
+  dataOnHalfClosed: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    {credit, charged} := self chargeConnection: frame
     {rst, spawns, close, proto} := [
       H2StreamError
         signal: "Received DATA on a half-closed (remote) stream (RFC9113§5.1)"
         code: HTTP2Errors streamClosed
         streamId: sid
-    ] on: H2StreamError do: [:e :: H2StreamError |
-      (self withConnection: charged) streamFailed: e
-    ]
+    ] on: H2StreamError do: [:e :: H2StreamError | charged streamFailed: e]
     {credit concat: rst, spawns, close, proto}
 
   dataForOpen: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>

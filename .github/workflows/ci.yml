@@ -164,12 +164,11 @@ jobs:
         run: just h2spec
 
   # h2spec built from master (a pinned commit), which has cases the 2.6.0
-  # docker image above does not run (BT-4478). Non-blocking until green;
-  # then make it blocking and drop the docker job. A local h2spec binary
+  # docker image above does not run (BT-4478). Blocking; the docker job
+  # above can be dropped once this covers it. A local h2spec binary
   # on PATH is preferred by test/http2/h2spec_test.bt over docker.
   h2spec-master:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

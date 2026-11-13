@@ -296,24 +296,47 @@ sealed typed Value subclass: HTTP2Protocol
       ifTrue: [
         H2ConnectionError signal: "Received DATA on a closed stream (RFC9113§5.1)" code: HTTP2Errors streamClosed
       ]
-    {Binary fromBytes: #(), #(), false, self}
+    (self connection isResetByUs: sid) ifTrue: [
+      ^{Binary fromBytes: #(), #(), false, self}
+    ]
+    H2ConnectionError signal: "Received DATA on a stream that was never opened (RFC9113§5.1)" code: HTTP2Errors protocolError
 
   /// The stream collection's verdict for a frame's stream id.
   streamState: sid :: Integer -> Symbol | Pid =>
     self connection streams getPid: sid
+
+  /// DATA on a half-closed (remote) stream: the frame still counts against
+  /// the connection receive window (RFC 9113 §6.9), so charge it and hand
+  /// the credit back before the STREAM_CLOSED stream error resets the stream.
+  dataOnHalfClosed: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
+    sid := frame streamId
+    conn := self connection
+    (frame data size > conn recvWindowSize)
+      ifTrue: [
+        H2ConnectionError signal: "Received DATA exceeding connection window" code: HTTP2Errors flowControlError
+      ]
+    {charged, connIncrement} := conn withConnDataReceived: frame data size
+    credit := connIncrement > 0
+      ifTrue: [
+        H2Frame serialize: ((H2WindowUpdate new withStreamId: 0) withSizeIncrement: connIncrement) maxFrameSize: self maxSendFrameSize
+      ]
+      ifFalse: [Binary fromBytes: #()]
+    {rst, spawns, close, proto} := [
+      H2StreamError
+        signal: "Received DATA on a half-closed (remote) stream (RFC9113§5.1)"
+        code: HTTP2Errors streamClosed
+        streamId: sid
+    ] on: H2StreamError do: [:e :: H2StreamError |
+      (self withConnection: charged) streamFailed: e
+    ]
+    {credit concat: rst, spawns, close, proto}
 
   dataForOpen: frame :: H2Data -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
     sid := frame streamId
     data := frame data
     conn := self connection
     // Half-closed (remote): the request already ended (RFC 9113 §5.1).
-    (conn reqEndedFor: sid)
-      ifTrue: [
-        H2StreamError
-          signal: "Received DATA on a half-closed (remote) stream (RFC9113§5.1)"
-          code: HTTP2Errors streamClosed
-          streamId: sid
-      ]
+    (conn reqEndedFor: sid) ifTrue: [^self dataOnHalfClosed: frame]
     (data size > conn recvWindowSize)
       ifTrue: [
         H2ConnectionError signal: "Received DATA exceeding connection window" code: HTTP2Errors flowControlError

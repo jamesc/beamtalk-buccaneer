@@ -975,11 +975,15 @@ TestCase subclass: HTTP2ProtocolTest
     ]
 
   /// Read frames until a GOAWAY; answers its error code.
-  awaitGoaway: sock =>
+  awaitGoaway: sock => self awaitGoaway: sock left: 20
+
+  /// Bounded: a missing GOAWAY fails the test instead of hanging.
+  awaitGoaway: sock left: n :: Integer =>
+    n =:= 0 ifTrue: [^Error signal: "no GOAWAY received"]
     frame := H2Client recvFrameTls: sock
     frame match: [
       g :: H2Goaway -> g errorCode;
-      _ -> self awaitGoaway: sock
+      _ -> self awaitGoaway: sock left: n - 1
     ]
 
   /// GET on sid and read the whole response; answers the encoder table.
@@ -1119,6 +1123,40 @@ TestCase subclass: HTTP2ProtocolTest
     self assert: (H2Client recvRstTls: sock) equals: {1, 5}
     self assert: (H2Client connectionAliveTls: sock) equals: true
     H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // The rejected DATA still counts against the connection receive window.
+  testDataOnHalfClosedRemoteChargesConnectionWindow =>
+    srv := self startTls: self slowHandler
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    self
+      sendGet: sock
+      sid: 1
+      path: "/a"
+      enc: (triple at: 2)
+    self sendDataOn: sock sid: 1
+    update := H2Client recvWindowUpdateTls: sock
+    self assert: (update at: 1) equals: 0
+    self assert: (update at: 2) > 0 equals: true
+    self assert: (H2Client recvRstTls: sock) equals: {1, 5}
+    H2Client closeTls: sock
+    self assert: (srv stop: 5000) isOk
+
+  // RFC 9113 §5.1: DATA on an id below a later stream's that never opened
+  // is a connection error PROTOCOL_ERROR.
+  testDataOnNeverOpenedLowerStreamIsConnectionError =>
+    srv := self startTls: self hello
+    triple := self openTls: (self portOf: srv)
+    sock := triple at: 1
+    self
+      sendGet: sock
+      sid: 5
+      path: "/a"
+      enc: (triple at: 2)
+    self sendDataOn: sock sid: 3
+    self assert: (self awaitGoaway: sock) equals: 1
+    H2Client expectClosedTls: sock
     self assert: (srv stop: 5000) isOk
 
   testHeadersOnHalfClosedRemoteIsStreamError =>

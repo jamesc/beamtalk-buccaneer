@@ -241,7 +241,7 @@ sealed typed Value subclass: Compression
     size := (Erlang erlang) iolist_size: chunk
     encoded := self method match: [
       #deflate -> (Erlang zlib)
-        deflate: self libContext
+        deflate: self zlibStream
         with: chunk
         with: #sync;
       #gzip -> (Erlang zlib) gzip: chunk;
@@ -249,6 +249,13 @@ sealed typed Value subclass: Compression
       _ -> chunk
     ]
     {encoded, (self withBytesIn: self bytesIn + size)}
+
+  /// The zlib stream held by a deflate context.
+  zlibStream -> ZlibStream =>
+    self libContext match: [
+      z :: ZlibStream -> z;
+      _ -> Error signal: "not a zlib stream"
+    ]
 
   zstdCompress: chunk :: Object -> Object =>
     (Erlang zstd) compress: chunk with: self libContext
@@ -264,11 +271,11 @@ sealed typed Value subclass: Compression
 
   closeDeflate -> Object =>
     last := (Erlang zlib)
-      deflate: self libContext
+      deflate: self zlibStream
       with: #()
       with: #finish
-    (Erlang zlib) deflateEnd: self libContext
-    (Erlang zlib) close: self libContext
+    (Erlang zlib) deflateEnd: self zlibStream
+    (Erlang zlib) close: self zlibStream
     last
 
   closeZstd -> Object =>

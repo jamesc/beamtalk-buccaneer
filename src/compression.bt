@@ -23,7 +23,7 @@ sealed typed Value subclass: Compression
   /// Uncompressed bytes seen so far (Bandit's bytes_in).
   field: bytesIn :: Integer = 0
   /// The zlib stream (deflate) or zstd context; nil otherwise.
-  field: libContext :: Object = nil
+  field: libContext :: Dynamic = nil
 
   /// The identity context: bodies pass through unchanged.
   class sealed identity -> Compression => Compression new
@@ -241,7 +241,7 @@ sealed typed Value subclass: Compression
     size := (Erlang erlang) iolist_size: chunk
     encoded := self method match: [
       #deflate -> (Erlang zlib)
-        deflate: self zlibStream
+        deflate: self libContext
         with: chunk
         with: #sync;
       #gzip -> (Erlang zlib) gzip: chunk;
@@ -249,13 +249,6 @@ sealed typed Value subclass: Compression
       _ -> chunk
     ]
     {encoded, (self withBytesIn: self bytesIn + size)}
-
-  /// The zlib stream held by a deflate context.
-  zlibStream -> ZlibStream =>
-    self libContext match: [
-      z :: ZlibStream -> z;
-      _ -> Error signal: "not a zlib stream"
-    ]
 
   zstdCompress: chunk :: Object -> Object =>
     (Erlang zstd) compress: chunk with: self libContext
@@ -271,11 +264,11 @@ sealed typed Value subclass: Compression
 
   closeDeflate -> Object =>
     last := (Erlang zlib)
-      deflate: self zlibStream
+      deflate: self libContext
       with: #()
       with: #finish
-    (Erlang zlib) deflateEnd: self zlibStream
-    (Erlang zlib) close: self zlibStream
+    (Erlang zlib) deflateEnd: self libContext
+    (Erlang zlib) close: self libContext
     last
 
   closeZstd -> Object =>

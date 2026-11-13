@@ -15,8 +15,8 @@ sealed typed Value subclass: PermessageDeflate
   field: clientNoContextTakeover :: Boolean = false
   field: serverMaxWindowBits :: Integer = 15
   field: clientMaxWindowBits :: Integer = 15
-  field: inflateStream :: ZlibStream | Nil = nil
-  field: deflateStream :: ZlibStream | Nil = nil
+  field: inflateStream :: Dynamic = nil
+  field: deflateStream :: Dynamic = nil
   field: maxInflateRatio :: Integer = 25
 
   /// The offer parameter names, as sent on the wire.
@@ -208,7 +208,7 @@ sealed typed Value subclass: PermessageDeflate
       tryDo: [
         self
           doInflate: full
-          stream: deflate inflateZ
+          stream: deflate inflateStream
           budget: data size * deflate maxInflateRatio
       ]
     outcome isError
@@ -221,7 +221,7 @@ sealed typed Value subclass: PermessageDeflate
       ]
     inflated := Binary fromIolist: outcome value
     deflate clientNoContextTakeover ifTrue: [
-      (Erlang zlib) inflateReset: deflate inflateZ
+      (Erlang zlib) inflateReset: deflate inflateStream
     ]
     Result ok: inflated
 
@@ -262,7 +262,7 @@ sealed typed Value subclass: PermessageDeflate
     outcome := Result
       tryDo: [
         (Erlang zlib)
-          deflate: deflate deflateZ
+          deflate: deflate deflateStream
           with: data
           with: #sync
       ]
@@ -273,7 +273,7 @@ sealed typed Value subclass: PermessageDeflate
       (full part: (size - 4) size: 4) =:= (Binary fromBytes: #(0, 0, 255, 255))
     ]) ifTrue: [full part: 0 size: size - 4] ifFalse: [full]
     deflate serverNoContextTakeover ifTrue: [
-      (Erlang zlib) deflateReset: deflate deflateZ
+      (Erlang zlib) deflateReset: deflate deflateStream
     ]
     Result ok: stripped
 
@@ -283,20 +283,6 @@ sealed typed Value subclass: PermessageDeflate
   /// - `deflate` (PermessageDeflate | Nil) — the context, or nil.
   class sealed close: deflate :: PermessageDeflate | Nil -> Nil =>
     deflate isNil ifTrue: [^nil]
-    (Erlang zlib) close: deflate inflateZ
-    (Erlang zlib) close: deflate deflateZ
+    (Erlang zlib) close: deflate inflateStream
+    (Erlang zlib) close: deflate deflateStream
     nil
-
-  /// The open inflate stream; raises when none was opened.
-  inflateZ -> ZlibStream =>
-    self inflateStream match: [
-      z :: ZlibStream -> z;
-      _ -> Error signal: "no inflate stream"
-    ]
-
-  /// The open deflate stream; raises when none was opened.
-  deflateZ -> ZlibStream =>
-    self deflateStream match: [
-      z :: ZlibStream -> z;
-      _ -> Error signal: "no deflate stream"
-    ]

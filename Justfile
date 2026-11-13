@@ -74,6 +74,11 @@ lint:
     beamtalk lint src
     beamtalk lint test
 
+# Lint the bench apps after staging their path deps (needs the toolchain
+# bench/run.sh needs); fails on discarded updates. Not part of `lint`.
+lint-bench:
+    bench/run.sh lint_bench
+
 # Remove build artifacts
 clean:
     rm -rf _build

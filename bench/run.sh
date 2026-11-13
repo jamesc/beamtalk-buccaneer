@@ -42,6 +42,19 @@ fi
 sed -i.orig "s|^buccaneer = .*|buccaneer = { path = \"$root\" }|" "$http/beamtalk.toml"
 
 (cd "$root/bench/http_node" && beamtalk build >/dev/null)
+
+# `just lint-bench`: lint the staged bench apps (their path deps exist only
+# now) and fail on discarded updates.
+if [ "$main" = lint_bench ]; then
+  status=0
+  for app in "$root"/bench/*_node; do
+    out="$(cd "$app" && beamtalk lint 2>&1)" || true
+    if grep -qiE 'discarded_?update' <<<"$out"; then
+      echo "$out"; echo "discarded update in $app" >&2; status=1
+    fi
+  done
+  exit $status
+fi
 (cd "$root/bench/bandit" \
   && MIX_ENV=prod mix local.hex --force --if-missing >/dev/null \
   && MIX_ENV=prod mix deps.get >/dev/null \

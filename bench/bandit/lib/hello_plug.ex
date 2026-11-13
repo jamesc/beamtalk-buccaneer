@@ -17,7 +17,7 @@ defmodule BanditNode.HelloPlug do
   def init(opts), do: opts
 
   @impl Plug
-  def call(%Plug.Conn{request_path: "/echo"} = conn, _opts) do
+  def call(%Plug.Conn{request_path: path} = conn, _opts) when path in ["/echo", "/echo_raw"] do
     {:ok, body, conn} = Plug.Conn.read_body(conn, length: 8_000_000)
 
     conn

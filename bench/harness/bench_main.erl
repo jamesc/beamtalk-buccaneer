@@ -69,6 +69,8 @@ rows(full) ->
     [{"get_c" ++ integer_to_list(C), http, #{conns => C}, gate} || C <- [1, 10, 100, 1000]]
     ++ [{"post_echo_64KiB_c10", http, #{conns => 10, method => <<"POST">>, path => <<"/echo">>,
                                         body => binary:copy(<<"p">>, 65536), expect => 65536}, gate},
+        {"post_echo_raw_64KiB_c10", http, #{conns => 10, method => <<"POST">>, path => <<"/echo_raw">>,
+                                            body => binary:copy(<<"p">>, 65536), expect => 65536}, context},
         {"chunked_1MiB_c10", http, #{conns => 10, path => <<"/chunked">>, expect => 1048576}, gate},
         %% Like for like: sendfile against Bandit's sendfile (BT-4468).
         {"file_1MiB_c10", http, #{conns => 10, path => <<"/file">>, expect => 1048576}, {gate, bandit}},
@@ -82,6 +84,8 @@ rows(smoke) ->
     [{"get_c10", http, #{conns => 10}, gate},
      {"post_echo_64KiB_c10", http, #{conns => 10, method => <<"POST">>, path => <<"/echo">>,
                                      body => binary:copy(<<"p">>, 65536), expect => 65536}, gate},
+     {"post_echo_raw_64KiB_c10", http, #{conns => 10, method => <<"POST">>, path => <<"/echo_raw">>,
+                                         body => binary:copy(<<"p">>, 65536), expect => 65536}, context},
      {"chunked_1MiB_c10", http, #{conns => 10, path => <<"/chunked">>, expect => 1048576}, gate},
      {"churn_close_w8", churn, #{workers => 8}, gate},
      {"tls_get_c10", http, #{conns => 10, tls => true}, gate},

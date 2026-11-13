@@ -26,7 +26,7 @@
 init(Req, State) ->
     route(cowboy_req:path(Req), Req, State).
 
-route(<<"/echo">>, Req0, State) ->
+route(P, Req0, State) when P =:= <<"/echo">>; P =:= <<"/echo_raw">> ->
     {Body, Req1} = read_body(Req0, []),
     {ok, octets(Body, Req1), State};
 route(<<"/chunked">>, Req0, State) ->

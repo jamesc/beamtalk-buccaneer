@@ -12,7 +12,9 @@
 ///   handler serving the same routes (the adapter's cost is the
 ///   difference).
 ///
-/// Routes: `/` → `hello world`; `POST /echo` → the request body;
+/// Routes: `/` → `hello world`; `POST /echo` → the request body (a
+/// String on beamtalk-http: UTF-8 validated); `POST /echo_raw` → the raw
+/// body bytes (`bodyBytes`, no validation);
 /// `/chunked` → 1 MiB as 16 chunks of 64 KiB; `/file` → a 1 MiB file;
 /// `/ws` → a WebSocket echo; `/slow` → `hello world` after a second
 /// (the lifecycle tests' in-flight request).
@@ -37,6 +39,11 @@ sealed typed Object subclass: HttpNode
           #status => 200,
           #headers => octets,
           #body => req body
+        };
+        "/echo_raw" -> HTTPResponse new: #{
+          #status => 200,
+          #headers => octets,
+          #body => req bodyBytes
         };
         "/chunked" -> HTTPResponse
           streamWith: [:w :: HttpChunkWriter |
@@ -109,6 +116,10 @@ sealed typed Object subclass: HttpNode
     [:ex :: Exchange |
       ex path match: [
         "/echo" -> ex
+          sendResp: 200
+          headers: octets
+          body: (ex readAll: 8000000) unwrap;
+        "/echo_raw" -> ex
           sendResp: 200
           headers: octets
           body: (ex readAll: 8000000) unwrap;

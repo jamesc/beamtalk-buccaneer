@@ -124,7 +124,7 @@ sealed typed Object subclass: HttpNode
           headers: octets
           body: (ex readAll: 8000000) unwrap;
         "/chunked" -> [
-          ex sendChunked: 200 headers: octets
+          _ := ex sendChunked: 200 headers: octets
           16 timesRepeat: [ex chunk: piece]
         ] value;
         "/file" -> ex

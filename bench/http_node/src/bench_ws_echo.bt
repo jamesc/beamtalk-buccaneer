@@ -9,11 +9,11 @@ sealed typed Value subclass: BenchWsEcho
     self new
 
   onText: text :: String ws: ws :: WebSocketHandle -> BenchWsEcho =>
-    ws sendText: text
+    _ := ws sendText: text
     self
 
   onBinary: data :: Binary ws: ws :: WebSocketHandle -> BenchWsEcho =>
-    ws sendBinary: data
+    _ := ws sendBinary: data
     self
 
   onClose: _reason :: Object -> Object => nil

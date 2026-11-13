@@ -23,7 +23,7 @@ sealed typed Value subclass: Compression
   /// Uncompressed bytes seen so far (Bandit's bytes_in).
   field: bytesIn :: Integer = 0
   /// The zlib stream (deflate) or zstd context; nil otherwise.
-  field: libContext :: Object = nil
+  field: libContext :: Dynamic = nil
 
   /// The identity context: bodies pass through unchanged.
   class sealed identity -> Compression => Compression new

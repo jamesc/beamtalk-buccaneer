@@ -44,11 +44,15 @@ sed -i.orig "s|^buccaneer = .*|buccaneer = { path = \"$root\" }|" "$http/beamtal
 (cd "$root/bench/http_node" && beamtalk build >/dev/null)
 
 # `just lint-bench`: lint the staged bench apps (their path deps exist only
-# now) and fail on discarded updates.
+# now); fail on a lint failure or a discarded update.
 if [ "$main" = lint_bench ]; then
   status=0
   for app in "$root"/bench/*_node; do
-    out="$(cd "$app" && beamtalk lint 2>&1)" || true
+    rc=0
+    out="$(cd "$app" && beamtalk lint 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      echo "$out"; echo "beamtalk lint failed (exit $rc) in $app" >&2; status=1
+    fi
     if grep -qiE 'discarded_?update' <<<"$out"; then
       echo "$out"; echo "discarded update in $app" >&2; status=1
     fi

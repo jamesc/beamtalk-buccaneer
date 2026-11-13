@@ -19,20 +19,6 @@ sealed typed Value subclass: PermessageDeflate
   field: deflateStream :: ZlibStream | Nil = nil
   field: maxInflateRatio :: Integer = 25
 
-  /// The open inflate stream; raises when none was opened.
-  inflateZ -> ZlibStream =>
-    self inflateStream match: [
-      z :: ZlibStream -> z;
-      _ -> Error signal: "no inflate stream"
-    ]
-
-  /// The open deflate stream; raises when none was opened.
-  deflateZ -> ZlibStream =>
-    self deflateStream match: [
-      z :: ZlibStream -> z;
-      _ -> Error signal: "no deflate stream"
-    ]
-
   /// The offer parameter names, as sent on the wire.
   class sealed validParams -> List(String) =>
     #("server_no_context_takeover", "client_no_context_takeover", "server_max_window_bits", "client_max_window_bits", "max_inflate_ratio")
@@ -300,3 +286,17 @@ sealed typed Value subclass: PermessageDeflate
     (Erlang zlib) close: deflate inflateZ
     (Erlang zlib) close: deflate deflateZ
     nil
+
+  /// The open inflate stream; raises when none was opened.
+  inflateZ -> ZlibStream =>
+    self inflateStream match: [
+      z :: ZlibStream -> z;
+      _ -> Error signal: "no inflate stream"
+    ]
+
+  /// The open deflate stream; raises when none was opened.
+  deflateZ -> ZlibStream =>
+    self deflateStream match: [
+      z :: ZlibStream -> z;
+      _ -> Error signal: "no deflate stream"
+    ]

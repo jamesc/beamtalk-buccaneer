@@ -3,7 +3,10 @@
 
 /// Phase 3 bounded-memory streaming: 1 GiB upload and download in chunks.
 /// The handlers never hold more than one chunk; the totals prove every
-/// byte went through.
+/// byte went through. Each handler also caps its own process heap
+/// (shared binaries included) far below 1 GiB, so a buffering regression
+/// kills the process and fails the test fast instead of passing on a big
+/// machine.
 TestCase subclass: BoundedStreamTest
 
   connect: port =>
@@ -18,9 +21,25 @@ TestCase subclass: BoundedStreamTest
 
   gib -> Integer => 1073741824
 
+  /// Heap cap in words (64 MiB on a 64-bit VM): a few chunks fit, 1 GiB
+  /// of accumulation does not.
+  heapCapWords -> Integer => 8388608
+
+  /// Cap the calling process; exceeding it kills the process.
+  capHeap =>
+    (Erlang erlang)
+      process_flag: #max_heap_size
+      with: #{
+        #size => self heapCapWords,
+        #kill => true,
+        #error_logger => false,
+        #include_shared_binaries => true
+      }
+
   testUploadOneGibStreamsInBoundedMemory =>
     srv := (Buccaneer
       start: #{#port => 0, #handler => [:ex |
+          self capHeap
           total := 0
           done := false
           [done]
@@ -52,6 +71,7 @@ TestCase subclass: BoundedStreamTest
   testDownloadOneGibStreamsInBoundedMemory =>
     srv := (Buccaneer
       start: #{#port => 0, #handler => [:ex |
+          self capHeap
           ex sendChunked: 200 headers: #({"content-length", "1073741824"})
           i := 0
           piece := "a" repeat: self chunkSize

@@ -97,6 +97,7 @@ frames).
 |---|---|---|
 | `get_c1` ... `get_c1000` | keep-alive `GET /` at 1, 10, 100, 1,000 connections | gate |
 | `post_echo_64KiB_c10` | `POST /echo`, 64 KiB body, 10 connections | gate |
+| `post_echo_raw_64KiB_c10` | `POST /echo_raw`, the same 64 KiB body, 10 connections (see [Engine and adapter](#engine-and-adapter)) | context |
 | `chunked_1MiB_c10` | `GET /chunked`, 10 connections | gate |
 | `file_1MiB_c10` | `GET /file`, 10 connections | gate, against Bandit |
 | `churn_close_w32` | a new connection per request (`connection: close`), 32 workers | gate |
@@ -135,6 +136,30 @@ memory:
   with a bare handler in its own language and no beamtalk-http.
 - **adapter**: B ÷ Buccaneer standalone. What beamtalk-http's adapter
   keeps of its engine's figure. Below 1 on req/s, the adapter costs.
+
+### The two echo rows
+
+`post_echo_64KiB_c10` and `post_echo_raw_64KiB_c10` do different work on
+beamtalk-http:
+
+- **`post_echo_64KiB_c10` (the String body figure)**: `/echo` answers
+  `req body`, which validates all 64 KiB as UTF-8 to return a String.
+  Standalone Buccaneer, cowboy and Bandit echo the raw bytes with no
+  validation, so this row includes that cost on the beamtalk-http side
+  only.
+- **`post_echo_raw_64KiB_c10`**: `/echo_raw` answers `req bodyBytes` (the
+  raw bytes, no UTF-8 check; beamtalk-http `HTTPRequest bodyBytes`). Every
+  implementation does the same work here, so the adapter ratio on this row
+  measures adapter overhead alone. It is a `context` row: reported, not
+  gated, and the String row stays the gated one.
+
+Numbers (BT-4500): _TODO: fill in from_
+`just bench --only post_echo_64KiB_c10,post_echo_raw_64KiB_c10 --impls http_buccaneer,buccaneer`.
+
+| Row | req/s B | req/s standalone | adapter |
+|---|---|---|---|
+| `post_echo_64KiB_c10` | _tbd_ | _tbd_ | _tbd_ |
+| `post_echo_raw_64KiB_c10` | _tbd_ | _tbd_ | _tbd_ |
 
 B/cowboy is engine × adapter. Both columns are reporting only: the gate
 rule does not use them.

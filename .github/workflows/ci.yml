@@ -12,6 +12,13 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      base:
+        description: "Speed gate: the base commit (default origin/main)"
+        default: "origin/main"
+      head:
+        description: "Speed gate: the commit to measure (default this checkout)"
+        default: ""
 
 jobs:
   # Which areas a pull request touches, so slow conformance suites run
@@ -93,6 +100,39 @@ jobs:
       - name: Stress smoke
         run: just stress-smoke
         continue-on-error: true
+
+  # BT-4843: fail a pull request that is more than 25% slower than main.
+  # Builds main and the PR head in this one job and measures both on this
+  # runner, interleaved, so runner variance cancels (bench/README.md,
+  # "The PR speed gate"). Writes the table to the job summary on every run.
+  # workflow_dispatch can compare any two commits (the gate's validation).
+  speed:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Erlang/OTP
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28.5"
+
+      - name: Install Beamtalk
+        run: |
+          curl -fsSL https://beamtalk.dev/install.sh | sudo sh -s -- --edge --prefix /usr/local
+          beamtalk --version
+
+      - name: Install just
+        uses: extractions/setup-just@v3
+
+      - name: Speed gate
+        env:
+          BASE: ${{ inputs.base || format('origin/{0}', github.base_ref) }}
+          HEAD: ${{ inputs.head }}
+        run: just bench-ab "$BASE" "$HEAD"
 
   # Phase 4: Autobahn Testsuite fuzzingclient against the echo server.
   # Required check (BT-4084 promoted it once green). On a pull request it

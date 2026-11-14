@@ -31,6 +31,12 @@ spike-bench *ARGS:
 bench *ARGS:
     bench/run.sh bench_main {{ARGS}}
 
+# The PR speed gate (bench/README.md): build BASE (default origin/main)
+# and this checkout, measure both on this machine, fail if this checkout
+# is more than 25% slower. Optional HEAD compares two commits instead.
+bench-ab base="origin/main" head="":
+    bench/ab.sh {{base}} {{head}}
+
 # Correctness under load and failure (test/stress/, bench/README.md). Not part of `test`.
 stress *ARGS:
     bench/run.sh stress_main {{ARGS}}

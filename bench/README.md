@@ -192,6 +192,64 @@ Buccaneer is a Buccaneer bug.
 Conformance runs separately: `just h2spec` and `just autobahn` (CI jobs,
 non-blocking until green).
 
+## The PR speed gate (`just bench-ab`)
+
+BT-4842 slowed HTTP/2 by a third to a half and merged unnoticed, because
+nothing in CI measured speed. The `speed` job in `.github/workflows/ci.yml`
+runs on every pull request to `main` and fails a PR that is more than 25%
+slower than `main`. It is a regression gate, not a benchmark: the
+release-grade figures in `RESULTS.md` still come from `just bench` on the
+maintainer's machine.
+
+**Same runner.** One job builds `main` and the PR head into two worktrees
+(`bench/ab.sh`), and measures both on that runner, alternating which goes
+first, over three iterations. Hosted runners vary 10-20% from run to run, so
+a fixed threshold would fail at random; comparing two builds in the same
+minutes on the same machine cancels most of that. Both sides are measured by
+the PR's harness (`bench/` and `test/stress/` are copied over the base
+checkout), so only `src/` differs. It needs no Elixir: Bandit is skipped
+(`BENCH_SKIP_BANDIT`).
+
+**Metrics.** Time only, from `bench/harness/bench_ab.erl`, Buccaneer
+standalone on h2c:
+
+| Metric | How | Gate |
+|---|---|---|
+| µs per stream | 2,000 sequential GETs on one connection, one stream at a time, no tracing | PR median more than 25% above `main` |
+| req/s | `h2_get_10x10` (10 connections, 10 streams each), 2 s after 0.5 s warm-up | PR median more than 25% below `main` |
+| control | bare cowboy, same two measurements | reported only |
+
+Each side takes six samples (three iterations of two rounds) and the gate
+compares medians. Reduction counts are not gated: BT-4842 left them almost
+unchanged (3,954 to 3,977) because the cost was waiting, not work. Bare
+cowboy contains no Buccaneer code, so it moves only with the machine; the
+summary shows how far it differs between the two sides and warns when the
+runner was noisy.
+
+**Why these two.** Throughput under load is the figure that separated the
+two builds most reliably; sequential latency is the cleanest signal of a
+per-stream cost (the cause of BT-4842) but is noisier sample to sample on a
+4-core runner, because the client, the server and the scheduler threads
+share cores. Gating on either, with a median over six samples and a 25%
+margin (more than the 10-20% runner variance), catches a regression that
+shows in only one of them.
+
+**Output.** A table of both sets of numbers goes to the job summary on every
+run, pass or fail. The job takes about five minutes.
+
+**Reproduce locally.**
+
+```bash
+just bench-ab                       # this checkout against origin/main
+just bench-ab origin/main HEAD~3    # two commits against each other
+BENCH_AB_THRESHOLD=10 BENCH_AB_ITERATIONS=5 just bench-ab
+```
+
+Run it on an otherwise idle machine. Exit status 1 means the gate failed.
+`BENCH_AB_ITERATIONS`, `BENCH_AB_ROUNDS` and `BENCH_AB_DURATION` tune the
+run (see `bench/ab.sh`). The Actions tab can also run the `CI` workflow
+manually with `base` and `head` commits to compare any two.
+
 ## Caveats
 
 - The machine is usually shared. RESULTS.md records the load average at

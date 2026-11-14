@@ -133,6 +133,14 @@ jobs:
       - name: Autobahn Testsuite
         run: just autobahn
 
+      - name: Upload Autobahn reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autobahn-reports
+          path: /tmp/buccaneer-autobahn/reports
+          if-no-files-found: ignore
+
   # Phase 6: h2spec conformance over TLS/ALPN h2.
   # Non-blocking until green (BT-4085), then promote by dropping
   # continue-on-error. Needs docker (present on ubuntu-latest) or a

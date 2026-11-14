@@ -7,7 +7,7 @@
           {
             "type": "command",
             "timeout": 360,
-            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = \"true\" ] && curl -fsSL --connect-timeout 5 --max-time 10 https://raw.githubusercontent.com/jamesc/beamtalk/main/scripts/refresh-edge.sh | bash || true"
+            "command": "if [ \"${CLAUDE_CODE_REMOTE:-}\" = \"true\" ]; then bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/refresh-edge.sh\" || echo \"refresh-edge: warning: hook exited $? (keeping the installed build)\" >&2; fi; exit 0"
           }
         ]
       }

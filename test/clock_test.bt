@@ -32,11 +32,26 @@ TestCase subclass: ClockTest
     self assert: (header at: 1) equals: "date"
     self assert: ((header at: 2) matchesRegex: "GMT$" options: #())
 
+  // An updater started by an earlier test (or by a server in the same
+  // node) can survive tearDown, which only its owner may delete, and it
+  // overwrites the cache once a second. If that tick lands between the
+  // put and the read, the read sees the real date. Retry a few times: the
+  // updater writes once a second, so it cannot hit every attempt.
   testDateHeaderHitReturnsCached =>
-    (Ets newOrExisting: Clock tableName type: #set) at: Clock cacheKey put: "Wed, 21 Oct 2015 07:28:00 GMT"
-    header := Clock dateHeader
+    planted := "Wed, 21 Oct 2015 07:28:00 GMT"
+    header := nil
+    hit := false
+    5
+      timesRepeat: [
+        hit
+          ifFalse: [
+            (Ets newOrExisting: Clock tableName type: #set) at: Clock cacheKey put: planted
+            header := Clock dateHeader
+            hit := (header at: 2) =:= planted
+          ]
+      ]
     self assert: (header at: 1) equals: "date"
-    self assert: (header at: 2) equals: "Wed, 21 Oct 2015 07:28:00 GMT"
+    self assert: (header at: 2) equals: planted
 
   testMissStartsTheUpdater =>
     Clock dateHeader

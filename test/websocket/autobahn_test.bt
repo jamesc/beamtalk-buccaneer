@@ -25,10 +25,18 @@ TestCase subclass: AutobahnTest
     out := backend =:= #docker ifTrue: [
       (Erlang os) cmd: (self dockerCmd: dir port: port)
     ] ifFalse: [(Erlang os) cmd: (self localCmd: dir port: port)]
-    self assert: (out asString includesSubstring: "EXIT:0") equals: true
+    // On failure the message carries the tail of wstest's output (stdout
+    // and stderr), so CI shows why it exited non-zero.
+    (out asString includesSubstring: "EXIT:0") ifFalse: [
+      self fail: "wstest did not exit 0:\n" ++ (self tailOf: out asString)
+    ]
     failures := self failuresIn: dir
     self assert: (srv stop: 5000) isOk
     self assert: failures equals: #()
+
+  /// The last 4000 characters of text.
+  tailOf: text :: String -> String =>
+    text size > 4000 ifTrue: [text drop: text size - 4000] ifFalse: [text]
 
   portOf: srv => (srv listenerInfo unwrap) at: 2
 
@@ -87,7 +95,7 @@ TestCase subclass: AutobahnTest
       ++ " --name fuzzingclient crossbario/autobahn-testsuite"
       ++ " wstest --mode fuzzingclient -w ws://host.docker.internal:"
       ++ port asString
-      ++ "; echo EXIT:$?"
+      ++ " 2>&1; echo EXIT:$?"
 
   /// Run the local wstest against the same spec; outdir is relative
   /// so reports land in dir/reports exactly as with docker.
@@ -98,7 +106,7 @@ TestCase subclass: AutobahnTest
       ++ dir
       ++ "/fuzzingclient.json -w ws://127.0.0.1:"
       ++ port asString
-      ++ "; echo EXIT:$?"
+      ++ " 2>&1; echo EXIT:$?"
 
   /// Cases whose behavior pair is not (OK|NON-STRICT|INFORMATIONAL,
   /// OK|INFORMATIONAL).

@@ -537,16 +537,24 @@ typed Handler subclass: ConnectionHandler
       sendfileChunk: conn sendfileChunkSize
       contentLength: (conn contentLengthFor: sid)
     transport := (transport withSocket: sock) withRequestHead: head
+    // Spawned here, directly: the monitor belongs to the process that runs
+    // the spawn, which must be this one.
     pair := StreamProcess
-      spawnFor: transport
-      handler: proto handler
-      config: proto config
-      connData: proto connData
-      span: sock telemetrySpan
+      spawnMonitoredAsyncWith: #{
+        #transport => transport,
+        #handler => proto handler,
+        #config => proto config,
+        #connData => proto connData,
+        #span => sock telemetrySpan
+      }
+    // The connection's stream tables, h2CheckLive: and the DOWN message all
+    // use the raw pid, not the actor reference. `pid` is an intrinsic, not a
+    // message to the stream.
+    stream :: StreamProcess := pair at: 1
     proto
       withConnection: (conn
         withStreamMonitored: sid
-        pid: (pair at: 1)
+        pid: stream pid
         ref: (pair at: 2))
 
   logUnknown: msg :: Object config: config :: BuccaneerConfig -> Nil =>

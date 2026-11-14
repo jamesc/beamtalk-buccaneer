@@ -34,7 +34,12 @@ TestCase subclass: LoggingTest
     content := LogCapture await: "boom-log-short-1" in: path
     LogCapture detach: self tableName
     self assert: (content includesSubstring: "** (Error) boom-log-short-1")
-    self assert: (content includesSubstring: "Pipeline>>")
+    // Class-side Pipeline methods render as `Pipeline class>>sel` since
+    // beamtalk's BT-4815 frame renderer; accept either side.
+    self
+      assert: ((content includesSubstring: "Pipeline class>>") or: [
+        content includesSubstring: "Pipeline>>"
+      ])
     self assert: (srv stop: 5000) isOk
 
   testVerboseProtocolError =>
@@ -80,12 +85,15 @@ TestCase subclass: LoggingTest
     self assert: (content includesSubstring: "** (HTTPError) Request line HTTP error")
     // Short means this error's own entry has no stacktrace. The capture is
     // shared with every class running in parallel (a NotSentError from an
-    // h2 test also carries a Pipeline>> stack), so look at this entry only.
+    // h2 test also carries a Pipeline stack), so look at this entry only.
     stacked := content lines
       select: [:l |
-        (l includesSubstring: "Request line HTTP error") and: [
-          l includesSubstring: "Pipeline>>"
-        ]
+        (l includesSubstring: "Request line HTTP error")
+          and: [
+            (l includesSubstring: "Pipeline class>>") or: [
+              l includesSubstring: "Pipeline>>"
+            ]
+          ]
       ]
     self assert: stacked isEmpty
     self assert: (srv stop: 5000) isOk

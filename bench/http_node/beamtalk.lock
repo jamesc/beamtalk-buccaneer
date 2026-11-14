@@ -3,11 +3,11 @@
 
 [[package]]
 name = "catalina"
-version = "0.2.3"
+version = "0.2.5"
 registry = "https://github.com/jamesc/beamtalk-registry"
 url = "https://github.com/jamesc/beamtalk-catalina.git"
-reference = "tag:v0.2.3"
-sha = "bb43c4cc3034688f6a115f344aa679af1393ddef"
+reference = "tag:v0.2.5"
+sha = "78a3edecb20150fce72a9fe6cb6685b535783b07"
 
 [[package]]
 name = "hpack"
@@ -19,29 +19,30 @@ sha = "34ebb37c8cd07c0c4dd28093c9519cbb5d912ef7"
 
 [[package]]
 name = "mint"
-version = "0.2.0"
+version = "0.2.1"
 registry = "https://github.com/jamesc/beamtalk-registry"
 url = "https://github.com/jamesc/beamtalk-mint.git"
-reference = "tag:v0.2.0"
-sha = "e7a684b1411f1786fd6fe32c7477042f80778ba7"
+reference = "tag:v0.2.1"
+sha = "5a645a3b6fef2da0611b358e0aebd18bd1f88042"
 
 [[native_package]]
 name = "cowboy"
 version = "2.20.0"
-sha = ""
+sha = "63F6E3AFA7E14201498142A10D00379F5E11761F69E69782807C713627F6BC73"
+outer_sha = "A0BE47464A2887F71C061CE90723DC17441C9B81BA9569CD9B596EB0367D1EDD"
+level = 0
 
 [[native_package]]
 name = "cowlib"
 version = "2.21.0"
-sha = ""
-
-[[native_package]]
-name = "gun"
-version = "2.1.0"
-sha = ""
+sha = "3EA757C79784BDBDEBAC7857CE3ADF2290AF6B8680D4248C75E40CED2E98C89E"
+outer_sha = "0960248773762A5319B3C17285028BC76F54F58EF0F9451367401BDF67B46274"
+level = 0
 
 [[native_package]]
 name = "ranch"
 version = "2.2.1"
-sha = ""
+sha = "FC2BB0E800EFBEAB8FF82EB325450B9C08653B14C3F69E8B09BBEA304973105D"
+outer_sha = "55F05CCE20EC2DA1D90DE5D5981AFB93DBFC01325FC7E933189AA5C62F037C24"
+level = 0
 

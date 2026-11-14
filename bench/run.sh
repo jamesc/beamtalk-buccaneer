@@ -59,10 +59,13 @@ if [ "$main" = lint_bench ]; then
   done
   exit $status
 fi
-(cd "$root/bench/bandit" \
-  && MIX_ENV=prod mix local.hex --force --if-missing >/dev/null \
-  && MIX_ENV=prod mix deps.get >/dev/null \
-  && MIX_ENV=prod mix compile >/dev/null)
+# BENCH_SKIP_BANDIT=1 (the PR speed gate, bench/ab.sh) needs no Elixir.
+if [ -z "${BENCH_SKIP_BANDIT:-}" ]; then
+  (cd "$root/bench/bandit" \
+    && MIX_ENV=prod mix local.hex --force --if-missing >/dev/null \
+    && MIX_ENV=prod mix deps.get >/dev/null \
+    && MIX_ENV=prod mix compile >/dev/null)
+fi
 mkdir -p "$root/_build/bench/ebin"
 erlc -o "$root/_build/bench/ebin" "$root"/bench/harness/*.erl "$root"/test/stress/*.erl
 
@@ -79,8 +82,10 @@ else
   ebins=("$rt"/_build/default/lib/*/ebin "$rt/apps/beamtalk_stdlib/ebin")
 fi
 export BENCH_BEAMTALK_EBINS="$(IFS=:; echo "${ebins[*]}")"
-export BENCH_ELIXIR_LIB="$(cd "$root/bench/bandit" && elixir -e 'IO.write(Path.dirname(:code.lib_dir(:elixir)))')"
-export BENCH_ELIXIR_VERSION="$(cd "$root/bench/bandit" && elixir -e 'IO.write(System.version())')"
+if [ -z "${BENCH_SKIP_BANDIT:-}" ]; then
+  export BENCH_ELIXIR_LIB="$(cd "$root/bench/bandit" && elixir -e 'IO.write(Path.dirname(:code.lib_dir(:elixir)))')"
+  export BENCH_ELIXIR_VERSION="$(cd "$root/bench/bandit" && elixir -e 'IO.write(System.version())')"
+fi
 export BENCH_BANDIT_VERSION="$(sed -n 's/.*"bandit": {:hex, :bandit, "\([^"]*\)".*/\1/p' "$root/bench/bandit/mix.lock")"
 export BENCH_COWBOY_VERSION="$(grep -A1 '^name = "cowboy"$' "$root/bench/http_node/beamtalk.lock" | sed -n 's/^version = "\(.*\)"/\1/p')"
 export BENCH_BEAMTALK_VERSION="$(beamtalk --version | awk '{print $2}') ($(git -C "$sysroot/.." rev-parse --short HEAD 2>/dev/null || echo installed))"

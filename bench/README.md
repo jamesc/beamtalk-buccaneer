@@ -192,6 +192,65 @@ Buccaneer is a Buccaneer bug.
 Conformance runs separately: `just h2spec` and `just autobahn` (CI jobs,
 non-blocking until green).
 
+## The PR speed gate (`just bench-ab`)
+
+BT-4842 slowed HTTP/2 by a third to a half and merged unnoticed, because
+nothing in CI measured speed. The `speed` job in `.github/workflows/ci.yml`
+runs on every pull request to `main` and fails a PR that is more than 25%
+slower than `main`. It is a regression gate, not a benchmark: the
+release-grade figures in `RESULTS.md` still come from `just bench` on the
+maintainer's machine.
+
+**Same runner.** One job builds `main` and the PR head into two worktrees
+(`bench/ab.sh`), and measures both on that runner, alternating which goes
+first, over three iterations. Hosted runners vary 10-20% from run to run, so
+a fixed threshold would fail at random; comparing two builds in the same
+minutes on the same machine cancels most of that. Both sides are measured by
+the PR's harness (`bench/` and `test/stress/` are copied over the base
+checkout), so only `src/` differs. It needs no Elixir: Bandit is skipped
+(`BENCH_SKIP_BANDIT`).
+
+**Metric.** Time only, from `bench/harness/bench_ab.erl`, Buccaneer
+standalone on h2c:
+
+| Metric | How | Gate |
+|---|---|---|
+| req/s under load | h2c GETs from 100 connections, 20 streams in flight each, 2 s after a 0.5 s warm-up | PR median more than 25% below `main` (base / PR - 1 above 25%, the rise in time per request) |
+| µs per stream | 2,000 sequential GETs on one connection, no tracing | reported, not gated |
+| control | bare cowboy, same two measurements | reported only |
+
+Each side takes six samples (three iterations of two rounds) and the gate
+compares medians. Reduction counts are not gated: BT-4842 left them almost
+unchanged (3,954 to 3,977) because the cost was waiting, not work. Bare
+cowboy contains no Buccaneer code, so it moves only with the machine; the
+summary warns when it differs between the two sides by more than half the
+threshold.
+
+**Why this one.** BT-4842 added per-stream scheduling cost. It barely shows
+when the server idles between requests and shows when the server is
+saturated. On a 4-core hosted runner the known regression (`657a4b8` before
+#46 against `da40286` after) read +23% at `h2_get_10x10` (10 x 10) and +19%
+sequentially, both under the threshold; locally the same change read +22-25%
+at 10 x 10 and +42% at 100 x 20, so the gate uses the heavier shape.
+Sequential µs per stream varied from +3% to +32% between local runs of the
+same pair, too noisy to fail a PR on, so it is shown but not gated.
+
+**Output.** A table of both sets of numbers goes to the job summary on every
+run, pass or fail. The job takes about five minutes on a hosted runner.
+
+**Reproduce locally.**
+
+```bash
+just bench-ab                       # this checkout against origin/main
+just bench-ab origin/main HEAD~3    # two commits against each other
+BENCH_AB_THRESHOLD=10 BENCH_AB_ITERATIONS=5 just bench-ab
+```
+
+Run it on an otherwise idle machine. Exit status 1 means the gate failed.
+`BENCH_AB_ITERATIONS`, `BENCH_AB_ROUNDS` and `BENCH_AB_DURATION` tune the
+run (see `bench/ab.sh`). The Actions tab can also run the `CI` workflow
+manually with `base` and `head` commits to compare any two.
+
 ## Caveats
 
 - The machine is usually shared. RESULTS.md records the load average at

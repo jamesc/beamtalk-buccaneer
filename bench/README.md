@@ -210,32 +210,33 @@ the PR's harness (`bench/` and `test/stress/` are copied over the base
 checkout), so only `src/` differs. It needs no Elixir: Bandit is skipped
 (`BENCH_SKIP_BANDIT`).
 
-**Metrics.** Time only, from `bench/harness/bench_ab.erl`, Buccaneer
+**Metric.** Time only, from `bench/harness/bench_ab.erl`, Buccaneer
 standalone on h2c:
 
 | Metric | How | Gate |
 |---|---|---|
-| µs per stream | 2,000 sequential GETs on one connection, one stream at a time, no tracing | PR median more than 25% above `main` |
-| req/s | `h2_get_10x10` (10 connections, 10 streams each), 2 s after 0.5 s warm-up | PR median more than 25% below `main` |
+| req/s under load | h2c GETs from 100 connections, 20 streams in flight each, 2 s after a 0.5 s warm-up | PR median more than 25% below `main` (base / PR - 1 above 25%, the rise in time per request) |
+| µs per stream | 2,000 sequential GETs on one connection, no tracing | reported, not gated |
 | control | bare cowboy, same two measurements | reported only |
 
 Each side takes six samples (three iterations of two rounds) and the gate
 compares medians. Reduction counts are not gated: BT-4842 left them almost
 unchanged (3,954 to 3,977) because the cost was waiting, not work. Bare
 cowboy contains no Buccaneer code, so it moves only with the machine; the
-summary shows how far it differs between the two sides and warns when the
-runner was noisy.
+summary warns when it differs between the two sides by more than half the
+threshold.
 
-**Why these two.** Throughput under load is the figure that separated the
-two builds most reliably; sequential latency is the cleanest signal of a
-per-stream cost (the cause of BT-4842) but is noisier sample to sample on a
-4-core runner, because the client, the server and the scheduler threads
-share cores. Gating on either, with a median over six samples and a 25%
-margin (more than the 10-20% runner variance), catches a regression that
-shows in only one of them.
+**Why this one.** BT-4842 added per-stream scheduling cost. It barely shows
+when the server idles between requests and shows when the server is
+saturated. On a 4-core hosted runner the known regression (`657a4b8` before
+#46 against `da40286` after) read +23% at `h2_get_10x10` (10 x 10) and +19%
+sequentially, both under the threshold; locally the same change read +22-25%
+at 10 x 10 and +42% at 100 x 20, so the gate uses the heavier shape.
+Sequential µs per stream varied from +3% to +32% between local runs of the
+same pair, too noisy to fail a PR on, so it is shown but not gated.
 
 **Output.** A table of both sets of numbers goes to the job summary on every
-run, pass or fail. The job takes about five minutes.
+run, pass or fail. The job takes about five minutes on a hosted runner.
 
 **Reproduce locally.**
 

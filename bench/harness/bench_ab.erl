@@ -17,8 +17,12 @@
 %%   latency  Buccaneer standalone: microseconds per stream over N
 %%            sequential GETs on one h2c connection (one stream at a time,
 %%            no tracing). The metric that went 86 to 432 us in BT-4842.
-%%   rps      `h2_get_10x10` (10 connections, 10 streams in flight each),
-%%            on Buccaneer standalone and on bare cowboy.
+%%   rps      h2c GETs from 100 connections with 20 streams in flight each
+%%            (`bench_load:h2`; `--conns` and `--inflight` change it), on
+%%            Buccaneer standalone and on bare cowboy. Heavier than the
+%%            release gate's h2_get_10x10: the cost BT-4842 added is
+%%            per-stream scheduling, which shows when the server is
+%%            saturated and hides at low load.
 %%
 %% Bare cowboy is the control. It contains no Buccaneer code, so its
 %% numbers move only with the machine. `compare` shows how far the two
@@ -26,9 +30,11 @@
 %%
 %% `compare` takes the medians over every sample of each side (the
 %% caller interleaves base and PR runs) and exits 1 when the PR is more
-%% than THRESHOLD percent worse than the base on a gated metric. Gated:
-%% Buccaneer's us per stream and its h2_get_10x10 req/s. Reduction counts
-%% are not gated: BT-4842 left them unchanged (the cost was waiting).
+%% than THRESHOLD percent worse than the base on the gated metric:
+%% Buccaneer's req/s under load. Sequential us per stream is reported but
+%% not gated: it moved 1.2x to 1.4x on CI and 1.0x to 1.4x locally, too
+%% noisy to fail a PR on. Reduction counts are not gated either: BT-4842
+%% left them unchanged (the cost was waiting).
 -module(bench_ab).
 
 -export([main/0]).
@@ -38,7 +44,7 @@
 main() ->
     case init:get_plain_arguments() of
         ["measure" | Args] -> measure(parse_measure(Args, #{rounds => 2, duration => 2000, warmup => 500,
-                                                           streams => 2000}));
+                                                           streams => 2000, conns => 100, inflight => 20}));
         ["compare" | Args] -> compare(parse_compare(Args, #{threshold => ?DEFAULT_THRESHOLD, base => [], pr => []}));
         Other -> error({usage, Other})
     end.
@@ -49,18 +55,21 @@ parse_measure(["--rounds", N | T], O) -> parse_measure(T, O#{rounds => list_to_i
 parse_measure(["--duration", N | T], O) -> parse_measure(T, O#{duration => list_to_integer(N)});
 parse_measure(["--warmup", N | T], O) -> parse_measure(T, O#{warmup => list_to_integer(N)});
 parse_measure(["--streams", N | T], O) -> parse_measure(T, O#{streams => list_to_integer(N)});
+parse_measure(["--conns", N | T], O) -> parse_measure(T, O#{conns => list_to_integer(N)});
+parse_measure(["--inflight", N | T], O) -> parse_measure(T, O#{inflight => list_to_integer(N)});
 parse_measure(["--out", F | T], O) -> parse_measure(T, O#{out => F});
 parse_measure([], O = #{out := _}) -> O;
 parse_measure(Args, _) -> error({bad_arguments, Args}).
 
-measure(#{rounds := Rounds, duration := Dur, warmup := Warm, streams := N, out := Out}) ->
+measure(#{rounds := Rounds, duration := Dur, warmup := Warm, streams := N, out := Out,
+          conns := Conns, inflight := Inflight}) ->
     {ok, _} = application:ensure_all_started(ssl),
     Peers = #{I => bench_peer:start(I) || I <- [buccaneer, cowboy]},
     Rs = [begin
               Lat = with_server(maps:get(buccaneer, Peers), fun(Port) -> latency(Port, N) end),
               Cb = with_server(maps:get(cowboy, Peers), fun(Port) -> latency(Port, N) end),
-              B = with_server(maps:get(buccaneer, Peers), fun(Port) -> rps(Port, Warm, Dur) end),
-              C = with_server(maps:get(cowboy, Peers), fun(Port) -> rps(Port, Warm, Dur) end),
+              B = with_server(maps:get(buccaneer, Peers), fun(Port) -> rps(Port, Warm, Dur, Conns, Inflight) end),
+              C = with_server(maps:get(cowboy, Peers), fun(Port) -> rps(Port, Warm, Dur, Conns, Inflight) end),
               io:format(standard_error, "  round ~p: ~.1f us/stream (cowboy ~.1f), ~.1f req/s (cowboy ~.1f)~n",
                         [R, Lat, Cb, B, C]),
               #{us_per_stream => Lat, cowboy_us_per_stream => Cb, rps => B, cowboy_rps => C}
@@ -97,12 +106,12 @@ h2_get(H) ->
 wait(Id, H) ->
     case bench_h2:next_event(H) of
         {done, Id, 200, H1} -> H1;
-        {done, _, _, H1} -> wait(Id, H1);
+        {done, Id, Status, _} -> error({h2_get, {bad_status, Status}});
         Other -> error({h2_get, Other})
     end.
 
-rps(Port, Warm, Dur) ->
-    M = bench_load:h2(Port, #{conns => 10, streams => 10, warmup_ms => Warm, duration_ms => Dur}),
+rps(Port, Warm, Dur, Conns, Inflight) ->
+    M = bench_load:h2(Port, #{conns => Conns, streams => Inflight, warmup_ms => Warm, duration_ms => Dur}),
     case maps:get(errors, M, 0) of
         0 -> maps:get(rps, M);
         E -> error({load_errors, E, maps:get(error_reasons, M, [])})
@@ -126,10 +135,10 @@ list_to_number(S) ->
 
 %% {key, label, lower is better, gated}
 -define(METRICS, [
-    {us_per_stream, "Buccaneer, sequential us/stream (2,000 GETs)", true, true},
-    {rps, "Buccaneer, h2_get_10x10 req/s", false, true},
+    {rps, "Buccaneer, h2 GET req/s under load (100 conns x 20 streams)", false, true},
+    {us_per_stream, "Buccaneer, sequential us/stream (2,000 GETs)", true, false},
     {cowboy_us_per_stream, "control: bare cowboy us/stream", true, false},
-    {cowboy_rps, "control: bare cowboy h2_get_10x10 req/s", false, false}]).
+    {cowboy_rps, "control: bare cowboy, same load, req/s", false, false}]).
 
 compare(#{threshold := Pct, base := BaseFiles, pr := PrFiles} = Opts) ->
     {BaseRev, Base} = load(BaseFiles),
@@ -153,6 +162,7 @@ decode_lines(F) ->
     {ok, Bin} = file:read_file(F),
     [json:decode(L) || L <- binary:split(Bin, <<"\n">>, [global, trim_all])].
 
+median([]) -> error(no_samples);
 median(L) ->
     S = lists:sort(L),
     N = length(S),
@@ -174,11 +184,11 @@ row({Key, Label, LowerBetter, Gated}, Base, Pr, Pct) ->
 
 report(BaseRev, PrRev, NB, NP, Rows, Pct, Failed) ->
     Verdict = case Failed of
-        [] -> io_lib:format("**Pass**: the PR is within ~s% of main on both gated metrics.", [num(Pct)]);
+        [] -> io_lib:format("**Pass**: the PR is within ~s% of main on req/s under load.", [num(Pct)]);
         _ -> io_lib:format("**Fail**: the PR is more than ~s% slower than main on: ~s.",
                            [num(Pct), lists:join("; ", Failed)])
     end,
-    Ctl = [W || {_, _, _, W, _, false, _} <- Rows],
+    Ctl = [W || {"control" ++ _, _, _, W, _, _, _} <- Rows],
     Note = case [W || W <- Ctl, abs(W) > Pct / 2] of
         [] -> "";
         _ -> "\n\nThe control moved by more than half the threshold between the two sides, "
@@ -188,11 +198,11 @@ report(BaseRev, PrRev, NB, NP, Rows, Pct, Failed) ->
         "## Buccaneer speed: PR vs main on the same runner\n\n",
         Verdict, "\n\n",
         io_lib:format("main `~s` (~p samples) against PR `~s` (~p samples), medians; "
-                      "\"worse\" is positive when the PR is slower. Gate: ~s%.\n\n",
+                      "\"worse\" is positive when the PR is slower (req/s: base / PR - 1, the rise in time per request). Gate: ~s%.\n\n",
                       [BaseRev, NB, PrRev, NP, num(Pct)]),
         "| Metric | main | PR | PR worse by | Gated |\n|---|---:|---:|---:|---|\n",
         [io_lib:format("| ~s | ~s | ~s | ~s% | ~s |~n",
-                       [L, num1(B), num1(P), sign(W), case {G, X} of {false, _} -> "control"; {_, true} -> "**FAIL**"; _ -> "ok" end])
+                       [L, num1(B), num1(P), sign(W), case {G, X} of {false, _} -> "not gated"; {_, true} -> "**FAIL**"; _ -> "ok" end])
          || {L, B, P, W, _, G, X} <- Rows],
         Note]).
 

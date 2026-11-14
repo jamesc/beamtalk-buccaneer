@@ -537,8 +537,8 @@ typed Handler subclass: ConnectionHandler
       sendfileChunk: conn sendfileChunkSize
       contentLength: (conn contentLengthFor: sid)
     transport := (transport withSocket: sock) withRequestHead: head
-    // Spawned here, not through a StreamProcess class method: the monitor
-    // belongs to the process that runs the spawn, which must be this one.
+    // Spawned here, directly: the monitor belongs to the process that runs
+    // the spawn, which must be this one.
     pair := StreamProcess
       spawnMonitoredAsyncWith: #{
         #transport => transport,

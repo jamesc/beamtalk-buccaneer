@@ -15,8 +15,9 @@
 /// pipeline runs in a `continueWith:` step requested by `initialize`, which
 /// then stops the actor, so no message is sent to it. The connection must
 /// call `spawnMonitoredAsyncWith:` itself, from its own methods: the
-/// monitor belongs to the process that runs the spawn, and a class method
-/// here would run in the class's process. The actor process carries the
+/// monitor belongs to the process that runs the spawn, so the spawn must
+/// run in the connection's process and not be moved behind any helper that
+/// could run elsewhere. The actor process carries the
 /// `$beamtalk_actor` => `StreamProcess` marker that tools (the stress
 /// tests' stream killer) use to find stream processes.
 ///

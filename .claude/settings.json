@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 360,
+            "command": "[ \"${CLAUDE_CODE_REMOTE:-}\" = \"true\" ] && curl -fsSL --connect-timeout 5 --max-time 10 https://raw.githubusercontent.com/jamesc/beamtalk/main/scripts/refresh-edge.sh | bash || true"
+          }
+        ]
+      }
+    ]
+  }
+}

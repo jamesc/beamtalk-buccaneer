@@ -74,10 +74,10 @@ rows(full) ->
         {"chunked_1MiB_c10", http, #{conns => 10, path => <<"/chunked">>, expect => 1048576}, gate},
         %% Like for like: sendfile against Bandit's sendfile (BT-4468).
         {"file_1MiB_c10", http, #{conns => 10, path => <<"/file">>, expect => 1048576}, {gate, bandit}},
-        {"churn_close_w32", churn, #{workers => 32}, gate},
-        {"tls_handshake_w32", churn, #{workers => 32, tls => true}, gate},
+        {"churn_close_w32", churn, #{workers => 32, settle => true}, gate},
+        {"tls_handshake_w32", churn, #{workers => 32, tls => true, settle => true}, gate},
         {"tls_get_c100", http, #{conns => 100, tls => true}, gate},
-        {"idle_10k", idle, #{conns => 10000}, memory},
+        {"idle_10k", idle, #{conns => 10000, settle => true}, memory},
         {"h2_get_10x10", h2, #{conns => 10, streams => 10}, context},
         {"ws_echo_c100", ws, #{conns => 100, size => 64}, context}];
 rows(smoke) ->
@@ -141,25 +141,51 @@ round(R, Rows, Peers, Opts, Raw) ->
 measure(Round, {Id, Kind, Params, _Class}, Impl, Peer, Opts, Raw) ->
     Load = load(),
     Tls = maps:get(tls, Params, false),
-    Metrics = case bench_peer:call(Peer, bench_node, start_server, [#{tls => Tls}]) of
+    {Metrics, Settle} = case bench_peer:call(Peer, bench_node, start_server, [#{tls => Tls}]) of
         {ok, Port} ->
-            try
+            M = try
                 bench_load:wait_ready(Port, Tls, 120000),
                 run_row(Kind, Port, Peer, Params#{
                     warmup_ms => maps:get(warmup, Opts), duration_ms => maps:get(duration, Opts)})
             catch
-                C:R:St -> #{errors => 1, error_reasons => [{C, R, hd(St)}]}
+                C:R:St -> bench_env:failure({C, R, hd(St)})
             after
                 bench_peer:call(Peer, bench_node, stop_server, [5000])
-            end;
+            end,
+            {M, settle(Id, Params, Port)};
         Error ->
-            #{errors => 1, error_reasons => [Error]}
+            {bench_env:failure(Error), none}
     end,
-    Rec = #{round => Round, row => list_to_binary(Id), impl => Impl,
-            load => list_to_binary(Load), metrics => Metrics},
+    Rec0 = #{round => Round, row => list_to_binary(Id), impl => Impl,
+             load => list_to_binary(Load), metrics => Metrics},
+    Rec = case Settle of none -> Rec0; _ -> Rec0#{settle => Settle} end,
     io:format(Raw, "~s~n", [json:encode(jsonable(Rec))]),
     log("  ~-22s ~-15s ~s~n", [Id, Impl, brief(Kind, Metrics)]),
     {Id, Impl, Metrics}.
+
+%% After a churn or idle row (`settle => true`): the client's closed
+%% connections hold their ports in TIME_WAIT, and the next server would
+%% start with fewer than this one had. Wait until they drain, for up to
+%% BENCH_SETTLE_MS (60 s), and say how long it took.
+settle(Id, #{settle := true}, Port) ->
+    S = bench_env:settle(Port, bench_env:settle_opts()),
+    log("  ~s: ~s~n", [Id, settle_line(S)]),
+    S;
+settle(_, _, _) ->
+    none.
+
+settle_line(#{outcome := off}) ->
+    "settle off (BENCH_SETTLE_MS=0)";
+settle_line(#{outcome := reuse}) ->
+    "settle: net.ipv4.tcp_tw_reuse lets loopback reuse TIME_WAIT ports; not waiting";
+settle_line(#{outcome := unavailable}) ->
+    "settle: cannot count TIME_WAIT sockets on this platform; not waiting";
+settle_line(#{outcome := drained, waited_ms := W, start := N0, remaining := N}) ->
+    io_lib:format("settled in ~.1f s: TIME_WAIT sockets ~p -> ~p", [W / 1000, N0, N]);
+settle_line(#{outcome := timeout, waited_ms := W, start := N0, remaining := N}) ->
+    io_lib:format("WARNING settle gave up after ~.1f s: TIME_WAIT sockets ~p -> ~p; the next "
+                  "server may see eaddrnotavail (raise BENCH_SETTLE_MS or lower net.inet.tcp.msl)",
+                  [W / 1000, N0, N]).
 
 run_row(http, Port, _Peer, P) -> bench_load:http(Port, P);
 run_row(churn, Port, _Peer, P) -> bench_load:churn(Port, P);
@@ -182,8 +208,23 @@ run_row(idle, Port, Peer, #{conns := N}) ->
                   processes_per_conn => D(processes),
                   errors => 0};
         false ->
-            Base#{errors => 1, error_reasons => [incomplete]}
+            %% Short of N because the client ran out of descriptors or
+            %% ports (emfile, eaddrnotavail) is an environment error naming
+            %% the limit; any other failure, or a server that holds fewer
+            %% than it was given, is a server error.
+            {ServerFails, EnvFails} = bench_env:split(Failures),
+            case ServerFails =:= [] andalso EnvFails =/= [] of
+                true ->
+                    maps:merge(Base, bench_env_fields(length(EnvFails), EnvFails));
+                false ->
+                    Base#{errors => 1, error_reasons => [incomplete]}
+            end
     end.
+
+bench_env_fields(N, EnvFails) ->
+    #{errors => 0, env_errors => N,
+      env_limits => lists:usort([iolist_to_binary([atom_to_list(A), ": ", L])
+                                 || {A, L, _} <- EnvFails])}.
 
 %% Node stats once the process count has stopped changing, after GC.
 settled_stats(Peer) -> settled_stats(Peer, undefined, 40).
@@ -200,10 +241,20 @@ settled_stats(Peer, Prev, Tries) ->
 
 brief(idle, #{bytes_per_conn := B, processes_per_conn := P, opened := O}) ->
     io_lib:format("~p conns  ~w B/conn  ~.2f procs/conn", [O, round(B), P]);
-brief(_, #{rps := R, p50 := P50, p99 := P99, errors := E}) ->
-    io_lib:format("~10.1f /s  p50 ~s  p99 ~s  errors ~p", [R, us(P50), us(P99), E]);
+brief(_, M = #{rps := R, p50 := P50, p99 := P99, errors := E}) ->
+    io_lib:format("~10.1f /s  p50 ~s  p99 ~s  errors ~p~s",
+                  [R, us(P50), us(P99), E, env_note(M)]);
+brief(_, M = #{env_errors := _}) ->
+    io_lib:format("~s", [string:trim(env_note(M))]);
 brief(_, M) ->
     io_lib:format("~0P", [M, 20]).
+
+%% "  ENVIRONMENT ERRORS 12: eaddrnotavail: client ports: ..." when a
+%% measurement hit a limit of this machine rather than a server error.
+env_note(#{env_errors := N, env_limits := Ls}) ->
+    io_lib:format("  ENVIRONMENT ERRORS ~p (not the server's): ~s", [N, lists:join("; ", Ls)]);
+env_note(_) ->
+    "".
 
 us(undefined) -> "-";
 us(V) when V >= 1000 -> io_lib:format("~.2fms", [V / 1000]);
@@ -275,14 +326,30 @@ report(Rows, Results, Impls, Env) ->
            " | B/cowboy | B/Bandit | engine | adapter |\n|---|---|",
            lists:duplicate(length(Impls) + 4, "---:|"), "\n",
            [ctx_lines(Id, Kind, Impls, Results) || {Id, Kind, _, _} <- Rows], "\n"],
-    Every = ["## Every round\n\n| Row | Metric | Server | Rounds | Errors |\n|---|---|---|---|---|\n",
-             [[[io_lib:format("| ~s | ~s | ~s | ~s | ~s |~n",
+    Every = ["## Every round\n\n"
+             "Errors are server errors. Environment errors (`eaddrnotavail`, `emfile`: this "
+             "machine's port range or descriptor limit, not the server) are counted apart.\n\n"
+             "| Row | Metric | Server | Rounds | Errors | Environment errors |\n|---|---|---|---|---|---|\n",
+             [[[io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s |~n",
                               [Id, Label, name(I), all(Key, values(Id, I, Key, Results)),
-                               errors(Id, I, Results)])
+                               errors(Id, I, Results), env_errors(Id, I, Results)])
                 || I <- Impls, values(Id, I, Key, Results) =/= []]
                || {Key, Label, _} <- metrics(Kind)]
               || {Id, Kind, _, _} <- Rows]],
-    [Header, Gate, Ctx, Every].
+    [Header, Gate, Ctx, Every, env_section(Rows, Impls, Results)].
+
+%% Every measurement that hit a limit of this machine (BT-4856), also those
+%% with no numbers to show in the tables above (the idle row, a server that
+%% did not start). Empty when there were none.
+env_section(Rows, Impls, Results) ->
+    Lines = [io_lib:format("- ~s, ~s: ~s~n", [Id, name(I), env_errors(Id, I, Results)])
+             || {Id, _, _, _} <- Rows, I <- Impls, env_errors(Id, I, Results) =/= "0"],
+    case Lines of
+        [] -> "";
+        _ -> ["\n## Environment errors\n\n"
+              "These measurements hit a limit of the machine running the load, not a server "
+              "error, and are not valid results. See \"OS limits\" in bench/README.md.\n\n", Lines]
+    end.
 
 %% The implementation a row is gated against, if any.
 gate_baseline(gate) -> [cowboy];
@@ -297,14 +364,20 @@ gate_lines(Id, Kind, Base, Results) ->
         Mc = median(C),
         io_lib:format("| ~s | ~s | ~s | ~s | ~s | ~s | ~s | ~s | ~s |~n",
                       [Id, Label, name(Base), fmt(Key, Mb), spread(Key, B), fmt(Key, Mc), spread(Key, C),
-                       ratio(Mb, Mc), verdict(Better, Mb, C, errors(Id, http_buccaneer, Results))])
+                       ratio(Mb, Mc),
+                       verdict(Better, Mb, C, errors(Id, http_buccaneer, Results),
+                               env_limits(Id, [http_buccaneer, Base], Results))])
      end || {Key, Label, Better} <- metrics(Kind), gated(Key)].
 
-verdict(_, undefined, _, _) -> "no data";
-verdict(_, _, [], _) -> "no data";
-verdict(_, _, _, Errors) when Errors =/= "0" -> "MISS (errors)";
-verdict(higher, Mb, C, _) -> case Mb < lists:min(C) of true -> "MISS"; false -> "pass" end;
-verdict(lower, Mb, C, _) -> case Mb > lists:max(C) of true -> "MISS"; false -> "pass" end.
+%% A server error is a MISS. An environment error (the client hit a limit of
+%% this machine, BT-4856) is not the server's: the row is invalid, naming
+%% the limit, and neither passes nor misses.
+verdict(_, _, _, Errors, _) when Errors =/= "0" -> "MISS (errors)";
+verdict(_, _, _, _, [L | _]) -> ["INVALID (environment: ", L, ")"];
+verdict(_, undefined, _, _, _) -> "no data";
+verdict(_, _, [], _, _) -> "no data";
+verdict(higher, Mb, C, _, _) -> case Mb < lists:min(C) of true -> "MISS"; false -> "pass" end;
+verdict(lower, Mb, C, _, _) -> case Mb > lists:max(C) of true -> "MISS"; false -> "pass" end.
 
 ctx_lines(Id, Kind, Impls, Results) ->
     [begin
@@ -324,6 +397,19 @@ name(I) -> atom_to_list(I).
 errors(Id, Impl, Results) ->
     Es = [maps:get(errors, M, 0) || {I, Im, M} <- Results, I =:= Id, Im =:= Impl],
     integer_to_list(lists:sum(Es)).
+
+env_errors(Id, Impl, Results) ->
+    Es = [maps:get(env_errors, M, 0) || {I, Im, M} <- Results, I =:= Id, Im =:= Impl],
+    case lists:sum(Es) of
+        0 -> "0";
+        N -> lists:flatten(io_lib:format("~p (~s)", [N, lists:join("; ", env_limits(Id, [Impl], Results))]))
+    end.
+
+%% The distinct limits the environment errors of these servers on this row
+%% name (empty when there were none).
+env_limits(Id, Impls, Results) ->
+    lists:usort([L || {I, Im, M} <- Results, I =:= Id, lists:member(Im, Impls),
+                      L <- maps:get(env_limits, M, [])]).
 
 values(Id, Impl, Key, Results) ->
     [V || {I, Im, M} <- Results, I =:= Id, Im =:= Impl,

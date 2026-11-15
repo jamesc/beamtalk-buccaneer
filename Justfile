@@ -41,6 +41,11 @@ bench-ab base="origin/main" head="":
 stress *ARGS:
     bench/run.sh stress_main {{ARGS}}
 
+# Tests for the bench harness's OS-limit handling (pre-flight, environment
+# errors, TIME_WAIT settle); Erlang/OTP only, no servers
+bench-test:
+    bench/tests/run.sh
+
 # One short bench round on a few rows, as CI runs it (non-blocking)
 bench-smoke:
     bench/run.sh bench_main --rounds 1 --duration 1000 --warmup 300 --rows smoke

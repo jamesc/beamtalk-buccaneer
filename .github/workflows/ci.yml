@@ -90,6 +90,11 @@ jobs:
       - name: Spikes
         run: just spikes
 
+      # BT-4856: the bench harness's OS-limit handling (pre-flight,
+      # environment errors, TIME_WAIT settle). Erlang only, a few seconds.
+      - name: Bench harness tests
+        run: just bench-test
+
       # BT-4086: short versions of `just bench` and `just stress` (the
       # release gate's harness). Shared runners make the numbers noisy and
       # the timing-bound stress checks flaky, so both are informational.

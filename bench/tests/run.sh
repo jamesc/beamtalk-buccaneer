@@ -15,8 +15,9 @@ mkdir -p "$out"
 erlc -o "$out" "$root"/bench/harness/bench_env.erl "$root"/bench/harness/bench_load.erl \
   "$root"/bench/harness/bench_conn.erl "$root"/bench/harness/bench_http.erl \
   "$root"/bench/harness/hb_hist.erl "$root"/bench/tests/*.erl
+erlc -DTEST -o "$out" "$root"/bench/harness/bench_main.erl
 erl -noshell -pa "$out" -eval '
-  case eunit:test(bench_env_tests, []) of
+  case eunit:test([bench_env_tests, bench_main_tests], []) of
     ok -> halt(0);
     _ -> halt(1)
   end'

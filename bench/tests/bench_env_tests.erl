@@ -22,6 +22,11 @@ env_errors_named_test() ->
     ?assertMatch({eaddrnotavail, _},
                  bench_env:classify({error, {badmatch, {error, eaddrnotavail}}, [frame]})).
 
+unknown_platform_gets_no_linux_advice_test() ->
+    T = bench_env:limit(eaddrnotavail, {unix, freebsd}),
+    ?assertEqual(nomatch, binary:match(T, <<"ip_local_port_range">>)),
+    ?assertNotEqual(nomatch, binary:match(T, <<"not recognized">>)).
+
 limit_text_names_the_limit_test() ->
     {emfile, Fd} = bench_env:classify(emfile),
     ?assertNotEqual(nomatch, binary:match(Fd, <<"ulimit -n">>)),

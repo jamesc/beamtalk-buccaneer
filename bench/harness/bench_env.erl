@@ -53,8 +53,10 @@ limit(emfile, _) ->
     <<"open file descriptors: raise ulimit -n to at least 20000">>;
 limit(eaddrnotavail, {unix, darwin}) ->
     <<"client ports: set net.inet.ip.portrange.first=32768 and net.inet.tcp.msl=1000 (sysctl -w)">>;
+limit(eaddrnotavail, {unix, linux}) ->
+    <<"client ports: widen net.ipv4.ip_local_port_range (sysctl -w)">>;
 limit(eaddrnotavail, _) ->
-    <<"client ports: widen net.ipv4.ip_local_port_range (sysctl -w)">>.
+    <<"client ports: widen this OS's ephemeral port range (platform not recognized)">>.
 
 %% Reasons -> {ServerErrors, EnvErrors}, each a list of reasons; EnvErrors
 %% as `{Atom, LimitText, Reason}`.

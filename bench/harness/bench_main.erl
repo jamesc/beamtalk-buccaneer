@@ -31,6 +31,11 @@
 
 -export([main/0, rows/1]).
 
+%% The report's verdict and environment-error helpers, for bench/tests.
+-ifdef(TEST).
+-export([verdict/5, env_section/3, env_errors/3, env_limits/3]).
+-endif.
+
 main() ->
     Opts = parse(init:get_plain_arguments(), #{
         rounds => 5, duration => 5000, warmup => 1000, rows => full,

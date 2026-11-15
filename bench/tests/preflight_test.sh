@@ -104,6 +104,9 @@ run_linux() { PREFLIGHT_OS=Linux PREFLIGHT_NOFILE="$1" FAKE_RANGE="$2" pf_run no
 check "pf_run Linux defaults but low ulimit" 1 "ulimit -n is 1024" -- run_linux 1024 "32768 60999"
 check "pf_run Linux ok" 0 -- run_linux 20000 "32768 60999"
 
+other_os() { PREFLIGHT_OS=FreeBSD pf_run ports; }
+check "unknown OS: the port check says it cannot" 1 "cannot check the ephemeral port range on FreeBSD" -- other_os
+
 # --- pf_preflight: the message, --force, and the smoke rows ---
 mac_defaults() { PREFLIGHT_OS=Darwin PREFLIGHT_NOFILE=256 FAKE_FIRST=49152 FAKE_LAST=65535 FAKE_MSL=15000 pf_preflight "$@"; }
 check "stops with the commands named" 2 "OS limits too low" "stopping before the run" \

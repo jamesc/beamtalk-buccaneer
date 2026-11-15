@@ -138,6 +138,9 @@ pf_run() {
               "$(pf_sysctl net.inet.tcp.msl)" || bad=1 ;;
           Linux)
             pf_check_ports_linux "$(pf_sysctl net.ipv4.ip_local_port_range)" || bad=1 ;;
+          *)
+            echo "  - cannot check the ephemeral port range on ${os}; only Darwin and Linux are known."
+            bad=1 ;;
         esac ;;
     esac
   done

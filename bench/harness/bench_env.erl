@@ -22,7 +22,7 @@
 -module(bench_env).
 
 -export([classify/1, split/1, failure/1, limit/2,
-         parse_proc_net_tcp/2, parse_netstat/2, time_wait/1,
+         parse_proc_net_tcp/2, parse_netstat/2, time_wait/1, target_for/1,
          ephemeral_range/0, tw_reuse/0, settle/2, settle/3, settle_opts/0]).
 
 -define(DEFAULT_SETTLE_MS, 60000).
@@ -83,14 +83,17 @@ limit_text(A, L) -> iolist_to_binary([atom_to_list(A), ": ", L]).
 
 %% === TIME_WAIT ===
 
-%% Sockets in TIME_WAIT with `Port` at either end, from the text of
-%% /proc/net/tcp (or tcp6): `sl local_address rem_address st ...`, addresses
-%% as HEXIP:HEXPORT, state 06.
+%% Client-side sockets in TIME_WAIT towards `Port` (remote port = Port), from
+%% the text of /proc/net/tcp (or tcp6): `sl local_address rem_address st ...`,
+%% addresses as HEXIP:HEXPORT, state 06. Only these hold an ephemeral port
+%% the next server's client needs. Loopback lists both ends of a connection;
+%% the server's end (local port = Port) holds no client port and counting it
+%% doubled the figure (BT-4976).
 parse_proc_net_tcp(Text, Port) ->
     length([L || L <- string:split(Text, "\n", all),
                  case string:lexemes(L, " ") of
                      [_, Local, Rem, "06" | _] ->
-                         hex_port(Local) =:= Port orelse hex_port(Rem) =:= Port;
+                         hex_port(Local) >= 0 andalso hex_port(Rem) =:= Port;
                      _ -> false
                  end]).
 
@@ -102,12 +105,13 @@ hex_port(Addr) ->
     end.
 
 %% The same from `netstat -an -p tcp` (macOS, BSD): addresses as
-%% `127.0.0.1.54321` (port after the last dot), state last.
+%% `127.0.0.1.54321` (port after the last dot), state last. Foreign port =
+%% Port only, as above.
 parse_netstat(Text, Port) ->
     length([L || L <- string:split(Text, "\n", all),
                  case string:lexemes(L, " ") of
                      [_, _, _, Local, Rem, "TIME_WAIT" | _] ->
-                         dot_port(Local) =:= Port orelse dot_port(Rem) =:= Port;
+                         dot_port(Local) >= 0 andalso dot_port(Rem) =:= Port;
                      _ -> false
                  end]).
 
@@ -165,23 +169,26 @@ sysctl(Name) ->
 %% === Settle ===
 
 %% Settle options from the machine: wait up to BENCH_SETTLE_MS (default
-%% 60 s; 0 turns the wait off), until the TIME_WAIT sockets are down to a
-%% tenth of the ephemeral range, which leaves the next server nine tenths
-%% of it. With the range unknown the target is zero.
+%% 60 s; 0 turns the wait off), until at least nine tenths of the ephemeral
+%% range is free for the next row, i.e. at most a tenth is still held in
+%% TIME_WAIT (`target_for/1`). With the range unknown the target is zero.
 settle_opts() ->
     Timeout = case os:getenv("BENCH_SETTLE_MS") of
         false -> ?DEFAULT_SETTLE_MS;
         "" -> ?DEFAULT_SETTLE_MS;
         S -> try list_to_integer(S) catch error:badarg -> ?DEFAULT_SETTLE_MS end
     end,
-    Target = case ephemeral_range() of
-        {ok, Lo, Hi} -> (Hi - Lo + 1) div 10;
-        unavailable -> 0
-    end,
-    #{timeout_ms => Timeout, poll_ms => 500, target => Target}.
+    Range = ephemeral_range(),
+    #{timeout_ms => Timeout, poll_ms => 500, target => target_for(Range),
+      range => case Range of {ok, Lo, Hi} -> Hi - Lo + 1; unavailable -> undefined end}.
+
+%% The most TIME_WAIT client sockets that still leave the next row nine
+%% tenths of the ephemeral ports free.
+target_for({ok, Lo, Hi}) -> (Hi - Lo + 1) div 10;
+target_for(unavailable) -> 0.
 
 %% Wait for the server's TIME_WAIT sockets to drain, for the row's port.
-%% Answers `#{waited_ms, start, remaining, outcome}` where outcome is
+%% Answers `#{waited_ms, start, remaining, outcome, target, range}` where outcome is
 %% `drained`, `timeout`, `unavailable` (no way to count here: no wait at
 %% all), `reuse` (the OS reuses the ports: no wait) or `off`.
 settle(Port, Opts) ->
@@ -205,7 +212,7 @@ tw_reuse() ->
     end.
 
 %% As settle/2 with the count, sleep and clock injected (for tests).
-settle(Port, #{timeout_ms := Timeout, poll_ms := Poll, target := Target},
+settle(Port, #{timeout_ms := Timeout, poll_ms := Poll, target := Target} = Opts,
        #{count := Count, sleep := Sleep, now := Now}) ->
     T0 = Now(),
     case Timeout =< 0 of
@@ -217,7 +224,8 @@ settle(Port, #{timeout_ms := Timeout, poll_ms := Poll, target := Target},
                       outcome => unavailable};
                 {ok, N0} ->
                     {N, Outcome} = wait(Port, N0, Target, T0 + Timeout, Poll, Count, Sleep, Now),
-                    #{waited_ms => Now() - T0, start => N0, remaining => N, outcome => Outcome}
+                    #{waited_ms => Now() - T0, start => N0, remaining => N, outcome => Outcome,
+                      target => Target, range => maps:get(range, Opts, undefined)}
             end
     end.
 

@@ -58,3 +58,21 @@ env_section_lists_only_environment_errors_test() ->
     ?assertEqual(nomatch, string:find(Out, "churn,")),
     %% None: no section at all.
     ?assertEqual("", bench_main:env_section(Rows, [bandit], results())).
+
+%% BT-4976: the line says which happened, with the target and free ports.
+settle_line_drained_test() ->
+    L = flat(bench_main:settle_line(#{outcome => drained, waited_ms => 2300, start => 32840,
+                                      remaining => 0, target => 3276, range => 32768})),
+    ?assertEqual("settled in 2.3 s: TIME_WAIT 32840 -> 0 (target <= 3276); "
+                 "free client ports 0 -> 32768 of 32768", L).
+
+settle_line_timeout_says_gave_up_test() ->
+    L = flat(bench_main:settle_line(#{outcome => timeout, waited_ms => 1900, start => 20576,
+                                      remaining => 2613, target => 1000, range => 32768})),
+    ?assertMatch("WARNING gave up after 1.9 s: TIME_WAIT 20576 -> 2613 (target <= 1000)" ++ _, L),
+    ?assertEqual(nomatch, string:find(L, "settled")).
+
+settle_line_without_a_known_range_omits_free_ports_test() ->
+    L = flat(bench_main:settle_line(#{outcome => drained, waited_ms => 0, start => 0,
+                                      remaining => 0, target => 0, range => undefined})),
+    ?assertEqual("settled in 0.0 s: TIME_WAIT 0 -> 0 (target <= 0)", L).

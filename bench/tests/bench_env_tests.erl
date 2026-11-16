@@ -87,9 +87,11 @@ proc_net_tcp() ->
     "   4: 0100007F:C353 0100007F:2328 06 00000000:00000000 03:000012D0 00000000     0        0 0 3 0\n".
 
 parse_proc_net_tcp_test() ->
-    %% 0x1F90 = 8080: lines 1 (client side) and 2 (server side) are
-    %% TIME_WAIT on it; 3 is established; 4 is another port's.
-    ?assertEqual(2, bench_env:parse_proc_net_tcp(proc_net_tcp(), 8080)),
+    %% 0x1F90 = 8080: line 1 is a client-side socket (remote port 8080)
+    %% in TIME_WAIT and counts; line 2 is the server's end of another
+    %% connection (local port 8080), which holds no client port, so it does
+    %% not; 3 is established; 4 is another port's (0x2328 = 9000).
+    ?assertEqual(1, bench_env:parse_proc_net_tcp(proc_net_tcp(), 8080)),
     ?assertEqual(1, bench_env:parse_proc_net_tcp(proc_net_tcp(), 9000)),
     ?assertEqual(0, bench_env:parse_proc_net_tcp(proc_net_tcp(), 1234)),
     ?assertEqual(0, bench_env:parse_proc_net_tcp("", 8080)).
@@ -105,9 +107,24 @@ netstat_text() ->
     "tcp6       0      0  ::1.50005              ::1.8080               TIME_WAIT\n".
 
 parse_netstat_test() ->
-    ?assertEqual(3, bench_env:parse_netstat(netstat_text(), 8080)),
+    %% Two client-side TIME_WAIT sockets towards 8080 (IPv4 and IPv6); the
+    %% server-side line (local port 8080) is not a held client port.
+    ?assertEqual(2, bench_env:parse_netstat(netstat_text(), 8080)),
     ?assertEqual(1, bench_env:parse_netstat(netstat_text(), 9090)),
     ?assertEqual(0, bench_env:parse_netstat(netstat_text(), 7777)).
+
+%% Loopback lists both ends of one connection. Counting both is the BT-4976
+%% defect: N connections showed as 2N, above the ephemeral range.
+loopback_both_ends_count_once_test() ->
+    Pairs = [{50000 + I, 8080} || I <- lists:seq(1, 100)],
+    Mac = lists:append([[io_lib:format("tcp4  0  0  127.0.0.1.~p  127.0.0.1.~p  TIME_WAIT~n", [C, S]),
+                         io_lib:format("tcp4  0  0  127.0.0.1.~p  127.0.0.1.~p  TIME_WAIT~n", [S, C])]
+                        || {C, S} <- Pairs]),
+    ?assertEqual(100, bench_env:parse_netstat(lists:flatten(Mac), 8080)),
+    Linux = lists:append([[io_lib:format("0: 0100007F:~4.16.0B 0100007F:1F90 06 0:0 0:0 0 0 0 0 3 0~n", [C]),
+                           io_lib:format("1: 0100007F:1F90 0100007F:~4.16.0B 06 0:0 0:0 0 0 0 0 3 0~n", [C])]
+                          || {C, _} <- Pairs]),
+    ?assertEqual(100, bench_env:parse_proc_net_tcp(lists:flatten(Linux), 8080)).
 
 %% A client that closes first holds the TIME_WAIT socket, here really.
 real_time_wait_test() ->
@@ -153,16 +170,18 @@ call(Agent, Msg) ->
     Agent ! {self(), Msg},
     receive {Agent, R} -> R end.
 
-opts() -> #{timeout_ms => 10000, poll_ms => 500, target => 100}.
+opts() -> #{timeout_ms => 10000, poll_ms => 500, target => 100, range => 1000}.
 
 settle_waits_until_drained_test() ->
     Env = scripted([{ok, 9000}, {ok, 5000}, {ok, 1000}, {ok, 90}]),
-    ?assertEqual(#{waited_ms => 1500, start => 9000, remaining => 90, outcome => drained},
+    ?assertEqual(#{waited_ms => 1500, start => 9000, remaining => 90, outcome => drained,
+                   target => 100, range => 1000},
                  bench_env:settle(8080, opts(), Env)).
 
 settle_does_not_wait_when_already_drained_test() ->
     Env = scripted([{ok, 40}]),
-    ?assertEqual(#{waited_ms => 0, start => 40, remaining => 40, outcome => drained},
+    ?assertEqual(#{waited_ms => 0, start => 40, remaining => 40, outcome => drained,
+                   target => 100, range => 1000},
                  bench_env:settle(8080, opts(), Env)).
 
 settle_is_bounded_test() ->
@@ -177,6 +196,12 @@ settle_without_a_way_to_count_does_not_wait_test() ->
     ?assertEqual(#{waited_ms => 0, start => undefined, remaining => undefined,
                    outcome => unavailable},
                  bench_env:settle(8080, opts(), Env)).
+
+settle_target_is_free_ports_of_the_range_test() ->
+    %% Free ports at the target: at least nine tenths of the range.
+    {ok, Lo, Hi} = {ok, 32768, 65535},
+    ?assertEqual(3276, bench_env:target_for({ok, Lo, Hi})),
+    ?assertEqual(0, bench_env:target_for(unavailable)).
 
 settle_off_test() ->
     Env = scripted([{ok, 9000}]),

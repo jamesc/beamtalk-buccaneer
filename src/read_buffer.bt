@@ -99,7 +99,7 @@ sealed typed Value subclass: ReadBuffer
   observe: n :: Integer -> ReadBuffer =>
     n >= self size ifTrue: [^self grownBy: n]
     sum := self average * 7 + n
-    moved := (Erlang erlang) div: sum with: 8
+    moved := sum div: 8
     below := (ReadBuffer steps select: [:s :: Integer | s < self size])
     below isEmpty ifTrue: [^ReadBuffer size: self size average: moved]
     previous := below last

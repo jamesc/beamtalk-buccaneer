@@ -25,6 +25,34 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 main="$1"
 shift
 
+# OS-limit pre-flight (BT-4856). Only the full `just bench` row set needs
+# limits raised: `--rows smoke` (CI's bench-smoke) and every other entry
+# module skip it, and `--force` / `--preflight-only` are bench_main's
+# alone. --preflight-only reports what the limits are and stops, without
+# building anything.
+if [ "$main" = bench_main ]; then
+  # shellcheck source=bench/preflight.sh
+  . "$root/bench/preflight.sh"
+  force=0
+  preflight_only=0
+  kept=()
+  for a in "$@"; do
+    case "$a" in
+      --force) force=1 ;;
+      --preflight-only) preflight_only=1 ;;
+      *) kept+=("$a") ;;
+    esac
+  done
+  set -- ${kept[@]+"${kept[@]}"}
+  rc=0
+  pf_preflight "$force" "$@" || rc=$?
+  [ "$rc" -eq 0 ] || exit "$rc"
+  if [ "$preflight_only" = 1 ]; then
+    [ -n "$(pf_needs "$@")" ] || echo "bench: these rows need no OS limits" >&2
+    exit 0
+  fi
+fi
+
 # beamtalk-http tracks origin/main so the gate always measures current
 # beamtalk-http (override with BENCH_HTTP_REV_PIN to pin a revision).
 HTTP_REV="${BENCH_HTTP_REV_PIN:-origin/main}"

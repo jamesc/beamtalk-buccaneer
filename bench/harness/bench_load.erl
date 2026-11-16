@@ -266,12 +266,15 @@ run(N, Opts, Body) ->
         coordinator => self()
     },
     Pids = [spawn(fun() -> Body(Ctx) end) || _ <- lists:seq(1, N)],
-    {Ready, Failed} = await_ready(length(Pids), 0, 0),
+    {Ready, FailedReasons} = await_ready(length(Pids), 0, []),
     case Ready of
         0 ->
             atomics:put(maps:get(phase, Ctx), 1, ?STOP),
             [exit(P, kill) || P <- Pids],
-            #{errors => N, error_reasons => [no_connections | collect_errors([])]};
+            %% Every worker failed to connect: an environment error (the
+            %% client is out of ports or descriptors) when that is why.
+            {Server, Env} = bench_env:split(FailedReasons ++ collect_errors([])),
+            error_fields(length(Server), Env, [no_connections | lists:usort(Server)]);
         _ ->
             timer:sleep(maps:get(warmup_ms, Opts, 1000)),
             T0 = erlang:monotonic_time(),
@@ -283,26 +286,39 @@ run(N, Opts, Body) ->
             Errors = drain_errors(Pids),
             Ops = counters:get(maps:get(ops, Ctx), 1),
             Bytes = counters:get(maps:get(ops, Ctx), 3),
-            maps:merge(hb_hist:summary(maps:get(hist, Ctx)), #{
-                ops => Ops,
-                seconds => Secs,
-                rps => Ops / Secs,
-                bytes_per_s => Bytes / Secs,
-                server_closes => counters:get(maps:get(ops, Ctx), 2),
-                connected => Ready,
-                connect_failures => Failed,
-                errors => length(Errors) + Failed,
-                error_reasons => lists:sublist(lists:usort(Errors), 5)
-            })
+            {Server, Env} = bench_env:split(FailedReasons ++ Errors),
+            maps:merge(hb_hist:summary(maps:get(hist, Ctx)),
+                maps:merge(#{
+                    ops => Ops,
+                    seconds => Secs,
+                    rps => Ops / Secs,
+                    bytes_per_s => Bytes / Secs,
+                    server_closes => counters:get(maps:get(ops, Ctx), 2),
+                    connected => Ready,
+                    connect_failures => length(FailedReasons)
+                }, error_fields(length(Server), Env, lists:usort(Server))))
     end.
 
-await_ready(0, R, F) -> {R, F};
+%% The error fields of a measurement: `errors` counts server errors only;
+%% environment errors (BT-4856) are `env_errors`, with the limit each names.
+error_fields(NServer, Env, Reasons) ->
+    Base = #{errors => NServer, error_reasons => lists:sublist(Reasons, 5)},
+    case Env of
+        [] -> Base;
+        _ ->
+            Base#{env_errors => length(Env),
+                  env_limits => lists:usort([iolist_to_binary([atom_to_list(A), ": ", L])
+                                             || {A, L, _} <- Env]),
+                  env_reasons => lists:sublist(lists:usort([R || {_, _, R} <- Env]), 3)}
+    end.
+
+await_ready(0, R, F) -> {R, lists:reverse(F)};
 await_ready(Left, R, F) ->
     receive
         {ready, _} -> await_ready(Left - 1, R + 1, F);
-        {failed, _, _} -> await_ready(Left - 1, R, F + 1)
+        {failed, _, Why} -> await_ready(Left - 1, R, [Why | F])
     after 120000 ->
-        {R, F + Left}
+        {R, lists:reverse(F) ++ lists:duplicate(Left, ready_timeout)}
     end.
 
 drain_errors(Pids) ->

@@ -12,6 +12,8 @@ just bench                               # 5 rounds x 5 s, every row, five serve
 just bench --rounds 7 --duration 10000   # longer
 just bench --only get_c10,tls_get_c100   # some rows
 just bench --impls http_buccaneer,cowboy
+just bench --preflight-only              # check the OS limits for the rows, then stop
+just bench-test                          # tests of the OS-limit handling (CI)
 just bench-smoke                         # 1 round x 1 s on the smoke rows (CI)
 just stress                              # every stress test, full sizes, 30-minute soak
 just stress --soak-minutes 5 --only soak
@@ -23,8 +25,8 @@ just bench-profile --impl buccaneer --row get_c10   # call-time profile of one r
 Neither is part of `just test`; CI runs `bench-smoke` and `stress-smoke`
 as non-blocking steps. Both need `beamtalk`, Erlang/OTP 28 and Elixir
 1.18 or later (`bench/bandit/.tool-versions` pins 1.20.1 on OTP 28.5) on
-the `PATH`, network access on the first run, and about 20,000 file
-descriptors (`ulimit -n`) for the 10,000-connection row. With a source
+the `PATH` and network access on the first run. The full row set also
+needs the OS limits in [OS limits](#os-limits) raised. With a source
 build of beamtalk whose stdlib is built elsewhere, set
 `BEAMTALK_RUNTIME_DIR` as for `beamtalk test`.
 
@@ -32,6 +34,57 @@ build of beamtalk whose stdlib is built elsewhere, set
 (`bench_main`, `stress_main` or `bench_profile`). Reports go to
 `_build/bench/report-*.md`, one JSON line per measurement to
 `_build/bench/raw-*.jsonl`; stress server logs to `_build/stress/`.
+
+## OS limits
+
+The full `just bench` opens 10,000 connections at once (`idle_10k`) and
+runs tens of thousands of new connections a second (`churn_close_w32`,
+`tls_handshake_w32`: about 26,000 a second on an M5 Max). With a laptop's
+default limits that fails for reasons that have nothing to do with the
+servers (BT-4856): `idle_10k` stops at 4,032 connections with `emfile`, and
+the first server of a churn row uses up the client ports, which then stay
+held in TIME_WAIT for the next server (cowboy and Bandit included), so
+every later server in the row fails with `eaddrnotavail`.
+
+`bench/run.sh` checks the limits before a full run and stops with the
+commands to fix them. It changes no system setting; run the commands
+yourself (they last until reboot, or until the shell exits for `ulimit`).
+`--force` goes on anyway, with the same message as a warning. Only the
+rows that need a limit ask for it: `--rows smoke` (`just bench-smoke`, CI)
+and `--only` lists without those rows need none, and nothing runs for
+`stress`, `bench-ab` or `bench-profile`. `just bench --preflight-only` reports
+and stops, without building.
+
+| Setting | Needed by | Needs | Fix |
+|---|---|---|---|
+| open files, `ulimit -n` | `idle_10k` | 20,000 or more (10,000 client sockets and 10,000 server sockets) | `ulimit -n 20000` in the shell that runs `just bench` (above the hard limit: macOS `sudo launchctl limit maxfiles 20000 200000`; Linux `nofile` in `/etc/security/limits.conf`) |
+| macOS: `net.inet.ip.portrange.first` / `last` | `idle_10k`, `churn_close_w32`, `tls_handshake_w32` | 28,000 or more ports (default 49152-65535, 16,384) | `sudo sysctl -w net.inet.ip.portrange.first=32768 net.inet.ip.portrange.last=65535` |
+| macOS: `net.inet.tcp.msl` | the same | 1,000 ms or less (default 15,000: a closed port stays held for 30 s) | `sudo sysctl -w net.inet.tcp.msl=1000` |
+| Linux: `net.ipv4.ip_local_port_range` | the same | 28,000 or more ports (default `32768 60999`, 28,232) | `sudo sysctl -w net.ipv4.ip_local_port_range="32768 60999"` |
+
+With `ulimit -n 20000`, `net.inet.tcp.msl=1000` and
+`net.inet.ip.portrange.first=32768` a full run on the M5 Max had zero
+errors on all four servers. Linux's default `net.ipv4.tcp_tw_reuse=2`
+reuses loopback TIME_WAIT ports, so only a narrowed port range or a low
+`ulimit -n` matters there.
+
+**Between measurements.** After a churn or idle row (`settle => true` in
+`bench_main:rows/1`), the harness waits until the TIME_WAIT sockets on the
+server's port have drained to a tenth of the client port range, for up to
+60 s (`BENCH_SETTLE_MS`; `0` turns the wait off), and prints how long it
+waited: `churn_close_w32: settled in 14.2 s: TIME_WAIT sockets 16100 -> 340`.
+Linux with `net.ipv4.tcp_tw_reuse` 1 or 2 (the default) reuses loopback
+TIME_WAIT ports, so the harness does not wait there and says so. Otherwise Linux counts them from `/proc/net/tcp`, macOS from `netstat -an -p tcp`;
+where neither is available it does not wait and says so. A wait that times
+out prints a warning. The smoke rows do not wait.
+
+**Environment errors.** `eaddrnotavail` and `emfile` from the load
+generator are counted apart from server errors (`env_errors`, naming the
+limit, in the raw JSON; an "Environment errors" column in the report; the
+log line says `ENVIRONMENT ERRORS`). A gate row with only environment
+errors is `INVALID (environment: ...)`, neither a pass nor a MISS. Any
+other error is a server error and still reads `MISS (errors)`. Run
+`just bench-test` for the tests of all this.
 
 ## The servers
 

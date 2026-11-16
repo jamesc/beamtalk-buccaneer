@@ -33,7 +33,7 @@
 
 %% The report's verdict and environment-error helpers, for bench/tests.
 -ifdef(TEST).
--export([verdict/5, env_section/3, env_errors/3, env_limits/3]).
+-export([verdict/5, env_section/3, env_errors/3, env_limits/3, settle_line/1]).
 -endif.
 
 main() ->
@@ -185,12 +185,19 @@ settle_line(#{outcome := reuse}) ->
     "settle: net.ipv4.tcp_tw_reuse lets loopback reuse TIME_WAIT ports; not waiting";
 settle_line(#{outcome := unavailable}) ->
     "settle: cannot count TIME_WAIT sockets on this platform; not waiting";
-settle_line(#{outcome := drained, waited_ms := W, start := N0, remaining := N}) ->
-    io_lib:format("settled in ~.1f s: TIME_WAIT sockets ~p -> ~p", [W / 1000, N0, N]);
-settle_line(#{outcome := timeout, waited_ms := W, start := N0, remaining := N}) ->
-    io_lib:format("WARNING settle gave up after ~.1f s: TIME_WAIT sockets ~p -> ~p; the next "
+settle_line(#{outcome := drained, waited_ms := W, start := N0, remaining := N, target := T} = S) ->
+    io_lib:format("settled in ~.1f s: TIME_WAIT ~p -> ~p (target <= ~p)~s",
+                  [W / 1000, N0, N, T, free_ports(S)]);
+settle_line(#{outcome := timeout, waited_ms := W, start := N0, remaining := N, target := T} = S) ->
+    io_lib:format("WARNING gave up after ~.1f s: TIME_WAIT ~p -> ~p (target <= ~p)~s; the next "
                   "server may see eaddrnotavail (raise BENCH_SETTLE_MS or lower net.inet.tcp.msl)",
-                  [W / 1000, N0, N]).
+                  [W / 1000, N0, N, T, free_ports(S)]).
+
+%% "; free client ports 0 -> 32768 of 32768" when the range is known.
+free_ports(#{range := R, start := N0, remaining := N}) when is_integer(R) ->
+    io_lib:format("; free client ports ~p -> ~p of ~p", [max(R - N0, 0), max(R - N, 0), R]);
+free_ports(_) ->
+    "".
 
 run_row(http, Port, _Peer, P) -> bench_load:http(Port, P);
 run_row(churn, Port, _Peer, P) -> bench_load:churn(Port, P);

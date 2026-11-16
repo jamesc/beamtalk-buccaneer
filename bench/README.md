@@ -69,14 +69,27 @@ reuses loopback TIME_WAIT ports, so only a narrowed port range or a low
 `ulimit -n` matters there.
 
 **Between measurements.** After a churn or idle row (`settle => true` in
-`bench_main:rows/1`), the harness waits until the TIME_WAIT sockets on the
-server's port have drained to a tenth of the client port range, for up to
-60 s (`BENCH_SETTLE_MS`; `0` turns the wait off), and prints how long it
-waited: `churn_close_w32: settled in 14.2 s: TIME_WAIT sockets 16100 -> 340`.
+`bench_main:rows/1`), the harness waits, for up to 60 s (`BENCH_SETTLE_MS`;
+`0` turns the wait off), until the next row has enough free client ports.
+"Settled enough" means at least nine tenths of the ephemeral range is free,
+that is at most a tenth of it (3,276 of macOS's 32,768 ports) is still held
+in TIME_WAIT; with the range unknown the target is zero. What is counted is
+the client-side sockets in TIME_WAIT towards the server's port (remote port
+= the row's port), because only those hold a port the next server's clients
+need. Loopback lists both ends of every connection, and the server's end
+(local port = the row's port) holds none, so it is not counted. Before
+BT-4976 both ends were counted, so a count could exceed the range.
+
+The line says what happened and shows the target and the free ports:
+
+```text
+churn_close_w32: settled in 14.2 s: TIME_WAIT 16100 -> 340 (target <= 3276); free client ports 16668 -> 32428 of 32768
+churn_close_w32: WARNING gave up after 60.0 s: TIME_WAIT 32840 -> 5000 (target <= 3276); free ports ... ; the next server may see eaddrnotavail ...
+```
+
 Linux with `net.ipv4.tcp_tw_reuse` 1 or 2 (the default) reuses loopback
 TIME_WAIT ports, so the harness does not wait there and says so. Otherwise Linux counts them from `/proc/net/tcp`, macOS from `netstat -an -p tcp`;
-where neither is available it does not wait and says so. A wait that times
-out prints a warning. The smoke rows do not wait.
+where neither is available it does not wait and says so. The smoke rows do not wait.
 
 **Environment errors.** `eaddrnotavail` and `emfile` from the load
 generator are counted apart from server errors (`env_errors`, naming the

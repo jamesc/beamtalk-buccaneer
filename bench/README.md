@@ -169,6 +169,8 @@ frames).
 | `churn_close_w32` | a new connection per request (`connection: close`), 32 workers | gate |
 | `tls_handshake_w32` | the same over TLS: a full handshake per request | gate |
 | `tls_get_c100` | keep-alive `GET /` over TLS, 100 connections | gate |
+| `tls_post_echo_raw_64KiB_c10` | `POST /echo_raw`, 64 KiB body, 10 connections over TLS (BT-4979: TLS reads records through the socket `buffer`) | context |
+| `get_hdr2KiB_c100` | keep-alive `GET /` with a 2 KiB `cookie` header, 100 connections (BT-4979: a head longer than the initial 512-byte `buffer`) | context |
 | `idle_10k` | 10,000 idle keep-alive connections (one GET each): node and process memory and processes per connection | reported |
 | `h2_get_10x10` | HTTP/2 `GET /`, 10 connections x 10 streams in flight | context |
 | `ws_echo_c100` | WebSocket echo, 64-byte text, 100 connections | context |
@@ -316,6 +318,31 @@ Run it on an otherwise idle machine. Exit status 1 means the gate failed.
 `BENCH_AB_ITERATIONS`, `BENCH_AB_ROUNDS` and `BENCH_AB_DURATION` tune the
 run (see `bench/ab.sh`). The Actions tab can also run the `CI` workflow
 manually with `base` and `head` commits to compare any two.
+
+## Rows A/B (`bench/rows_ab.sh`)
+
+`bench/ab.sh` gates h2c speed. To see what a change does to any other row
+(memory included) against `main` in one run, use
+
+```bash
+bench/rows_ab.sh origin/main --rounds 3 --duration 4000 --impls buccaneer,http_buccaneer \
+  --only idle_10k,get_c1,get_c100,get_c1000,tls_get_c100,post_echo_64KiB_c10
+```
+
+It builds the base ref in a worktree, copies this checkout's `bench/` and
+`test/stress/` over it, and runs `bench_main` one round at a time,
+alternating which side goes first. Raw lines go to
+`_build/rows_ab/{base,pr}.jsonl`. Read a difference against the spread of
+the rounds, not against one number.
+
+## The socket read buffer (BT-4979)
+
+Connections start with `{buffer, 512}` (cowboy's start) instead of OTP's
+9216, and `ReadBuffer` grows it when reads fill it; see its class comment.
+The rows to watch for it: `idle_10k` (memory), `tls_post_echo_raw_64KiB_c10`
+and `get_hdr2KiB_c100` (the paths a fixed small buffer slows), and
+`get_c*`, `tls_get_c100`, `post_echo_64KiB_c10`, `chunked_1MiB_c10`,
+`h2_get_10x10`, `ws_echo_c100` (which must not move).
 
 ## Caveats
 

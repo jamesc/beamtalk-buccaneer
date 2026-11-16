@@ -149,6 +149,10 @@ typed Value subclass: BuccaneerConfig
   /// The `#http1` section resolved once (`from:` sets it), for the
   /// HTTP/1 request path to read without Dictionary lookups.
   field: http1Options :: HTTP1Options = HTTP1Options new
+  /// Whether connections start with a small socket `buffer` and grow it
+  /// with load (`ReadBuffer`). False when the user set a `buffer` in
+  /// `#transportOptions`: their value is then kept as it is.
+  field: dynamicBuffer :: Boolean = true
 
   /// Build a validated config from an options dictionary. Unknown keys
   /// raise, as a typo the user should hear about.
@@ -216,10 +220,14 @@ typed Value subclass: BuccaneerConfig
       name: #websocket
       keys: self websocketKeys
     self checkWebSocketOptions: websocket
-    catalina :: CatalinaOptions := self
+    folded :: CatalinaOptions := self
       catalinaSection: options
       port: port
       scheme: scheme
+    dynamic := (self transportSets: #buffer in: folded) not
+    catalina :: CatalinaOptions := dynamic ifTrue: [
+      self withMinimumBuffer: folded
+    ] ifFalse: [folded]
     display := options at: #displayHandler ifAbsent: [handler]
     startup := options at: #startupLog ifAbsent: [#info]
     BuccaneerConfig
@@ -234,6 +242,7 @@ typed Value subclass: BuccaneerConfig
       websocket: websocket
       catalina: catalina
       http1Options: (HTTP1Options from: http1)
+      dynamicBuffer: dynamic
 
   class topLevelKeys -> List(Symbol) =>
     #(#handler, #scheme, #port, #ip, #inet, #inet6, #keyfile, #certfile, #otpApp, #cipherSuite, #displayHandler, #startupLog, #catalina, #http, #http1, #http2, #websocket)
@@ -502,6 +511,32 @@ typed Value subclass: BuccaneerConfig
     list := trans
     extra do: [:opt | list := list add: opt]
     withPort at: #transportOptions put: list
+
+  /// Whether the `#transportOptions` in a `#catalina` section set `key`
+  /// (a `{key, value}` pair in a list, or a key of a Dictionary).
+  class transportSets: key :: Symbol in: catalina :: ConfigOptions -> Boolean =>
+    trans := catalina at: #transportOptions ifAbsent: [nil]
+    trans match: [
+      d :: Dictionary -> d includesKey: key;
+      l :: List -> l anySatisfy: [:opt :: Object |
+        (opt isKindOf: Tuple) and: [(opt at: 1) =:= key]
+      ];
+      _ -> false
+    ]
+
+  /// `{buffer, 512}` as the listen socket's default (accepted sockets
+  /// inherit it), so an idle connection holds a 512-byte read buffer, not
+  /// OTP's 9216 (BT-4979). `ReadBuffer` grows it with load. Anything
+  /// but a Dictionary or List of options is left for Catalina to reject.
+  class withMinimumBuffer: catalina :: ConfigOptions -> ConfigOptions =>
+    minimum := ReadBuffer minimum
+    trans := catalina at: #transportOptions ifAbsent: [nil]
+    trans match: [
+      d :: Dictionary -> catalina at: #transportOptions put: (d at: #buffer put: minimum);
+      l :: List -> catalina at: #transportOptions put: (l add: {#buffer, minimum});
+      nil -> catalina at: #transportOptions put: (Dictionary new at: #buffer put: minimum);
+      _ -> catalina
+    ]
 
   /// Raw options from the top-level conveniences: {#key, value} pairs and
   /// bare atoms, as Catalina's transportOptions takes them.

@@ -257,7 +257,53 @@ TestCase subclass: BuccaneerConfigTest
       #handler => self handlerBlock,
       #keyfile => "k"
     }
-    self deny: (plain catalina includesKey: #transportOptions)
+    plainTrans :: Dictionary := plain catalina at: #transportOptions
+    self assert: plainTrans keys equals: #(#buffer)
+
+  testListenBufferStartsSmall =>
+    config := BuccaneerConfig from: #{#handler => self handlerBlock}
+    trans :: Dictionary := config catalina at: #transportOptions
+    self assert: (trans at: #buffer) equals: 512
+    self assert: config dynamicBuffer
+
+  testListenBufferJoinsFoldedOptions =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #inet => true
+    }
+    trans :: Dictionary := config catalina at: #transportOptions
+    self assert: (trans at: #buffer) equals: 512
+    self assert: (trans at: #inet) equals: true
+
+  testListenBufferJoinsListOptions =>
+    config := BuccaneerConfig from: #{
+      #handler => self handlerBlock,
+      #catalina => #{#transportOptions => #(#inet6)}
+    }
+    trans :: List := config catalina at: #transportOptions
+    self assert: (trans includes: {#buffer, 512})
+    self assert: (trans includes: #inet6)
+    self assert: config dynamicBuffer
+
+  testUsersBufferWinsAndStaysFixed =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #catalina => #{#transportOptions => #{#buffer => 9216}}
+      }
+    trans :: Dictionary := config catalina at: #transportOptions
+    self assert: (trans at: #buffer) equals: 9216
+    self deny: config dynamicBuffer
+
+  testUsersBufferInListWinsAndStaysFixed =>
+    config := BuccaneerConfig
+      from: #{
+        #handler => self handlerBlock,
+        #catalina => #{#transportOptions => #({#buffer, 4096})}
+      }
+    trans :: List := config catalina at: #transportOptions
+    self assert: trans equals: #({#buffer, 4096})
+    self deny: config dynamicBuffer
 
   testPortPutNew =>
     config := BuccaneerConfig from: #{

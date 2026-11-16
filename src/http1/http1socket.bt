@@ -130,6 +130,7 @@ sealed typed Value subclass: HTTP1Socket
         TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason
       ]
     data := result value
+    ReadBuffer noteExplicit: data size socket: sock
     self
       readExactly: toRead
       from: (buffer concat: data)
@@ -702,6 +703,7 @@ sealed typed Value subclass: HTTP1Socket
       ifTrue: [
         chunk := result value
         chunk isEmpty ifTrue: [^self disconnectedOrTimeout: sock]
+        ReadBuffer note: chunk size socket: sock
         ^chunk
       ]
     reason := result error

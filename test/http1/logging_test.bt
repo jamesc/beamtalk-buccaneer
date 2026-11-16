@@ -130,6 +130,35 @@ TestCase subclass: LoggingTest
     (Erlang gen_tcp) send: doomed with: "POST /up HTTP/1.1\r\nhost: x\r\ncontent-length: 100\r\n\r\npart"
     (Erlang gen_tcp) close: doomed
 
+  /// The line THIS server writes for a client closure: HTTP/1 signals
+  /// "Unrecoverable error: #<reason>" with one of the closure reasons.
+  /// The capture is node-wide, so another class's server can log a
+  /// TransportError of its own by default (h2spec's `** (TransportError)
+  /// stream reset`, BuccaneerLoggerTest's `Unrecoverable error` with no
+  /// reason); matching the bare class name made this test flaky
+  /// (BT-4849). Only the closure line belongs to a closure.
+  closureLine: reason :: Symbol -> String =>
+    "** (TransportError) Unrecoverable error: #" ++ reason asString
+
+  closureLogged: content =>
+    BuccaneerLogger clientClosureReasons anySatisfy: [:r |
+      content includesSubstring: (self closureLine: r)
+    ]
+
+  /// The capture once this server's closure line is in it, for up to
+  /// three seconds (LogCapture await: matches one token, and a leaked
+  /// TransportError of another reason must not end the wait early).
+  awaitClosure: path =>
+    content := ""
+    60
+      timesRepeat: [
+        read := File readAll: path
+        content := read isError ifTrue: [""] ifFalse: [read value]
+        (self closureLogged: content) ifTrue: [^content]
+        Timer sleep: 50
+      ]
+    content
+
   testClientClosureSilentByDefault =>
     path := LogCapture attach: self tableName
     srv := (Buccaneer
@@ -143,7 +172,7 @@ TestCase subclass: LoggingTest
     Timer sleep: 3500
     LogCapture detach: self tableName
     content := (File readAll: path) value
-    self deny: (content includesSubstring: "TransportError")
+    self deny: (self closureLogged: content)
     self assert: (srv stop: 5000) isOk
 
   testClientClosureLoggedWhenEnabled =>
@@ -160,7 +189,7 @@ TestCase subclass: LoggingTest
         ]
       }) unwrap
     self closeMidBody: (self portOf: srv)
-    content := LogCapture await: "TransportError" in: path
+    content := self awaitClosure: path
     LogCapture detach: self tableName
-    self assert: (content includesSubstring: "** (TransportError)")
+    self assert: (self closureLogged: content)
     self assert: (srv stop: 5000) isOk

@@ -5,11 +5,12 @@
 ///
 /// Formatting the date costs more than a cache read, so request processes
 /// read the cached value while a per-second updater refreshes it. The
-/// first miss on a node starts the updater (a forked process that owns the
-/// table, so it outlives the connection that started it; Bandit starts its
-/// clock with the application, and Buccaneer has none) and computes that
-/// one date itself. Until BT-4086 nothing started the updater, so every
-/// request missed, logged a warning and formatted the date.
+/// first miss on a node creates the table (ClockTable owns it, so it
+/// outlives the connection that started it), starts the updater (a forked
+/// process; Bandit starts its clock with the application, and Buccaneer has
+/// none) and computes that one date itself. Until BT-4086 nothing started
+/// the updater, so every request missed, logged a warning and formatted the
+/// date.
 typed Object subclass: Clock
 
   class tableName -> Symbol => #BuccaneerClock
@@ -18,42 +19,52 @@ typed Object subclass: Clock
 
   /// {"date", <rfc9110 date>} from the cache, or freshly computed on a
   /// miss (which starts the updater if none is running).
-  class dateHeader -> Tuple(String, String) =>
-    cached := self cachedDate
+  class dateHeader -> Tuple(String, String) => self dateHeaderIn: self tableName
+
+  /// `dateHeader` against the table `table` (tests use their own, so none
+  /// deletes the table other tests and servers share).
+  class dateHeaderIn: table :: Symbol -> Tuple(String, String) =>
+    cached := self cachedDateIn: table
     cached isNil
       ifTrue: [
-        self ensureUpdater
+        self ensureUpdaterIn: table
         {"date", self computeDateHeader}
       ]
       ifFalse: [{"date", cached}]
 
-  /// Start the updater unless its table exists. Two racing starts are
-  /// harmless: the loser cannot create the table and exits.
-  class ensureUpdater -> Nil =>
-    (Ets exists: self tableName) ifFalse: [[self runUpdater] fork]
+  /// Start the updater unless the table exists. `ClockTable ensureNamed:`
+  /// creates the table once, serialised in its own process, and says
+  /// whether this call did: only that caller starts the updater, so racing
+  /// misses start exactly one.
+  class ensureUpdaterIn: table :: Symbol -> Nil =>
+    (ClockTable ensureNamed: table) ifTrue: [[self runUpdaterIn: table] fork]
     nil
 
-  /// The updater: create the table (raising, and so exiting, if another
-  /// updater already did) and refresh the date every second, forever.
-  class runUpdater -> Nil =>
-    table := Ets new: self tableName type: #set
-    [true]
+  /// The updater: refresh the date every second while the table exists
+  /// (it ends when the table is deleted, and the next miss starts a new one).
+  class runUpdaterIn: table :: Symbol -> Nil =>
+    [Ets exists: table]
       whileTrue: [
-        table at: self cacheKey put: self computeDateHeader
+        (Ets named: table) at: self cacheKey put: self computeDateHeader
         Timer sleep: 1000
       ]
     nil
 
   /// The cached date, or nil when the table or key is missing.
-  class cachedDate -> String | Nil =>
-    (Ets exists: self tableName) ifFalse: [^nil]
-    date := (Ets named: self tableName) at: self cacheKey
+  class cachedDate -> String | Nil => self cachedDateIn: self tableName
+
+  class cachedDateIn: table :: Symbol -> String | Nil =>
+    (Ets exists: table) ifFalse: [^nil]
+    date := (Ets named: table) at: self cacheKey
     date
 
   /// Recompute the date, store it, and answer it.
-  class updateCache -> String =>
+  class updateCache -> String => self updateCacheIn: self tableName
+
+  class updateCacheIn: table :: Symbol -> String =>
     date := self computeDateHeader
-    (Ets newOrExisting: self tableName type: #set) at: self cacheKey put: date
+    ClockTable ensureNamed: table
+    (Ets named: table) at: self cacheKey put: date
     date
 
   /// Format the current UTC time per RFC9110§5.6.7.

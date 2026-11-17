@@ -3,15 +3,21 @@
 
 TestCase subclass: ClockTest
 
+  // Test classes run in parallel and the default table (Clock tableName) is
+  // shared by every server and ExchangeTest, so nothing here deletes it:
+  // the cold-cache tests use their own tables, one name per test (an
+  // updater from an earlier test may outlive its table by up to a second,
+  // and must not find a recreated one of the same name).
   // Bandit's clock_test asserts the logged warning on a cache miss; there
   // is no log capture in BUnit, so these tests assert the miss behaviour
   // (a fresh valid date) rather than the warning itself.
-  // The table may belong to the updater a miss started; only its owner
-  // can delete it, and then the next miss starts a new one.
   tearDown =>
-    (Ets exists: Clock tableName) ifTrue: [
-      [(Ets named: Clock tableName) delete] on: Error do: [:e | nil]
-    ]
+    #(#ClockTestMiss, #ClockTestHit, #ClockTestUpdater, #ClockTestStore, #ClockTestOnce, #ClockTestRace)
+      do: [:t |
+        (Ets exists: t) ifTrue: [
+          [(Ets named: t) delete] on: Error do: [:e | nil]
+        ]
+      ]
     self
 
   testComputeDateHeaderFormat =>
@@ -28,46 +34,85 @@ TestCase subclass: ClockTest
     self assert: (Clock dayNames at: sunday weekday) equals: "Sun"
 
   testDateHeaderMissComputesFresh =>
-    header := Clock dateHeader
+    header := Clock dateHeaderIn: #ClockTestMiss
     self assert: (header at: 1) equals: "date"
     self assert: ((header at: 2) matchesRegex: "GMT$" options: #())
 
-  // An updater started by an earlier test (or by a server in the same
-  // node) can survive tearDown, which only its owner may delete, and it
-  // overwrites the cache once a second. If that tick lands between the
-  // put and the read, the read sees the real date. Retry a few times: the
-  // updater writes once a second, so it cannot hit every attempt.
   testDateHeaderHitReturnsCached =>
     planted := "Wed, 21 Oct 2015 07:28:00 GMT"
-    header := nil
-    hit := false
-    5
-      timesRepeat: [
-        hit
-          ifFalse: [
-            (Ets newOrExisting: Clock tableName type: #set) at: Clock cacheKey put: planted
-            header := Clock dateHeader
-            hit := (header at: 2) =:= planted
-          ]
-      ]
+    ClockTable ensureNamed: #ClockTestHit
+    (Ets named: #ClockTestHit) at: Clock cacheKey put: planted
+    header := Clock dateHeaderIn: #ClockTestHit
     self assert: (header at: 1) equals: "date"
     self assert: (header at: 2) equals: planted
 
   testMissStartsTheUpdater =>
-    Clock dateHeader
+    Clock dateHeaderIn: #ClockTestUpdater
     filled := false
     50
       timesRepeat: [
-        filled ifFalse: [
-          Clock cachedDate isNil ifTrue: [
-            Timer sleep: 20
-          ] ifFalse: [filled := true]
-        ]
+        filled
+          ifFalse: [
+            (Clock cachedDateIn: #ClockTestUpdater) isNil ifTrue: [
+              Timer sleep: 20
+            ] ifFalse: [filled := true]
+          ]
       ]
     self assert: filled
-    self assert: (Clock cachedDate matchesRegex: "GMT$" options: #())
+    self assert: ((Clock cachedDateIn: #ClockTestUpdater) matchesRegex: "GMT$" options: #())
 
   testUpdateCacheStoresFreshDate =>
-    date := Clock updateCache
+    date := Clock updateCacheIn: #ClockTestStore
     self assert: (date matchesRegex: "GMT$" options: #())
-    self assert: Clock cachedDate equals: date
+    self assert: (Clock cachedDateIn: #ClockTestStore) equals: date
+
+  // The default table is the one servers use. Others may refresh it at the
+  // same time, so only check that a date is there.
+  testUpdateCacheFillsTheDefaultTable =>
+    Clock updateCache
+    self assert: (Clock cachedDate matchesRegex: "GMT$" options: #())
+
+  testEnsureCreatesTheTableOnce =>
+    self assert: (ClockTable ensureNamed: #ClockTestOnce) equals: true
+    self assert: (ClockTable ensureNamed: #ClockTestOnce) equals: false
+
+  // BT-4994: many processes call updateCache on a cold cache at the same
+  // moment. Creating the table must be safe under that: none may fail with
+  // already_exists (before the fix 20 to 30 of 32 did). Each worker waits at
+  // a gate that the test opens once all are spawned, writes whether
+  // updateCache raised, and exits at once, as a request process does: the
+  // table must not depend on its creator staying alive. Several rounds,
+  // each starting cold, give the race many chances.
+  testUpdateCacheRacesOnColdCache =>
+    failures := 0
+    8 timesRepeat: [failures := failures + (self raceRoundWith: 32)]
+    self assert: failures equals: 0
+
+  /// One round: workers processes race updateCacheIn: on a cold table.
+  /// Answers how many of them raised.
+  raceRoundWith: workers :: Integer -> Integer =>
+    (Ets exists: #ClockTestRace) ifTrue: [
+      [(Ets named: #ClockTestRace) delete] on: Error do: [:e | nil]
+    ]
+    [
+      (Ets exists: #ClockRaceCtl) ifTrue: [(Ets named: #ClockRaceCtl) delete]
+    ] on: Error do: [:e | nil]
+    ctl := Ets new: #ClockRaceCtl type: #set
+    workers
+      timesRepeat: [
+        [
+          [((Ets named: #ClockRaceCtl) at: #go) isNil] whileTrue: []
+          outcome := Result tryDo: [Clock updateCacheIn: #ClockTestRace]
+          (Ets named: #ClockRaceCtl) at: Pid current put: outcome isError
+        ] fork
+      ]
+    ctl at: #go put: true
+    // Poll for the workers' reports (every worker writes one Pid key).
+    200 timesRepeat: [ctl size < (workers + 1) ifTrue: [Timer sleep: 10]]
+    reported := ctl size - 1
+    raised := (ctl keys reject: [:k |
+      k =:= #go
+    ]) count: [:k | (ctl at: k) =:= true]
+    self assert: reported equals: workers
+    ctl delete
+    raised

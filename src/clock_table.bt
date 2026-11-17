@@ -14,7 +14,6 @@
 /// `spawnAs:` registers the name atomically, and the loser of a race never
 /// runs, so there is one owner. Messages sent to it queue until it is up.
 Actor subclass: ClockTable
-  state: created :: Integer = 0
 
   class registeredName -> Symbol => #buccaneer_clock_table
 
@@ -24,22 +23,12 @@ Actor subclass: ClockTable
       a
     ] ifError: [:e | (self named: self registeredName) unwrap]
 
-  /// Make sure the clock's table exists. True when this call created it.
-  class ensure -> Boolean => self ensureNamed: Clock tableName
-
   /// Make sure the table `name` exists. True when this call created it.
   class ensureNamed: name :: Symbol -> Boolean => self owner ensureTable: name
-
-  /// How many times this node has created the table.
-  class creations -> Integer => self owner creations
 
   /// Create the table `name` unless it exists. True when this call created it
   /// (the caller then starts the updater), false when it was there.
   ensureTable: name :: Symbol -> Boolean =>
     (Ets exists: name) ifTrue: [^false]
     Ets new: name type: #set
-    self.created := self.created + 1
     true
-
-  /// How many times this actor has created the table.
-  creations -> Integer => self.created

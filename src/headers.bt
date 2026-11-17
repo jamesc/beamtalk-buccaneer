@@ -56,6 +56,8 @@ typed Object subclass: Headers
   /// The first value for name, or nil. Values are Binaries when the
   /// bytes are not valid UTF-8 (String is a Binary, so one type covers both).
   class getHeader: headers :: HttpHeaders name: header :: String -> Binary | Nil =>
+    // Scans every header (the first match wins): an early `^` out of the
+    // block would cost a make_ref and a throw on each call.
     found := nil
     headers do: [:h |
       (found isNil and: [(h at: 1) =:= header]) ifTrue: [found := h at: 2]

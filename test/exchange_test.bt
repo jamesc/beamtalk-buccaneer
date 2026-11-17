@@ -12,7 +12,6 @@ TestCase subclass: ExchangeTest
     self
 
   tearDown =>
-    (Ets exists: Clock tableName) ifTrue: [(Ets named: Clock tableName) delete]
     ProcessDictionary erase: HTTP1Socket sentKey
     self
 

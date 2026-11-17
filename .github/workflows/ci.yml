@@ -185,8 +185,14 @@ jobs:
           mkdir -p /tmp/buccaneer-autobahn
           (
             while true; do
-              docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' 2>/dev/null \
-                >> /tmp/buccaneer-autobahn/memory-samples.txt || true
+              # Only the wstest containers (one per batch, named
+              # fuzzingclientN): with no names `docker stats` lists every
+              # container, so skip the sample when none is running.
+              names=$(docker ps --filter ancestor=crossbario/autobahn-testsuite --format '{{.Names}}')
+              if [ -n "$names" ]; then
+                docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' $names 2>/dev/null \
+                  >> /tmp/buccaneer-autobahn/memory-samples.txt || true
+              fi
               sleep 1
             done
           ) &
@@ -254,8 +260,10 @@ jobs:
         run: just h2spec
 
   # h2spec built from master (a pinned commit), which has cases the 2.6.0
-  # docker image above does not run (BT-4478). Blocking; the docker job
-  # above can be dropped once this covers it. A local h2spec binary
+  # docker image above does not run (BT-4478). The docker job
+  # above can be dropped once this covers it. Not a required check on main
+  # (branch protection requires only ci, Claude BeamTalk Review and
+  # autobahn). A local h2spec binary
   # on PATH is preferred by test/http2/h2spec_test.bt over docker.
   h2spec-master:
     runs-on: ubuntu-latest

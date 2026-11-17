@@ -24,7 +24,20 @@ TestCase subclass: AutobahnTest
       #port => 0,
       #websocket => #{#compress => true, #maxFrameSize => 20000000}
     } handler: [:ex | ex upgradeToWebSocket: sock options: #{}]) unwrap
-    port := self portOf: srv
+    failures := #()
+    stopped := nil
+    // The listener stops on every exit path, including a failed batch.
+    [
+      failures := self
+        runBatches: backend
+        dir: dir
+        port: (self portOf: srv)
+    ] ensure: [stopped := srv stop: 5000]
+    self assert: stopped isOk
+    self assert: failures equals: #()
+
+  /// Run every batch against the server on port; answers the failing case ids.
+  runBatches: backend :: Symbol dir: dir :: String port: port :: Integer -> List =>
     failures := #()
     n := 0
     (self batches)
@@ -61,8 +74,7 @@ TestCase subclass: AutobahnTest
           ]
         (self failuresIn: sub) do: [:k | failures := failures add: k]
       ]
-    self assert: (srv stop: 5000) isOk
-    self assert: failures equals: #()
+    failures
 
   /// What a non-zero wstest exit means. 137 is SIGKILL, in practice the
   /// container hitting its memory cap; 124 is the per-batch timeout,

@@ -71,7 +71,9 @@ autobahn:
 
 # h2spec conformance over TLS/ALPN h2 (needs docker or an h2spec
 # binary): the full suite with the H2SPEC=1 gate open.
-# Non-blocking in CI until green; H2SPEC_SECTION limits the section.
+# Not a required check on main (CI's h2spec job is continue-on-error; the
+# h2spec-master job fails the run but is not in branch protection).
+# H2SPEC_SECTION limits the section.
 h2spec:
     H2SPEC=1 beamtalk test --warnings-as-errors
 

@@ -185,7 +185,7 @@ jobs:
           mkdir -p /tmp/buccaneer-autobahn
           (
             while true; do
-              docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' fuzzingclient 2>/dev/null \
+              docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' 2>/dev/null \
                 >> /tmp/buccaneer-autobahn/memory-samples.txt || true
               sleep 1
             done
@@ -207,6 +207,7 @@ jobs:
                       peak = max(peak, float(m.group(1)) * unit[m.group(2)])
           except FileNotFoundError:
               pass
+          # The cap is memoryLimit ("8g") in test/websocket/autobahn_test.bt.
           print("peak %.0f MiB (cap 8192 MiB)" % peak)
           PY
           } | tee -a "$GITHUB_STEP_SUMMARY"

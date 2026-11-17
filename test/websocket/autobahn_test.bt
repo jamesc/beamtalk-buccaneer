@@ -8,7 +8,7 @@
 /// the test passes immediately so plain `beamtalk test` stays fast.
 /// `AUTOBAHN_CASES` optionally limits the cases (as "1.2.3,2.*"; the
 /// limited set runs as one wstest invocation). Without it the full
-/// suite runs as `defaultBatches`, one wstest invocation each: wstest
+/// suite runs as `batches`, one wstest invocation each: wstest
 /// keeps every case's data until it exits, so the compression groups
 /// (12.* and 13.*) grow past 10 GiB in one process (BT-4992). The
 /// docker container is capped at `memoryLimit` so a runaway fails fast.
@@ -44,6 +44,7 @@ TestCase subclass: AutobahnTest
               cmd: (self
                 dockerCmd: spec
                 reports: sub
+                name: "fuzzingclient" ++ n asString
                 port: port)
           ]
           ifFalse: [(Erlang os) cmd: (self localCmd: spec port: port)]
@@ -146,9 +147,12 @@ TestCase subclass: AutobahnTest
     (cases collect: [:c | """" ++ c ++ """"]) join: ", "
 
   /// One wstest in a memory-capped container (swap off, so a runaway is
-  /// killed at the cap instead of swapping), under a timeout.
-  dockerCmd: spec :: String reports: reports :: String port: port :: Integer -> String =>
-    "timeout "
+  /// killed at the cap instead of swapping), under a timeout. Each batch
+  /// has its own container name, so a batch that is slow to stop cannot
+  /// make the next one fail with "name already in use"; `-k` kills
+  /// docker if SIGTERM does not end it.
+  dockerCmd: spec :: String reports: reports :: String name: name :: String port: port :: Integer -> String =>
+    "timeout -k 10 "
       ++ self batchTimeout asString
       ++ " docker run --rm --memory="
       ++ self memoryLimit
@@ -161,7 +165,9 @@ TestCase subclass: AutobahnTest
       ++ reports
       ++ ":/reports"
       ++ " --add-host=host.docker.internal:host-gateway"
-      ++ " --name fuzzingclient crossbario/autobahn-testsuite"
+      ++ " --name "
+      ++ name
+      ++ " crossbario/autobahn-testsuite"
       ++ " wstest --mode fuzzingclient -w ws://host.docker.internal:"
       ++ port asString
       ++ " 2>&1; echo EXIT:$?"

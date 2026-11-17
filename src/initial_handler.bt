@@ -62,12 +62,28 @@ sealed typed Object subclass: InitialHandler
   /// preface or of a ClientHello make it read again. A dead socket
   /// closes quietly.
   class sealed sniff: sock :: Socket options: config :: BuccaneerConfig alpn: alpn :: Symbol -> Symbol | Tuple =>
+    read := sock recv: 0 timeout: nil
+    read isError
+      ifTrue: [
+        read error =:= #timeout
+          ifTrue: [
+            ^self
+              noPreface: config
+              data: (Binary fromBytes: #())
+              alpn: alpn
+          ]
+        ^#close
+      ]
+    ReadBuffer note: read value size socket: sock
     self
-      sniff: sock
+      sniffed: read value
+      sock: sock
       options: config
-      buffer: (Binary fromBytes: #())
       alpn: alpn
 
+  /// Another read after bytes that are still a prefix of the preface or of
+  /// a ClientHello (the rare path: the first read held the whole first
+  /// request almost always).
   class sealed sniff: sock :: Socket options: config :: BuccaneerConfig buffer: buffer :: Binary alpn: alpn :: Symbol -> Symbol | Tuple =>
     read := sock recv: 0 timeout: nil
     read isError
@@ -82,7 +98,15 @@ sealed typed Object subclass: InitialHandler
         ^#close
       ]
     ReadBuffer note: read value size socket: sock
-    bytes := buffer concat: read value
+    self
+      sniffed: (buffer concat: read value)
+      sock: sock
+      options: config
+      alpn: alpn
+
+  /// Decide on the bytes read so far, or read more when they are still a
+  /// prefix of the preface or of a ClientHello.
+  class sealed sniffed: bytes :: Binary sock: sock :: Socket options: config :: BuccaneerConfig alpn: alpn :: Symbol -> Symbol | Tuple =>
     (self undecided: bytes)
       ifTrue: [
         ^self
@@ -96,9 +120,12 @@ sealed typed Object subclass: InitialHandler
       options: config
       alpn: alpn
 
-  /// Act on bytes that are long enough to tell.
+  /// Act on bytes that are long enough to tell. Decided on the first byte
+  /// where it can be: no HTTP/1 request starts with `P` followed by the
+  /// rest of the preface or with a TLS record byte, so most connections
+  /// build no comparison binary at all.
   class sealed decide: bytes :: Binary options: config :: BuccaneerConfig alpn: alpn :: Symbol -> Symbol | Tuple =>
-    (bytes size >= 3 and: [self isTlsHello: (bytes part: 0 size: 3)])
+    (bytes size >= 3 and: [self isTlsHello: bytes])
       ifTrue: [
         Logger warn: "Connection that looks like TLS received on a clear channel" metadata: #{
           #domain => #(#buccaneer),
@@ -106,13 +133,16 @@ sealed typed Object subclass: InitialHandler
         }
         ^#close
       ]
-    preface := self preface
-    (self isPrefix: preface of: bytes)
+    (bytes size > 0 and: [(bytes byteAt: 0) =:= 80])
       ifTrue: [
-        ^self
-          prefaceSeen: config
-          data: (bytes part: preface size size: bytes size - preface size)
-          alpn: alpn
+        preface := self preface
+        (self isPrefix: preface of: bytes)
+          ifTrue: [
+            ^self
+              prefaceSeen: config
+              data: (bytes part: preface size size: bytes size - preface size)
+              alpn: alpn
+          ]
       ]
     self
       noPreface: config
@@ -123,17 +153,24 @@ sealed typed Object subclass: InitialHandler
   class sealed preface -> Binary =>
     Binary fromIolist: #("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
+  /// Length of the HTTP/2 connection preface.
+  class sealed prefaceSize -> Integer => 24
+
   /// Whether the bytes so far could still be the preface or a
-  /// ClientHello: a strict prefix of either needs another read.
+  /// ClientHello: a strict prefix of either needs another read. Only a
+  /// first byte of `P` (80) or a TLS handshake record (22) can be.
   class sealed undecided: bytes :: Binary -> Boolean =>
-    preface := self preface
-    (bytes size < preface size and: [
-      self isPrefix: bytes of: preface
-    ]) or: [
-      bytes size < 3 and: [
-        self isPrefix: bytes of: (Binary fromBytes: #(22, 3))
+    bytes size =:= 0 ifTrue: [^true]
+    first := bytes byteAt: 0
+    first =:= 80 ifTrue: [
+      ^bytes size < self prefaceSize and: [
+        self isPrefix: bytes of: self preface
       ]
     ]
+    first =:= 22 ifTrue: [
+      ^bytes size < 3 and: [bytes size =:= 1 or: [(bytes byteAt: 1) =:= 3]]
+    ]
+    false
 
   /// Whether `prefix` starts `whole`.
   class sealed isPrefix: prefix :: Binary of: whole :: Binary -> Boolean =>
@@ -142,7 +179,11 @@ sealed typed Object subclass: InitialHandler
     ]
 
   /// `<<22, 3, 1|3>>`: a TLS ClientHello (1.3 sends legacy 0x0303).
+  /// `bytes` holds at least three bytes.
   class sealed isTlsHello: bytes :: Binary -> Boolean =>
-    bytes =:= (Binary fromBytes: #(22, 3, 1)) or: [
-      bytes =:= (Binary fromBytes: #(22, 3, 3))
-    ]
+    (bytes byteAt: 0) =:= 22
+      and: [
+        (bytes byteAt: 1) =:= 3 and: [
+          (bytes byteAt: 2) =:= 1 or: [(bytes byteAt: 2) =:= 3]
+        ]
+      ]

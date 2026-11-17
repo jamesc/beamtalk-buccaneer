@@ -832,6 +832,15 @@ TestCase subclass: HTTP1SocketTest
     self assert: (self clientRead: pair bytes: (Erlang erlang byte_size: expected)) equals: expected
     self closeLoopback: pair
 
+  // ----- the connection header's value as a comparable token -----
+  testLoweredOrOpaque =>
+    sock := HTTP1Socket new
+    opaque := Binary fromBytes: #(255, 254)
+    self assert: (sock loweredOrOpaque: nil) isNil
+    self assert: (sock loweredOrOpaque: "Keep-ALIVE") equals: "keep-alive"
+    self assert: (sock loweredOrOpaque: opaque) equals: opaque
+    self assert: (sock loweredOrOpaque: 42) isNil
+
   // ----- keepalive (RFC9112§9.3) -----
   testKeepaliveHTTP11Default =>
     kept := (HTTP1Socket new withVersion: #http11) handleKeepalive: 200 headers: #()

@@ -26,8 +26,9 @@ sealed typed Value subclass: HTTP1Handler
       connectionSpan: sock telemetrySpan
       connData: self connData
       options: self config
-    result isError ifTrue: [^HandlerResult close: self]
-    self maybeKeepalive: result value socket: sock
+    result isError ifTrue: [
+      HandlerResult close: self
+    ] ifFalse: [self maybeKeepalive: result value socket: sock]
 
   /// Whether this request is the last (Bandit's request_limit_reached?).
   closeAfterResponse -> Boolean =>
@@ -48,7 +49,13 @@ sealed typed Value subclass: HTTP1Handler
   maybeKeepaliveSocket: transport :: HTTP1Socket socket: sock :: Socket -> HandlerResult =>
     (transport closeAfterResponse or: [
       transport keepalive not
-    ]) ifTrue: [^HandlerResult close: self]
+    ]) ifTrue: [
+      HandlerResult close: self
+    ] ifFalse: [self continueKeepalive: transport socket: sock]
+
+  /// Clear, collect and go on with the next request: the buffer's pipelined
+  /// bytes if any, else wait for more.
+  continueKeepalive: transport :: HTTP1Socket socket: sock :: Socket -> HandlerResult =>
     self clearProcessDictionary
     advanced := (self withRequestsProcessed: self requestsProcessed + 1) withBuffer: transport buffer
     gcEvery := self config http1Options gcEveryNKeepaliveRequests
@@ -58,24 +65,36 @@ sealed typed Value subclass: HTTP1Handler
           Erlang erlang garbage_collect
         ]
       ]
-    (SocketHelpers iodataEmpty: advanced buffer) ifTrue: [
-      ^HandlerResult continue: advanced
-    ]
-    advanced serveBuffered: sock
+    // The buffer is a Binary from the socket: its size is its byte count.
+    advanced buffer size =:= 0 ifTrue: [
+      HandlerResult continue: advanced
+    ] ifFalse: [advanced serveBuffered: sock]
 
   /// Erase every key that was not there when the connection started,
-  /// except Catalina's telemetry marker, as Bandit's clear_process_dict.
-  /// The baseline comes off in one lists:subtract, so only the keys
-  /// this request added are visited.
+  /// except Catalina's telemetry marker and the runtime's own dispatch
+  /// caches, as Bandit's clear_process_dict. The baseline comes off in one
+  /// lists:subtract, so only the keys this request added are visited.
   clearProcessDictionary -> HTTP1Handler =>
     added :: List(Object) := Erlang lists subtract: ProcessDictionary keys with: self baseline
-    added do: [:k :: Object |
-      (self isEngineKey: k) ifFalse: [ProcessDictionary erase: k]
+    added do: [:k :: Object | (self isEngineKey: k) ifFalse: [self eraseKey: k]]
+    self
+
+  /// An atom key (the common one: the response-sent mark) goes straight to
+  /// erlang:erase/1; any other key through ProcessDictionary.
+  eraseKey: k :: Object -> HTTP1Handler =>
+    k match: [
+      s :: Symbol -> Erlang erlang erase: s;
+      _ -> ProcessDictionary erase: k
     ]
     self
 
+  /// Keys that belong to the engine or the runtime, not to a request. The
+  /// runtime caches a class's dispatch target in the process dictionary on
+  /// first use ({beamtalk_primitive, tagged_class_dispatch, Class}); erasing
+  /// it only made the next request rebuild it.
   isEngineKey: k :: Object -> Boolean =>
     k match: [
       {#catalina_exception_emitted, _c} -> true;
+      {#beamtalk_primitive, #tagged_class_dispatch, _c} -> true;
       _ -> false
     ]

@@ -20,6 +20,7 @@ just stress --soak-minutes 5 --only soak
 just stress --impls buccaneer --only lifecycle
 just stress-smoke                        # smoke sizes, 1-minute soak (CI)
 just bench-profile --impl buccaneer --row get_c10   # call-time profile of one row
+just bench-counts --request get --callers          # calls, throws, reductions per request (deterministic)
 ```
 
 Neither is part of `just test`; CI runs `bench-smoke` and `stress-smoke`
@@ -34,6 +35,30 @@ build of beamtalk whose stdlib is built elsewhere, set
 (`bench_main`, `stress_main` or `bench_profile`). Reports go to
 `_build/bench/report-*.md`, one JSON line per measurement to
 `_build/bench/raw-*.jsonl`; stress server logs to `_build/stress/`.
+
+## Counts instead of timings: `just bench-counts`
+
+Container timings move by about 8% from run to run (an A/A control, main
+against main, 9 rounds), so a change of a few microseconds cannot be shown
+by `just bench`. Counts do not move. `just bench-counts` serves sequential
+requests on one keep-alive connection to the standalone Buccaneer server and
+prints, per request:
+
+- the reductions of the connection process (untraced; tracing adds its own);
+- the function calls it makes (traced for 50 requests, every call counted);
+- a watch list: `throw`, `erase`, `put`, `make_ref`, `iolist_size`,
+  `ets:lookup`, the FFI proxy (`apply_with_coercion`, `direct_call`) and so on;
+- `--show PREFIX` lists the functions of the modules with that prefix, most
+  called first, and `--callers` says who calls each watched function.
+
+```bash
+just bench-counts --request get --callers     # GET /
+just bench-counts --request post              # POST /echo, a 64-byte body
+```
+
+Run it on the base ref and on a branch and compare the numbers: the
+reductions vary by under 0.5% between runs and the call counts do not vary.
+It shows *what* was removed; it says nothing about how long that took.
 
 ## OS limits
 

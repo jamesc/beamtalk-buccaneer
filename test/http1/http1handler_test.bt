@@ -134,6 +134,45 @@ TestCase subclass: HTTP1HandlerTest
     self assert: (ProcessDictionary at: HTTP1Socket sentKey) isNil
     Loopback close: pair
 
+  /// The reset between keepalive requests erases what a request added (a
+  /// handler's atom key, a tuple key, the response-sent mark) and keeps
+  /// what was there at the start, Catalina's marker, and the runtime's
+  /// dispatch cache: erasing that only made the next request rebuild it.
+  testClearProcessDictionaryKeepsEngineKeys =>
+    config := BuccaneerConfig from: #{#handler => [:ex | ex]}
+    h := self handlerWith: config handler: [:ex | ex]
+    ProcessDictionary at: #bt4982Kept put: 1
+    kept := h withBaseline: (ProcessDictionary keys)
+    ProcessDictionary at: #bt4982Added put: 2
+    ProcessDictionary at: {#bt4982Tuple, 3} put: 3
+    ProcessDictionary at: HTTP1Socket sentKey put: true
+    ProcessDictionary at: {#catalina_exception_emitted, 4} put: true
+    ProcessDictionary at: {#beamtalk_primitive, #tagged_class_dispatch, #Bt4982Class} put: 5
+    kept clearProcessDictionary
+    self assert: (ProcessDictionary at: #bt4982Kept) equals: 1
+    self assert: (ProcessDictionary at: #bt4982Added) isNil
+    self assert: (ProcessDictionary at: {#bt4982Tuple, 3}) isNil
+    self assert: (ProcessDictionary at: HTTP1Socket sentKey) isNil
+    self assert: (ProcessDictionary at: {#catalina_exception_emitted, 4}) equals: true
+    self assert: (ProcessDictionary at: {#beamtalk_primitive, #tagged_class_dispatch, #Bt4982Class}) equals: 5
+    ProcessDictionary erase: #bt4982Kept
+    ProcessDictionary erase: {#catalina_exception_emitted, 4}
+    ProcessDictionary erase: {#beamtalk_primitive, #tagged_class_dispatch, #Bt4982Class}
+
+  /// Pipelined bytes that are not UTF-8 count by bytes, not characters: the
+  /// leftover is routed to the next request (a 400 here), not mistaken for
+  /// an empty buffer.
+  testServePipelinedNonUtf8Tail =>
+    handler := [:ex |
+      ex
+        sendResp: 200
+        headers: #()
+        body: ""
+    ]
+    {result, pair} := self serveHead: #(self getHead, (Binary fromBytes: #(255, 254, 13, 10, 13, 10))) handler: handler
+    self assert: result kind equals: #close
+    Loopback close: pair
+
   testCloseAfterResponse =>
     config := BuccaneerConfig from: #{#handler => [:ex | ex]}
     h := self handlerWith: config handler: [:ex | ex]

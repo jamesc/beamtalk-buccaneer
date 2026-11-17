@@ -41,6 +41,10 @@ bench-ab base="origin/main" head="":
 stress *ARGS:
     bench/run.sh stress_main {{ARGS}}
 
+# Calls, throws and reductions per request on one keep-alive connection: deterministic counts, for showing that a change removed work (bench/README.md)
+bench-counts *ARGS:
+    bench/run.sh bench_counts {{ARGS}}
+
 # Tests for the bench harness's OS-limit handling (pre-flight, environment
 # errors, TIME_WAIT settle); Erlang/OTP only, no servers
 bench-test:

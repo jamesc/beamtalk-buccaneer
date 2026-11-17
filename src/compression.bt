@@ -64,7 +64,11 @@ sealed typed Value subclass: Compression
   /// ```
   class sealed negotiate: acceptEncoding :: Object options: http :: HttpOptions -> String | Nil =>
     text := Headers text: acceptEncoding
-    text isNil ifTrue: [^nil]
+    // No accept-encoding (the common request) leaves without the search below.
+    text isNil ifTrue: [nil] ifFalse: [self negotiateText: text options: http]
+
+  /// negotiate:options: for a request that sent an accept-encoding value.
+  class sealed negotiateText: text :: String options: http :: HttpOptions -> String | Nil =>
     (self enabled: http) ifFalse: [^nil]
     accepted := self parseAcceptEncoding: text
     wildcard := self quality: accepted coding: "*"
@@ -146,8 +150,21 @@ sealed typed Value subclass: Compression
       status: status
       options: http
     // An isNil guard, not a match: whose `^` arm would widen the type (BT-4458).
-    encoding isNil ifTrue: [^{varied, self identity}]
-    coding := encoding
+    encoding isNil
+      ifTrue: [{varied, self identity}]
+      ifFalse: [
+        self
+          startCoding: encoding
+          status: status
+          headers: hs
+          varied: varied
+          options: http
+          emptyBody: emptyBody
+          streamable: streamable
+      ]
+
+  /// start:status:headers:options:emptyBody:streamable: once a coding was negotiated.
+  class sealed startCoding: coding :: String status: status :: Integer headers: hs :: HttpHeaders varied: varied :: HttpHeaders options: http :: HttpOptions emptyBody: emptyBody :: Boolean streamable: streamable :: Boolean -> Tuple(HttpHeaders, Compression) =>
     eligible := (status =/= 204
       and: [
         status =/= 304

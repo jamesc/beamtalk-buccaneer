@@ -70,6 +70,38 @@ TestCase subclass: ExchangeTest
     ex finish
     Loopback close: pair
 
+  /// A body that is not iodata raises before any byte goes out and leaves
+  /// the response unsent; the empty-body check and the size both read it
+  /// once now, and a bad body must still fail the same way.
+  testSendRespNonIodataBodyRaises =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    raised := [
+      ex
+        sendResp: 200
+        headers: #()
+        body: 65
+      false
+    ] on: Error do: [:e | true]
+    self assert: raised
+    self assert: ex state equals: #unset
+    ex finish
+    Loopback close: pair
+
+  /// content-length and the counted bytes are the body's bytes.
+  testSendRespCountsBytesNotCharacters =>
+    pair := Loopback pairWithReadTimeout: 5000
+    ex := self open: pair request: self getHead
+    ex
+      sendResp: 200
+      headers: #()
+      body: "héllo"
+    resp := Loopback responseOf: pair body: 6
+    self assert: (resp includesSubstring: "content-length: 6")
+    self assert: (resp endsWith: "héllo")
+    ex finish
+    Loopback close: pair
+
   testPeerNilWithoutSocket =>
     ex := Exchange open: ExchangeState new
     self assert: (ex peer isNil)

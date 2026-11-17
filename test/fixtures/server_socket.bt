@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /// Reads the server end of a connection from outside the server (BT-4979).
-/// The test names the client's local address; the server's port is the
-/// inet port whose peer is that address, and `inet:getopts/2` on it works
-/// from any process. For TLS the port is the one under the ssl socket.
+/// The server's port is the inet port in this VM that is the other end of
+/// the client's socket: its peer is the client's local address AND its own
+/// address is the client's peer. Matching only the client's local address
+/// is ambiguous (BT-4993): Linux lets two clients share a local port when
+/// they connect to different servers, so another server socket in the VM
+/// (the suite runs test classes in parallel) can have the same peer, and
+/// `inet:getopts/2` then reads that socket's `buffer` instead.
+/// `inet:getopts/2` on the port works from any process. For TLS the port is
+/// the one under the ssl socket.
 ///
 /// Untyped like Loopback: annotated methods in fixture classes
 /// miscompile (BT-4152), so everything here is dynamic.
@@ -12,18 +18,23 @@ sealed Object subclass: ServerSocket
 
   /// The server socket's `buffer` option for a TCP client socket.
   class sealed bufferOf: client =>
-    self bufferAt: ((Erlang inet) sockname: client) unwrap
+    self bufferAt: ((Erlang inet) sockname: client) unwrap peer: ((Erlang inet) peername: client) unwrap
 
   /// The same for a TLS client socket.
   class sealed bufferOfTls: client =>
-    self bufferAt: ((Erlang ssl) sockname: client) unwrap
+    self bufferAt: ((Erlang ssl) sockname: client) unwrap peer: ((Erlang ssl) peername: client) unwrap
 
-  /// The `buffer` option of the inet port whose peer is `local`.
+  /// The `buffer` option of the inet port that is the other end of the
+  /// connection `local` <-> `remote`: its peer is `local`, its own address
+  /// `remote`.
   @expect type
-  class sealed bufferAt: local =>
-    found := ((Erlang erlang) ports) select: [:p |
-      ((Erlang inet) peername: p) =:= (Result ok: local)
-    ]
+  class sealed bufferAt: local peer: remote =>
+    found := ((Erlang erlang) ports)
+      select: [:p |
+        (((Erlang inet) peername: p) =:= (Result ok: local)) and: [
+          ((Erlang inet) sockname: p) =:= (Result ok: remote)
+        ]
+      ]
     found isEmpty ifTrue: [
       Error signal: "no server socket for the client address"
     ]

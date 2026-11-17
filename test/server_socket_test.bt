@@ -1,0 +1,67 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// BT-4993: `ServerSocket bufferOf:` must find the server end of one
+/// connection even when another server socket in the VM has the same peer
+/// address (two clients on one local port, connected to different servers).
+/// Before the fix it matched on the peer address alone and read whichever
+/// socket `erlang:ports/0` listed first, so `ReadBufferTest` saw 9216 (the
+/// other server's default) instead of 512.
+TestCase subclass: ServerSocketTest
+
+  /// A plain gen_tcp listener with the OTP default `buffer`.
+  decoyListener =>
+    ((Erlang gen_tcp) listen: 0 with: #(#binary, {#active, false}, {#reuseaddr, true}, {#buffer, 9216})) unwrap
+
+  /// A client that may share its local port: `reuseaddr`, optionally bound.
+  sharedClient: port from: localPort =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#active, false}, {#reuseaddr, true}, {#ip, {127, 0, 0, 1}}, {#port, localPort})) unwrap
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  /// Both server ends have our client's address as their peer; the one
+  /// that is on our connection has the 512 the Buccaneer listener set.
+  /// `decoyFirst` picks which server end is created first, so the answer
+  /// does not depend on the order `erlang:ports/0` lists them in.
+  scenario: decoyFirst =>
+    srv := (Buccaneer
+      start: #{#port => 0}
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: "ok"
+      ]) unwrap
+    decoy := self decoyListener
+    decoyPort := ((Erlang inet) port: decoy) unwrap
+    decoyClient := nil
+    client := nil
+    decoyServerEnd := nil
+    decoyFirst
+      ifTrue: [
+        decoyClient := self sharedClient: decoyPort from: 0
+        decoyServerEnd := ((Erlang gen_tcp) accept: decoy with: 2000) unwrap
+        shared := (((Erlang inet) sockname: decoyClient) unwrap) at: 2
+        client := self sharedClient: (self portOf: srv) from: shared
+      ]
+      ifFalse: [
+        client := self sharedClient: (self portOf: srv) from: 0
+        shared := (((Erlang inet) sockname: client) unwrap) at: 2
+        decoyClient := self sharedClient: decoyPort from: shared
+        decoyServerEnd := ((Erlang gen_tcp) accept: decoy with: 2000) unwrap
+      ]
+    (Erlang gen_tcp) send: client with: "GET / HTTP/1.1\r\nhost: x\r\n\r\n"
+    Loopback responseOn: client body: 2
+    self assert: (ServerSocket bufferOf: client) equals: 512
+    (Erlang gen_tcp) close: client
+    (Erlang gen_tcp) close: decoyClient
+    (Erlang gen_tcp) close: decoyServerEnd
+    (Erlang gen_tcp) close: decoy
+    self assert: (srv stop: 5000) isOk
+
+  testIgnoresADecoyCreatedFirst => self scenario: true
+
+  testIgnoresADecoyCreatedLast => self scenario: false

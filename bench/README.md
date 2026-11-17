@@ -60,6 +60,17 @@ Run it on the base ref and on a branch and compare the numbers: the
 reductions vary by under 0.5% between runs and the call counts do not vary.
 It shows *what* was removed; it says nothing about how long that took.
 
+## Work per HTTP/2 stream: `bench_streamcount` (BT-4954)
+
+`bench/run.sh bench_streamcount [--n 2000] [--out FILE]` sends sequential GETs
+on one h2c connection to the standalone Buccaneer server (in a peer node; the
+client runs in the harness VM) and prints, per stream, the server node's
+reductions and its function calls (`call_count` on every loaded function, idle
+window subtracted), by module and by function. Both numbers repeat to within
+one unit between runs; the wall microseconds it also prints do not. `--out`
+writes the per-function counts; `bench_streamcount:diff(A, B)` compares two
+files.
+
 ## OS limits
 
 The full `just bench` opens 10,000 connections at once (`idle_10k`) and

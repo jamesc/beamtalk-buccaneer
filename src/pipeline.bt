@@ -106,13 +106,15 @@ sealed typed Object subclass: Pipeline
     (handler isKindOf: Block)
       ifTrue: [
         block :: Block(Exchange, Object) := handler
-        ^block value: ex
+        block value: ex
       ]
-    candidate :: Object := handler
-    (candidate respondsTo: #call:) ifFalse: [
-      Error signal: "Invalid request handler"
-    ]
-    handler call: ex
+      ifFalse: [
+        candidate :: Object := handler
+        (candidate respondsTo: #call:) ifFalse: [
+          Error signal: "Invalid request handler"
+        ]
+        handler call: ex
+      ]
 
   /// The inner request: call the handler, commit, forget the exchange,
   /// stop the span. Errors here all know their conn.
@@ -346,12 +348,21 @@ sealed typed Object subclass: Pipeline
     host := target at: 2
     port := target at: 3
     (host isNil and: [port isNil])
+      ifTrue: [
+        self
+          hostFromHeader: scheme
+          version: ver
+          headers: headers
+      ]
       ifFalse: [
-        ^self
+        self
           absoluteHost: host
           port: port
           scheme: scheme
       ]
+
+  /// {host, port} from the Host header of a request with a relative target.
+  class sealed hostFromHeader: scheme :: Scheme version: ver :: HttpVersion headers: headers :: HttpHeaders -> Tuple(String, Integer) =>
     found := Headers getHostHeader: headers
     found isError
       ifTrue: [
@@ -364,12 +375,15 @@ sealed typed Object subclass: Pipeline
     header := found value
     header isNil
       ifTrue: [
-        ver =:= #http10 ifTrue: [^{"", self defaultPortFor: scheme}]
-        HTTPError signal: "Unable to obtain host and port: No host header"
+        ver =:= #http10 ifTrue: [
+          {"", self defaultPortFor: scheme}
+        ] ifFalse: [
+          HTTPError signal: "Unable to obtain host and port: No host header"
+        ]
       ]
       ifFalse: [
         {h, p} := Headers parseHostlikeHeader: header
-        ^{h, p ifNil: [self defaultPortFor: scheme]}
+        {h, p ifNil: [self defaultPortFor: scheme]}
       ]
 
   /// {host, port} from an absolute target's authority. A non-String
@@ -395,9 +409,11 @@ sealed typed Object subclass: Pipeline
   /// {path, query} from a target, without the fragment.
   class sealed pathAndQuery: target :: Tuple -> Tuple(String, String | Nil) =>
     raw := target at: 4
-    raw isNil ifTrue: [^{"", nil}]
-    (raw isKindOf: Symbol) ifTrue: [^{"*", nil}]
-    self splitPath: raw
+    raw isNil ifTrue: [
+      {"", nil}
+    ] ifFalse: [
+      (raw isKindOf: Symbol) ifTrue: [{"*", nil}] ifFalse: [self splitPath: raw]
+    ]
 
   /// Split a path into {path, query} on the first "?".
   class sealed splitPath: path :: Object -> Tuple(String, String | Nil) =>
@@ -407,8 +423,9 @@ sealed typed Object subclass: Pipeline
     ]
     noFragment := (text split: "#") first
     q := noFragment indexOf: "?"
-    q isNil ifTrue: [^{noFragment, nil}]
-    {(noFragment take: q - 1), (noFragment drop: q)}
+    q isNil ifTrue: [
+      {noFragment, nil}
+    ] ifFalse: [{(noFragment take: q - 1), (noFragment drop: q)}]
 
   class sealed defaultPortFor: scheme :: Scheme -> Integer =>
     scheme =:= #https ifTrue: [^443]

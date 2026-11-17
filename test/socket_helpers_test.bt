@@ -35,3 +35,14 @@ TestCase subclass: SocketHelpersTest
     self deny: (SocketHelpers iodataEmpty: 65)
     self assert: (SocketHelpers iodataEmpty: (Binary fromBytes: #()))
     self deny: (SocketHelpers iodataEmpty: (Binary fromBytes: #(255, 254)))
+
+  testIodataSizeOrNil =>
+    self assert: (SocketHelpers iodataSizeOrNil: "") equals: 0
+    self assert: (SocketHelpers iodataSizeOrNil: "hello") equals: 5
+    // Bytes, not graphemes.
+    self assert: (SocketHelpers iodataSizeOrNil: "é") equals: 2
+    self assert: (SocketHelpers iodataSizeOrNil: #("ab", #("c", "dé"))) equals: 6
+    self assert: (SocketHelpers iodataSizeOrNil: (Binary fromBytes: #(255, 254))) equals: 2
+    self assert: (SocketHelpers iodataSizeOrNil: #()) equals: 0
+    self assert: (SocketHelpers iodataSizeOrNil: 65) isNil
+    self assert: (SocketHelpers iodataSizeOrNil: #("ok", 300)) isNil

@@ -20,9 +20,12 @@ typed Object subclass: Clock
   /// miss (which starts the updater if none is running).
   class dateHeader -> Tuple(String, String) =>
     cached := self cachedDate
-    cached isNil ifFalse: [^{"date", cached}]
-    self ensureUpdater
-    {"date", self computeDateHeader}
+    cached isNil
+      ifTrue: [
+        self ensureUpdater
+        {"date", self computeDateHeader}
+      ]
+      ifFalse: [{"date", cached}]
 
   /// Start the updater unless its table exists. Two racing starts are
   /// harmless: the loser cannot create the table and exits.

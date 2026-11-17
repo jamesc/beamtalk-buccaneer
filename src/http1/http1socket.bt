@@ -39,7 +39,7 @@ sealed typed Value subclass: HTTP1Socket
   /// A new head starts a new response cycle, so the previous request's
   /// sent mark goes first: a malformed head must still get its error page.
   readHeaders -> Tuple(String, Tuple, HttpHeaders, HTTP1Socket) =>
-    ProcessDictionary erase: HTTP1Socket sentKey
+    Erlang erlang erase: HTTP1Socket sentKey
     head := self doReadRequestLine
     method := head at: 1
     target := head at: 2
@@ -51,24 +51,28 @@ sealed typed Value subclass: HTTP1Socket
     bodyEncoding := self transferEncodingOf: headers
     conn := self loweredOrOpaque: (Headers getHeader: headers name: "connection")
     socket3 := headedSocket withRequestConnectionHeader: conn
-    contentLength isNil
+    // One exit: a `^` in each branch would make this method a non-local
+    // return boundary on every request.
+    ready := contentLength isNil
       ifTrue: [
-        bodyEncoding isNil ifTrue: [
-          ^{method, target, headers, socket3 withReadState: #read}
-        ]
-        socket3 version =:= #http10
-          ifTrue: [
-            HTTPError signal: "Transfer-encoding is not valid for HTTP/1.0 requests (RFC9112§6.1)"
+        bodyEncoding isNil
+          ifTrue: [socket3 withReadState: #read]
+          ifFalse: [
+            socket3 version =:= #http10
+              ifTrue: [
+                HTTPError signal: "Transfer-encoding is not valid for HTTP/1.0 requests (RFC9112§6.1)"
+              ]
+            (socket3 withReadState: #headersRead) withBodyEncoding: bodyEncoding
           ]
-        ^{method, target, headers, (socket3 withReadState: #headersRead) withBodyEncoding: bodyEncoding}
       ]
       ifFalse: [
         bodyEncoding isNil
           ifFalse: [
             HTTPError signal: "Request cannot contain both 'content-length' and 'transfer-encoding' (RFC9112§6.3.3)"
           ]
-        ^{method, target, headers, (socket3 withReadState: #headersRead) withUnreadContentLength: contentLength}
+        (socket3 withReadState: #headersRead) withUnreadContentLength: contentLength
       ]
+    {method, target, headers, ready}
 
   /// {#ok | #more, data, socket}: the next body part (Bandit's
   /// read_data). Options (#length default 8_000_000, #readLength default
@@ -76,15 +80,24 @@ sealed typed Value subclass: HTTP1Socket
   /// call again. Data is a Binary, empty when there is no body (a String
   /// "" here broke `HTTPRequest body` on beamtalk-http, BT-4086).
   readData: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
-    self readState =:= #headersRead ifFalse: [
-      ^{#ok, (Binary fromBytes: #()), self}
-    ]
-    unread := self unreadContentLength
-    unread isNil ifFalse: [^self readContentLengthData: unread options: options]
-    encoding := self bodyEncoding
-    encoding =:= "chunked" ifTrue: [^self readChunkedData: options]
-    encoding isNil ifFalse: [HTTPError signal: "Unsupported transfer-encoding"]
-    {#ok, (Binary fromBytes: #()), self}
+    self readState =:= #headersRead
+      ifTrue: [
+        unread := self unreadContentLength
+        unread isNil
+          ifTrue: [
+            encoding := self bodyEncoding
+            encoding =:= "chunked"
+              ifTrue: [self readChunkedData: options]
+              ifFalse: [
+                encoding isNil ifFalse: [
+                  HTTPError signal: "Unsupported transfer-encoding"
+                ]
+                {#ok, (Binary fromBytes: #()), self}
+              ]
+          ]
+          ifFalse: [self readContentLengthData: unread options: options]
+      ]
+      ifFalse: [{#ok, (Binary fromBytes: #()), self}]
 
   readContentLengthData: unread :: Integer options: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
     maxLength := self
@@ -107,35 +120,41 @@ sealed typed Value subclass: HTTP1Socket
     rest := read at: 2
     remaining := unread - body size
     socket := (self withBuffer: rest) withUnreadContentLength: remaining
-    remaining =:= 0 ifTrue: [^{#ok, body, socket withReadState: #read}]
-    {#more, body, socket}
+    remaining =:= 0 ifTrue: [
+      {#ok, body, socket withReadState: #read}
+    ] ifFalse: [{#more, body, socket}]
 
   /// {bytes, rest}: exactly toRead bytes, reading more when the buffer
   /// runs short (Bandit's read_exactly!).
   readExactly: toRead :: Integer from: buffer :: Binary readSize: readSize :: Integer timeout: timeout :: Integer -> Tuple(Binary, Binary) =>
     still := toRead - buffer size
-    still =:= 0 ifTrue: [^{buffer, ""}]
-    still < 0
-      ifTrue: [
-        ^{(buffer part: 0 size: toRead), (buffer part: toRead size: (buffer size - toRead))}
+    still =:= 0
+      ifTrue: [{buffer, ""}]
+      ifFalse: [
+        still < 0
+          ifTrue: [
+            {(buffer part: 0 size: toRead), (buffer part: toRead size: (buffer size - toRead))}
+          ]
+          ifFalse: [
+            sock := self socket
+            sock isNil ifTrue: [Error signal: "Incomplete body with no socket"]
+            actual := still < readSize ifTrue: [still] ifFalse: [readSize]
+            result := sock recv: actual timeout: timeout
+            result isError
+              ifTrue: [
+                reason := result error
+                reason =:= #timeout ifTrue: [self disconnectedOrTimeout: sock]
+                TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason
+              ]
+            data := result value
+            ReadBuffer noteExplicit: data size socket: sock
+            self
+              readExactly: toRead
+              from: (buffer concat: data)
+              readSize: readSize
+              timeout: timeout
+          ]
       ]
-    sock := self socket
-    sock isNil ifTrue: [Error signal: "Incomplete body with no socket"]
-    actual := still < readSize ifTrue: [still] ifFalse: [readSize]
-    result := sock recv: actual timeout: timeout
-    result isError
-      ifTrue: [
-        reason := result error
-        reason =:= #timeout ifTrue: [self disconnectedOrTimeout: sock]
-        TransportError signal: ("Unrecoverable error: " ++ reason printString) reason: reason
-      ]
-    data := result value
-    ReadBuffer noteExplicit: data size socket: sock
-    self
-      readExactly: toRead
-      from: (buffer concat: data)
-      readSize: readSize
-      timeout: timeout
 
   readChunkedData: options :: Dictionary(Symbol, Object) -> Tuple(Symbol, Binary, HTTP1Socket) =>
     maxLength := self
@@ -304,7 +323,8 @@ sealed typed Value subclass: HTTP1Socket
 
   /// A readData: option with Bandit's default. Non-integers raise.
   dataOpt: key :: Symbol default: default :: Integer options: options :: Dictionary(Symbol, Object) -> Integer =>
-    raw := options at: key ifAbsent: [^default]
+    // An absent option is the (Integer) default, which passes the check.
+    raw := options at: key ifAbsent: [default]
     (raw isKindOf: Integer) ifFalse: [
       Error signal: ("Invalid value for read option " ++ key asString)
     ]
@@ -365,24 +385,37 @@ sealed typed Value subclass: HTTP1Socket
   /// either side, or forced by closeAfterResponse, is announced in the
   /// response (RFC9112§9.6); HTTP/1.0 keeps alive only on request.
   handleKeepalive: status :: Integer headers: headers :: HttpHeaders -> Tuple(HttpHeaders, HTTP1Socket) =>
-    (status between: 100 and: 199) ifTrue: [^{headers, self}]
-    respConn := self loweredOrOpaque: (Headers getHeader: headers name: "connection")
-    self closeAfterResponse ifTrue: [
-      ^{self closeHeaders: headers, self withKeepalive: false}
-    ]
-    respClose := Headers tokenListMember: respConn token: "close"
-    (respClose or: [
-      Headers tokenListMember: self requestConnectionHeader token: "close"
-    ])
-      ifTrue: [
-        respClose ifTrue: [^{headers, self withKeepalive: false}]
-        ^{self closeHeaders: headers, self withKeepalive: false}
+    (status >= 100 and: [status < 200])
+      ifTrue: [{headers, self}]
+      ifFalse: [
+        respConn := self loweredOrOpaque: (Headers getHeader: headers name: "connection")
+        self closeAfterResponse
+          ifTrue: [{self closeHeaders: headers, self withKeepalive: false}]
+          ifFalse: [
+            respClose := Headers tokenListMember: respConn token: "close"
+            (respClose or: [
+              Headers tokenListMember: self requestConnectionHeader token: "close"
+            ])
+              ifTrue: [
+                respClose ifTrue: [
+                  {headers, self withKeepalive: false}
+                ] ifFalse: [
+                  {self closeHeaders: headers, self withKeepalive: false}
+                ]
+              ]
+              ifFalse: [
+                self version =:= #http11
+                  ifTrue: [{headers, self withKeepalive: true}]
+                  ifFalse: [
+                    (Headers tokenListMember: self requestConnectionHeader token: "keep-alive") ifTrue: [
+                      {headers addFirst: {"connection", "keep-alive"}, self withKeepalive: true}
+                    ] ifFalse: [
+                      {headers addFirst: {"connection", "close"}, self withKeepalive: false}
+                    ]
+                  ]
+              ]
+          ]
       ]
-    self version =:= #http11 ifTrue: [^{headers, self withKeepalive: true}]
-    (Headers tokenListMember: self requestConnectionHeader token: "keep-alive") ifTrue: [
-      ^{headers addFirst: {"connection", "keep-alive"}, self withKeepalive: true}
-    ]
-    {headers addFirst: {"connection", "close"}, self withKeepalive: false}
 
   /// headers with any connection header replaced by connection: close.
   closeHeaders: headers :: HttpHeaders -> HttpHeaders =>
@@ -420,7 +453,7 @@ sealed typed Value subclass: HTTP1Socket
     sock := self socket
     sock isNil ifTrue: [Error signal: "Send with no socket"]
     result := sock send: payload
-    ProcessDictionary at: HTTP1Socket sentKey put: true
+    Erlang erlang put: HTTP1Socket sentKey with: true
     result isError
       ifTrue: [
         TransportError signal: ("Unrecoverable error: " ++ result error printString) reason: result error
@@ -671,10 +704,11 @@ sealed typed Value subclass: HTTP1Socket
   /// values through: a Binary can never equal an ASCII token, so leaving
   /// it unlowercased is observationally identical for exact matching.
   loweredOrOpaque: value :: Object -> Binary | Nil =>
-    value isNil ifTrue: [^nil]
-    (value isKindOf: String) ifTrue: [^value asciiLowercase]
-    (value isKindOf: Binary) ifTrue: [^value]
-    nil
+    value match: [
+      s :: String -> s asciiLowercase;
+      b :: Binary -> b;
+      _ -> nil
+    ]
 
   /// The #http1 options: the connection's, resolved once, or resolved
   /// from opts here. Their limits raise on non-Integers: these feed

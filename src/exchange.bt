@@ -113,8 +113,17 @@ sealed typed Value subclass: Exchange
   /// Send `100 Continue` first if the client asked and nothing was sent
   /// (Bandit's maybe_send_continue): only before the first body read.
   maybeSendContinueOn: st :: ExchangeState -> ExchangeState =>
-    st expectContinue ifFalse: [^st]
-    st status notNil ifTrue: [^st withExpectContinue: false]
+    st expectContinue
+      ifTrue: [
+        st status notNil ifTrue: [
+          st withExpectContinue: false
+        ] ifFalse: [self sendContinueOn: st]
+      ]
+      ifFalse: [st]
+
+  /// Send the `100 Continue` the client waits for. A dead socket drops the
+  /// expectation instead of failing the request.
+  sendContinueOn: st :: ExchangeState -> ExchangeState =>
     dated := #(Clock dateHeader)
     [
       transport := st transport
@@ -153,10 +162,14 @@ sealed typed Value subclass: Exchange
   /// is longer than maxBytes.
   readAll: maxBytes :: Integer -> Result(Binary, Object) =>
     read := self readBody: #{#length => maxBytes}
-    read isError ifTrue: [^Result error: read error]
-    part := read value
-    part done ifFalse: [^Result error: #body_too_large]
-    Result ok: part data
+    read isError
+      ifTrue: [Result error: read error]
+      ifFalse: [
+        part := read value
+        part done ifTrue: [
+          Result ok: part data
+        ] ifFalse: [Result error: #body_too_large]
+      ]
 
   // === The response ===
 
@@ -179,21 +192,34 @@ sealed typed Value subclass: Exchange
         AlreadySent signal: "already_sent: a response was already sent for this request"
       ]
     st := st withRespStartTime: (self stampOn: st)
+    // One sizing of the body answers "is it empty" and, when it goes out
+    // as it is, its content-length and the byte count. nil when the body
+    // is not iodata: then it is not empty, and sizing the encoded body
+    // below raises as it always did.
+    bodySize := SocketHelpers iodataSizeOrNil: body
     {encodedHeaders, context} := Compression
       start: st contentEncoding
       status: status
       headers: (self headersWithQueued: st extra: hs)
       options: st httpOptions
-      emptyBody: (SocketHelpers iodataEmpty: body)
+      emptyBody: bodySize =:= 0
       streamable: false
     encoded := body
-    context method =:= #identity
+    identity := context method =:= #identity
+    identity
       ifFalse: [
         {piece, done} := context compress: body
         encoded := #(piece, done close)
         st := self recordCompression: done on: st
       ]
-    length := Erlang erlang iolist_size: encoded
+    length := identity
+      ifTrue: [
+        bodySize match: [
+          n :: Integer -> n;
+          _ -> Erlang erlang iolist_size: encoded
+        ]
+      ]
+      ifFalse: [Erlang erlang iolist_size: encoded]
     withLength := Headers
       addContentLength: encodedHeaders
       length: length
@@ -204,9 +230,11 @@ sealed typed Value subclass: Exchange
       status: status
       headers: withLength
       disposition: #raw
+    // The size just taken for content-length is the size counted.
     sent := self
       sendDataOn: headed
       data: encoded
+      size: length
       end: true
     self store: (sent withRespState: #sent)
 
@@ -226,6 +254,7 @@ sealed typed Value subclass: Exchange
     self
       sendDataOn: cleared
       data: tail
+      size: (Erlang erlang iolist_size: tail)
       end: false
 
   /// Start a chunked response (Bandit's send_chunked). When the caller
@@ -433,7 +462,7 @@ sealed typed Value subclass: Exchange
   /// got one may never send the body: close rather than drain it.
   closeForUnhonoredExpect: hs :: HttpHeaders status: status :: Integer state: st :: ExchangeState -> HttpHeaders =>
     st expectContinue ifFalse: [^hs]
-    (status between: 100 and: 199) ifTrue: [^hs]
+    (status >= 100 and: [status < 200]) ifTrue: [^hs]
     st transport version =:= #http11 ifFalse: [^hs]
     (Headers getHeader: hs name: "connection") notNil ifTrue: [^hs]
     hs addFirst: {"connection", "close"}
@@ -448,19 +477,21 @@ sealed typed Value subclass: Exchange
       closeForUnhonoredExpect: dated
       status: status
       state: st
-    keep := status =:= 100 ifTrue: [
-      false
-    ] ifFalse: [
-      (status between: 100 and: 199) ifTrue: [
-        st expectContinue
-      ] ifFalse: [false]
-    ]
+    keep := status =:= 100
+      ifTrue: [false]
+      ifFalse: [
+        (status >= 100 and: [
+          status < 200
+        ]) ifTrue: [st expectContinue] ifFalse: [false]
+      ]
     statused := (st withStatus: status) withExpectContinue: keep
     // A 1xx is never a body: the sendsBody mapping to #noBody applies to
     // final responses only. Funneling an inform: through #noBody would mark
     // the socket #sent while the exchange stays #unset and wedge the next
     // send (notably inform: on a HEAD request).
-    actual := (status between: 100 and: 199) ifTrue: [
+    actual := (status >= 100 and: [
+      status < 200
+    ]) ifTrue: [
       disposition
     ] ifFalse: [
       (self sendsBody: statused) ifTrue: [disposition] ifFalse: [#noBody]
@@ -471,15 +502,16 @@ sealed typed Value subclass: Exchange
         headers: closed
         disposition: actual)
 
-  /// Bandit's send_data: the body counted even when not sent.
-  sendDataOn: st :: ExchangeState data: data :: Object end: endRequest :: Boolean -> ExchangeState =>
+  /// Bandit's send_data: the body counted even when not sent. `size` is
+  /// the byte size of `data`, which the caller already has.
+  sendDataOn: st :: ExchangeState data: data :: Object size: size :: Integer end: endRequest :: Boolean -> ExchangeState =>
     transport := (self sendsBody: st) ifTrue: [
       st transport sendData: data end: endRequest
     ] ifFalse: [st transport]
     stamped := endRequest ifTrue: [
       st withRespEndTime: (self stampOn: st)
     ] ifFalse: [st]
-    (stamped withTransport: transport) withRespBodyBytes: st respBodyBytes + (Erlang erlang iolist_size: data)
+    (stamped withTransport: transport) withRespBodyBytes: st respBodyBytes + size
 
   /// A telemetry stamp: native monotonic time, or nil when nobody traces
   /// the request (its span emits nothing, so nothing reads the stamps).

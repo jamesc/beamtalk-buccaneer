@@ -21,6 +21,12 @@ typed Object subclass: SocketHelpers
     address :: Tuple := peer value
     {sock isSecure, address at: 1}
 
+  /// The byte size of iodata, or nil when `data` is not iodata. One
+  /// erlang:iolist_size/1 call, where iodataEmpty: and a size would take
+  /// two.
+  class sealed iodataSizeOrNil: data :: Object -> Integer | Nil =>
+    [Erlang erlang iolist_size: data] on: Error do: [:e :: Exception | nil]
+
   /// Whether iodata holds no bytes (Bandit's iodata_empty?). A Binary is
   /// sized in bytes: a String body would answer `isEmpty` by counting its
   /// graphemes, a walk of the whole body per response (BT-4751).

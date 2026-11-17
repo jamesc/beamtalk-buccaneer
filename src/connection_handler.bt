@@ -21,6 +21,7 @@ typed Handler subclass: ConnectionHandler
     handler := opts at: #handler ifAbsent: [
       Error signal: "ConnectionHandler needs #handler in handlerOptions"
     ]
+    config dynamicBuffer ifTrue: [ReadBuffer begin]
     decision := InitialHandler run: sock options: config
     decision match: [
       #close -> HandlerResult close: st;
@@ -57,6 +58,7 @@ typed Handler subclass: ConnectionHandler
     http1 serveBuffered: sock
 
   handleData: data :: Binary socket: sock :: Socket state: st :: Object -> HandlerResult =>
+    ReadBuffer note: data size socket: sock
     st match: [
       h :: HTTP1Handler -> h serve: data socket: sock;
       p :: WebSocketProtocol -> p serve: data socket: sock;

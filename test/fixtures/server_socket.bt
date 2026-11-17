@@ -1,0 +1,31 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// Reads the server end of a connection from outside the server (BT-4979).
+/// The test names the client's local address; the server's port is the
+/// inet port whose peer is that address, and `inet:getopts/2` on it works
+/// from any process. For TLS the port is the one under the ssl socket.
+///
+/// Untyped like Loopback: annotated methods in fixture classes
+/// miscompile (BT-4152), so everything here is dynamic.
+sealed Object subclass: ServerSocket
+
+  /// The server socket's `buffer` option for a TCP client socket.
+  class sealed bufferOf: client =>
+    self bufferAt: ((Erlang inet) sockname: client) unwrap
+
+  /// The same for a TLS client socket.
+  class sealed bufferOfTls: client =>
+    self bufferAt: ((Erlang ssl) sockname: client) unwrap
+
+  /// The `buffer` option of the inet port whose peer is `local`.
+  @expect type
+  class sealed bufferAt: local =>
+    found := ((Erlang erlang) ports) select: [:p |
+      ((Erlang inet) peername: p) =:= (Result ok: local)
+    ]
+    found isEmpty ifTrue: [
+      Error signal: "no server socket for the client address"
+    ]
+    options := ((Erlang inet) getopts: (found at: 1) with: #(#buffer)) unwrap
+    (options at: 1) at: 2

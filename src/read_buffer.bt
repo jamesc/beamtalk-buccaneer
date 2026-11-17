@@ -1,0 +1,119 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// A connection's socket `buffer` size, which starts small and follows load
+/// (BT-4979).
+///
+/// An idle socket in `{active, once}` holds one `buffer`-sized binary, and
+/// OTP's default `buffer` is 9216 bytes: about 8.8 KB of the 16 KB an idle
+/// connection cost. Connections now start at 512 bytes, as cowboy's do, and
+/// grow when reads fill the buffer: `recv: 0` and active reads return at most
+/// `buffer` bytes, and TLS reads its records through the same buffer, so a
+/// buffer left at 512 turns a 2 KiB request head into four reads and a 64 KiB
+/// TLS body into a hundred.
+///
+/// ## What it takes from cowboy's `dynamic_buffer {512, 131072}`
+/// - The 512-byte start and the 131072 cap, and the same resize call
+///   (`setopts` on the socket, for TLS through `ssl:setopts`).
+/// - Resizing from the size of the packets read, with a moving average
+///   `(7 * average + read) / 8` and a shrink threshold of 40% of the size
+///   being left, so a connection does not flip between sizes.
+///
+/// ## Where it differs
+/// - It grows on one full read, not when the average passes 90% of the
+///   buffer. Cowboy's average starts at 0, so a connection needs about
+///   eighteen full reads before its buffer doubles; ours is at 4 KiB after
+///   the first request that fills 512 bytes.
+/// - It climbs a ladder (512, 4096, 16384, 65536, 131072) instead of
+///   doubling: four steps reach the cap, and each step is one `setopts`.
+/// - A read larger than the next step (a TLS body read asks for tens of
+///   KiB at once) jumps to the largest step it fills.
+/// - The state lives in the connection process's dictionary, because the
+///   same connection serves HTTP/1, HTTP/2 and WebSocket reads and the
+///   protocol handlers swap on an upgrade. The key is set before the HTTP/1
+///   baseline is taken, so the per-request dictionary clear keeps it.
+///
+/// ## Shrinking
+/// A connection shrinks one step after sustained small reads (the average
+/// below 40% of the step below), and stays put otherwise. It does not
+/// shrink while idle: an idle connection has no read to tick the average,
+/// and a timer per connection would cost the memory this saves. So a
+/// connection that moved a large body and then went quiet keeps its larger
+/// buffer until its next requests; connections that never fill 512 bytes
+/// (the idle fleet) never leave it.
+///
+/// A `buffer` the user sets in `#transportOptions` is kept as is, and the
+/// buffer stays fixed (`BuccaneerConfig dynamicBuffer`).
+sealed typed Value subclass: ReadBuffer
+  /// The socket's current `buffer` option.
+  field: size :: Integer = 512
+  /// Moving average of the sizes of the last reads, in bytes.
+  field: average :: Integer = 0
+
+  /// The sizes a buffer takes, smallest first.
+  class sealed steps -> List(Integer) => #(512, 4096, 16384, 65536, 131072)
+
+  /// The `buffer` a connection starts with.
+  class sealed minimum -> Integer => 512
+
+  /// The process-dictionary key of the connection's state.
+  class sealed key -> Symbol => #buccaneer_read_buffer
+
+  /// Start tracking this connection's buffer (the connection process).
+  class sealed begin -> Nil =>
+    ProcessDictionary at: self key put: ReadBuffer new
+    nil
+
+  /// A read of `n` bytes from `sock` that the buffer limits (`recv: 0`,
+  /// an active message): resize the socket's buffer when the ladder moves.
+  /// Does nothing on a connection that does not track its buffer.
+  class sealed note: n :: Integer socket: sock :: Socket -> Nil =>
+    state := ProcessDictionary at: self key
+    state match: [
+      current :: ReadBuffer -> self
+        note: n
+        socket: sock
+        current: current;
+      _ -> nil
+    ]
+
+  class sealed note: n :: Integer socket: sock :: Socket current: current :: ReadBuffer -> Nil =>
+    // The common read on an idle fleet: small, at the minimum, no change.
+    (n < ReadBuffer minimum and: [
+      current size =:= ReadBuffer minimum
+    ]) ifTrue: [^nil]
+    next := current observe: n
+    ProcessDictionary at: self key put: next
+    next size =:= current size ifTrue: [^nil]
+    sock setopts: #({#buffer, next size})
+    nil
+
+  /// A read that asked for `n` bytes by length. A plain socket ignores
+  /// `buffer` for these, so only TLS (which reads its records through
+  /// `buffer`) takes them as a signal.
+  class sealed noteExplicit: n :: Integer socket: sock :: Socket -> Nil =>
+    sock isSecure ifTrue: [self note: n socket: sock]
+    nil
+
+  /// The state after a read of `n` bytes.
+  observe: n :: Integer -> ReadBuffer =>
+    n >= self size ifTrue: [^self grownBy: n]
+    sum := self average * 7 + n
+    moved := sum div: 8
+    below := (ReadBuffer steps select: [:s :: Integer | s < self size])
+    below isEmpty ifTrue: [^ReadBuffer size: self size average: moved]
+    previous := below last
+    moved * 5 < (previous * 2) ifTrue: [
+      ^ReadBuffer size: previous average: moved
+    ]
+    ReadBuffer size: self size average: moved
+
+  /// A read of `n` bytes filled the buffer: the largest step the read
+  /// fills, or the next step, up to the cap.
+  grownBy: n :: Integer -> ReadBuffer =>
+    filled := (ReadBuffer steps select: [:s :: Integer | s <= n])
+    candidate := filled isEmpty ifTrue: [self size] ifFalse: [filled last]
+    candidate > self size ifTrue: [^ReadBuffer size: candidate average: n]
+    above := (ReadBuffer steps select: [:s :: Integer | s > self size])
+    above isEmpty ifTrue: [^ReadBuffer size: self size average: n]
+    ReadBuffer size: above first average: n

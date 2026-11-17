@@ -82,6 +82,13 @@ rows(full) ->
         {"churn_close_w32", churn, #{workers => 32, settle => true}, gate},
         {"tls_handshake_w32", churn, #{workers => 32, tls => true, settle => true}, gate},
         {"tls_get_c100", http, #{conns => 100, tls => true}, gate},
+        %% Read-buffer rows (BT-4979): reads capped by the socket `buffer`
+        %% (TLS records, `recv: 0` header reads) that the rows above miss.
+        {"tls_post_echo_raw_64KiB_c10", http, #{conns => 10, tls => true, method => <<"POST">>,
+                                                path => <<"/echo_raw">>,
+                                                body => binary:copy(<<"p">>, 65536), expect => 65536}, context},
+        {"get_hdr2KiB_c100", http, #{conns => 100,
+                                     headers => [{<<"cookie">>, binary:copy(<<"c">>, 2048)}]}, context},
         {"idle_10k", idle, #{conns => 10000, settle => true}, memory},
         {"h2_get_10x10", h2, #{conns => 10, streams => 10}, context},
         {"ws_echo_c100", ws, #{conns => 100, size => 64}, context}];

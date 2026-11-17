@@ -1,0 +1,233 @@
+// Copyright 2026 James Casey
+// SPDX-License-Identifier: Apache-2.0
+
+/// BT-4979: connections start with a 512-byte socket `buffer` (an idle
+/// socket in `{active, once}` holds one buffer-sized binary) and grow it
+/// when reads fill it. These tests pin the ladder (`ReadBuffer`), what a
+/// real connection does over TCP and TLS, whether the buffer shrinks again,
+/// and that HTTP/2 and WebSocket reads grow it too.
+TestCase subclass: ReadBufferTest
+
+  // === The ladder ===
+  testStartsAtTheMinimum => self assert: ReadBuffer new size equals: 512
+
+  testFullReadGrowsOneStep =>
+    self assert: (ReadBuffer new observe: 512) size equals: 4096
+    self assert: ((ReadBuffer new observe: 512) observe: 4096) size equals: 16384
+
+  testPartialReadKeepsTheSize =>
+    self assert: (ReadBuffer new observe: 100) size equals: 512
+    self assert: (ReadBuffer new observe: 511) size equals: 512
+
+  testGrowthStopsAtTheCap =>
+    rb := ReadBuffer new
+    10 timesRepeat: [rb := rb observe: rb size]
+    self assert: rb size equals: 131072
+
+  testLargeExplicitReadJumpsToTheStepItFills =>
+    // A TLS body read asks for many bytes at once: its size says how big
+    // the buffer should be, so the ladder jumps instead of climbing.
+    self assert: (ReadBuffer new observe: 20000) size equals: 16384
+    self assert: (ReadBuffer new observe: 1000000) size equals: 131072
+
+  testOneSmallReadDoesNotShrink =>
+    rb := (ReadBuffer new observe: 512) observe: 100
+    self assert: rb size equals: 4096
+
+  testSustainedSmallReadsShrinkStepByStep =>
+    rb := (ReadBuffer new observe: 512) observe: 4096
+    self assert: rb size equals: 16384
+    60 timesRepeat: [rb := rb observe: 100]
+    self assert: rb size equals: 512
+
+  testSteadyMediumReadsKeepTheSize =>
+    rb := ReadBuffer new observe: 512
+    60 timesRepeat: [rb := rb observe: 1500]
+    self assert: rb size equals: 4096
+
+  // === Connections ===
+  config: catalina => #{#port => 0, #catalina => catalina}
+
+  serve: catalina =>
+    (Buccaneer
+      start: (self config: catalina)
+      handler: [:ex |
+        ex
+          sendResp: 200
+          headers: #()
+          body: "ok"
+      ]) unwrap
+
+  portOf: srv => (srv listenerInfo unwrap) at: 2
+
+  connect: port =>
+    ((Erlang gen_tcp)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false})) unwrap
+
+  /// A GET whose cookie header is `n` bytes.
+  get: n =>
+    "GET / HTTP/1.1\r\nhost: x\r\ncookie: "
+      ++ ((Erlang binary) copy: "c" with: n) asStringUnchecked
+      ++ "\r\n\r\n"
+
+  roundTrip: client request: req =>
+    (Erlang gen_tcp) send: client with: req
+    Loopback responseOn: client body: 2
+
+  testIdleConnectionHoldsTheMinimumBuffer =>
+    srv := self serve: #{}
+    client := self connect: (self portOf: srv)
+    self roundTrip: client request: (self get: 0)
+    self assert: (ServerSocket bufferOf: client) equals: 512
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testLargeHeadersGrowTheBuffer =>
+    srv := self serve: #{}
+    client := self connect: (self portOf: srv)
+    self roundTrip: client request: (self get: 2048)
+    self assert: (ServerSocket bufferOf: client) equals: 4096
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testGrowsOncePerStepNotPerRequest =>
+    srv := self serve: #{}
+    client := self connect: (self portOf: srv)
+    self roundTrip: client request: (self get: 2048)
+    self roundTrip: client request: (self get: 2048)
+    self roundTrip: client request: (self get: 2048)
+    self assert: (ServerSocket bufferOf: client) equals: 4096
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testIdleConnectionKeepsItsBuffer =>
+    // Nothing reads on an idle connection, so nothing shrinks it; a
+    // timer per connection would cost the memory this saves.
+    srv := self serve: #{}
+    client := self connect: (self portOf: srv)
+    self roundTrip: client request: (self get: 2048)
+    Timer sleep: 300
+    self assert: (ServerSocket bufferOf: client) equals: 4096
+    self roundTrip: client request: (self get: 0)
+    self assert: (ServerSocket bufferOf: client) equals: 4096
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testSustainedSmallRequestsShrinkTheBuffer =>
+    srv := self serve: #{}
+    client := self connect: (self portOf: srv)
+    self roundTrip: client request: (self get: 2048)
+    self assert: (ServerSocket bufferOf: client) equals: 4096
+    60 timesRepeat: [self roundTrip: client request: (self get: 0)]
+    self assert: (ServerSocket bufferOf: client) equals: 512
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testUsersBufferIsKeptAndFixed =>
+    srv := self serve: #{#transportOptions => #{#buffer => 9216}}
+    client := self connect: (self portOf: srv)
+    self roundTrip: client request: (self get: 0)
+    self assert: (ServerSocket bufferOf: client) equals: 9216
+    self roundTrip: client request: (self get: 8000)
+    self assert: (ServerSocket bufferOf: client) equals: 9216
+    (Erlang gen_tcp) close: client
+    self assert: (srv stop: 5000) isOk
+
+  // === TLS ===
+  tlsServe =>
+    (Buccaneer
+      start: #{
+        #port => 0,
+        #scheme => #https,
+        #certfile => "test/fixtures/cert.pem",
+        #keyfile => "test/fixtures/key.pem",
+        #handler => [:ex |
+          ex readAll: 1000000
+          ex
+            sendResp: 200
+            headers: #()
+            body: "ok"
+        ]
+      }) unwrap
+
+  tlsConnect: port =>
+    ((Erlang ssl)
+      connect: {127, 0, 0, 1}
+      with: port
+      with: #(#binary, {#packet, #raw}, {#active, false}, {#verify, #verify_none})) unwrap
+
+  tlsRoundTrip: client request: req =>
+    (Erlang ssl) send: client with: req
+    head := ""
+    [(head includesSubstring: "\r\n\r\n") not]
+      whileTrue: [
+        head := head
+          concat: (((Erlang ssl)
+            recv: client
+            with: 1
+            with: 2000) unwrap)
+      ]
+    ((Erlang ssl)
+      recv: client
+      with: 2
+      with: 2000) unwrap
+
+  testTlsConnectionStartsSmall =>
+    srv := self tlsServe
+    client := self tlsConnect: (self portOf: srv)
+    self tlsRoundTrip: client request: (self get: 0)
+    self assert: (ServerSocket bufferOfTls: client) equals: 512
+    (Erlang ssl) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testTlsLargeHeadersGrowTheBuffer =>
+    srv := self tlsServe
+    client := self tlsConnect: (self portOf: srv)
+    self tlsRoundTrip: client request: (self get: 2048)
+    self assert: (ServerSocket bufferOfTls: client) > 512
+    (Erlang ssl) close: client
+    self assert: (srv stop: 5000) isOk
+
+  testTlsLargeBodyGrowsTheBuffer =>
+    srv := self tlsServe
+    client := self tlsConnect: (self portOf: srv)
+    body := (Erlang binary) copy: "p" with: 65536
+    self
+      tlsRoundTrip: client
+      request: ("POST / HTTP/1.1\r\nhost: x\r\ncontent-length: 65536\r\n\r\n"
+        ++ body asStringUnchecked)
+    self assert: (ServerSocket bufferOfTls: client) >= 16384
+    (Erlang ssl) close: client
+    self assert: (srv stop: 5000) isOk
+
+  // === HTTP/2 and WebSocket ===
+  testHttp2ReadsGrowTheBuffer =>
+    srv := self serve: #{}
+    {sock, _enc, _dec} := H2Client open: (self portOf: srv)
+    self assert: (ServerSocket bufferOf: sock) equals: 512
+    update := Binary fromBytes: #(0, 0, 4, 8, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+    burst := (Erlang binary) copy: update with: 600
+    H2Client send: sock bytes: burst
+    ping := H2Frame serialize: (H2Ping new withPayload: (Binary fromBytes: #(1, 2, 3, 4, 5, 6, 7, 8))) maxFrameSize: 16384
+    H2Client send: sock bytes: ping
+    H2Client recvFrame: sock
+    self assert: (ServerSocket bufferOf: sock) > 512
+    H2Client close: sock
+    self assert: (srv stop: 5000) isOk
+
+  testWebSocketReadsGrowTheBuffer =>
+    srv := (Buccaneer start: #{
+      #port => 0
+    } handler: [:ex |
+      ex upgradeToWebSocket: (TestSock new withInAnswer: #echo) options: #{}
+    ]) unwrap
+    client := WebSocketClient connect: (self portOf: srv)
+    WebSocketClient handshake: client
+    payload := (Erlang binary) copy: "w" with: 20000
+    WebSocketClient sendBinary: client data: payload
+    WebSocketClient recvBinary: client
+    self assert: (ServerSocket bufferOf: (client at: 2)) > 512
+    WebSocketClient close: client
+    self assert: (srv stop: 5000) isOk

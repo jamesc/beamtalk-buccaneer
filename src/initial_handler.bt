@@ -81,6 +81,7 @@ sealed typed Object subclass: InitialHandler
           ]
         ^#close
       ]
+    ReadBuffer note: read value size socket: sock
     bytes := buffer concat: read value
     (self undecided: bytes)
       ifTrue: [

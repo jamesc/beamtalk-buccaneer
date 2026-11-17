@@ -16,6 +16,10 @@
 %%       [--rounds 5] [--duration 5000] [--warmup 1000] [--rows full|smoke]
 %%       [--only ROWID,...] [--impls a,b,...] [--out DIR] [--max-load L]
 %%
+%% With BENCH_SKIP_BANDIT set (bench/ab.sh, bench/rows_ab.sh: no Elixir),
+%% the default servers leave out `bandit`, and `--impls` naming it is
+%% refused up front.
+%%
 %% The gate rule, per gate row and metric (requests/s and p99): Buccaneer
 %% misses when its median is worse than the baseline's worst round (below
 %% its lowest requests/s, above its highest p99), that is, worse beyond
@@ -33,15 +37,39 @@
 
 %% The report's verdict and environment-error helpers, for bench/tests.
 -ifdef(TEST).
--export([verdict/5, env_section/3, env_errors/3, env_limits/3, settle_line/1]).
+-export([resolve_impls/2, verdict/5, env_section/3, env_errors/3, env_limits/3, settle_line/1]).
 -endif.
 
 main() ->
     Opts = parse(init:get_plain_arguments(), #{
         rounds => 5, duration => 5000, warmup => 1000, rows => full,
-        only => [], impls => bench_peer:bench_impls(), max_load => undefined,
+        only => [], impls => default, max_load => undefined,
         out => filename:join([os:getenv("BENCH_ROOT"), "_build", "bench"])
     }),
+    case resolve_impls(maps:get(impls, Opts), os:getenv("BENCH_SKIP_BANDIT")) of
+        {ok, Impls} -> main(Opts#{impls => Impls});
+        {error, Msg} ->
+            io:format(standard_error, "bench: ~s~n", [Msg]),
+            halt(2)
+    end.
+
+%% The servers to start. BENCH_SKIP_BANDIT (a string, or `false` when
+%% unset) means bench/run.sh built no Bandit and set no BENCH_ELIXIR_LIB.
+resolve_impls(default, Skip) ->
+    {ok, [I || I <- bench_peer:bench_impls(), not (I =:= bandit andalso skip_bandit(Skip))]};
+resolve_impls(Impls, Skip) when is_list(Impls) ->
+    case lists:member(bandit, Impls) andalso skip_bandit(Skip) of
+        true ->
+            {error, "--impls names bandit, but BENCH_SKIP_BANDIT is set so Bandit is not "
+                    "built; drop bandit from --impls or unset BENCH_SKIP_BANDIT"};
+        false -> {ok, Impls}
+    end.
+
+skip_bandit(false) -> false;
+skip_bandit("") -> false;
+skip_bandit(_) -> true.
+
+main(Opts) ->
     try run(Opts) of
         ok -> halt(0)
     catch

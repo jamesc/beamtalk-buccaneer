@@ -10,6 +10,9 @@
 #
 #   bench/rows_ab.sh BASE_REF [--rounds N] [--duration MS] [--only ROWS] [--impls LIST]
 #
+# It needs no Elixir: it sets BENCH_SKIP_BANDIT, so the default servers are
+# http_buccaneer, buccaneer and cowboy, and `--impls` naming bandit is refused.
+#
 # Raw JSON lines of each side go to _build/rows_ab/{base,pr}.jsonl. Both
 # sides are measured by this checkout's harness (bench/ and test/stress/
 # are copied over the base checkout), so only src/ differs.

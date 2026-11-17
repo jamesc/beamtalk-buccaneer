@@ -76,3 +76,20 @@ settle_line_without_a_known_range_omits_free_ports_test() ->
     L = flat(bench_main:settle_line(#{outcome => drained, waited_ms => 0, start => 0,
                                       remaining => 0, target => 0, range => undefined})),
     ?assertEqual("settled in 0.0 s: TIME_WAIT 0 -> 0 (target <= 0)", L).
+
+%% BENCH_SKIP_BANDIT (bench/ab.sh, bench/rows_ab.sh) leaves bandit out of the
+%% default servers; unset or empty keeps it (BT-5001).
+resolve_impls_default_test() ->
+    All = bench_peer:bench_impls(),
+    ?assert(lists:member(bandit, All)),
+    ?assertEqual({ok, All}, bench_main:resolve_impls(default, false)),
+    ?assertEqual({ok, All}, bench_main:resolve_impls(default, "")),
+    {ok, Skipped} = bench_main:resolve_impls(default, "1"),
+    ?assertEqual(All -- [bandit], Skipped).
+
+%% An explicit list is kept as given, unless it names bandit under the skip.
+resolve_impls_explicit_test() ->
+    ?assertEqual({ok, [cowboy, bandit]}, bench_main:resolve_impls([cowboy, bandit], false)),
+    ?assertEqual({ok, [cowboy]}, bench_main:resolve_impls([cowboy], "1")),
+    {error, Msg} = bench_main:resolve_impls([cowboy, bandit], "1"),
+    ?assertNotEqual(nomatch, string:find(Msg, "BENCH_SKIP_BANDIT")).

@@ -356,7 +356,9 @@ bench/rows_ab.sh origin/main --rounds 3 --duration 4000 --impls buccaneer,http_b
 
 It builds the base ref in a worktree, copies this checkout's `bench/` and
 `test/stress/` over it, and runs `bench_main` one round at a time,
-alternating which side goes first. Raw lines go to
+alternating which side goes first. It needs no Elixir: it sets
+`BENCH_SKIP_BANDIT`, which drops `bandit` from the default servers (an
+explicit `--impls` naming `bandit` is refused with a message). Raw lines go to
 `_build/rows_ab/{base,pr}.jsonl`. Read a difference against the spread of
 the rounds, not against one number.
 

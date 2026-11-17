@@ -6,8 +6,12 @@
 /// `autobahn_test.exs`. Needs `AUTOBAHN=1` and docker or a local
 /// `wstest` (`pipx install autobahntestsuite`); without the variable
 /// the test passes immediately so plain `beamtalk test` stays fast.
-/// `AUTOBAHN_CASES` optionally limits the cases (as "1.2.3,2.*"); the
-/// suite is non-blocking in CI until green.
+/// `AUTOBAHN_CASES` optionally limits the cases (as "1.2.3,2.*"; the
+/// limited set runs as one wstest invocation). Without it the full
+/// suite runs as `defaultBatches`, one wstest invocation each: wstest
+/// keeps every case's data until it exits, so the compression groups
+/// (12.* and 13.*) grow past 10 GiB in one process (BT-4992). The
+/// docker container is capped at `memoryLimit` so a runaway fails fast.
 TestCase subclass: AutobahnTest
 
   testFuzzingClient =>
@@ -21,18 +25,79 @@ TestCase subclass: AutobahnTest
       #websocket => #{#compress => true, #maxFrameSize => 20000000}
     } handler: [:ex | ex upgradeToWebSocket: sock options: #{}]) unwrap
     port := self portOf: srv
-    (File writeAll: (dir ++ "/fuzzingclient.json") contents: (self specJson)) unwrap
-    out := backend =:= #docker ifTrue: [
-      (Erlang os) cmd: (self dockerCmd: dir port: port)
-    ] ifFalse: [(Erlang os) cmd: (self localCmd: dir port: port)]
-    // On failure the message carries the tail of wstest's output (stdout
-    // and stderr), so CI shows why it exited non-zero.
-    (out asString includesSubstring: "EXIT:0") ifFalse: [
-      self fail: "wstest did not exit 0:\n" ++ (self tailOf: out asString)
-    ]
-    failures := self failuresIn: dir
+    failures := #()
+    n := 0
+    (self batches)
+      do: [:cases |
+        n := n + 1
+        sub := dir ++ "/reports/" ++ n asString
+        (Erlang os) cmd: ("mkdir -p " ++ sub)
+        spec := dir ++ "/fuzzingclient" ++ n asString ++ ".json"
+        (File
+          writeAll: spec
+          contents: (self specJson: cases outdir: (backend =:= #docker ifTrue: [
+            "./reports"
+          ] ifFalse: [sub]))) unwrap
+        out := backend =:= #docker
+          ifTrue: [
+            (Erlang os)
+              cmd: (self
+                dockerCmd: spec
+                reports: sub
+                port: port)
+          ]
+          ifFalse: [(Erlang os) cmd: (self localCmd: spec port: port)]
+        // On failure the message carries the tail of wstest's output (stdout
+        // and stderr), so CI shows why it exited non-zero.
+        (out asString includesSubstring: "EXIT:0")
+          ifFalse: [
+            self
+              fail: "wstest did not exit 0 for cases "
+                ++ (cases join: ",")
+                ++ "\n"
+                ++ (self exitHint: out asString)
+                ++ (self tailOf: out asString)
+          ]
+        (self failuresIn: sub) do: [:k | failures := failures add: k]
+      ]
     self assert: (srv stop: 5000) isOk
     self assert: failures equals: #()
+
+  /// What a non-zero wstest exit means. 137 is SIGKILL, in practice the
+  /// container hitting its memory cap; 124 is the per-batch timeout,
+  /// which is what wstest does when a pattern matches no case.
+  exitHint: text :: String -> String =>
+    (text includesSubstring: "EXIT:137")
+      ifTrue: [
+        ^"wstest was killed (exit 137): out of memory at the "
+          ++ self memoryLimit
+          ++ " container cap (BT-4992)\n"
+      ]
+    (text includesSubstring: "EXIT:124")
+      ifTrue: [
+        ^"wstest timed out (exit 124): no progress for "
+          ++ self batchTimeout asString
+          ++ "s; does the case pattern match any case?\n"
+      ]
+    ""
+
+  /// Memory cap for the wstest container; the largest batch peaks near 5.5 GiB.
+  memoryLimit -> String => "8g"
+
+  /// Seconds one wstest invocation may take (the whole suite takes about 15 minutes).
+  batchTimeout -> Integer => 1500
+
+  /// The wstest invocations. AUTOBAHN_CASES gives one batch; otherwise
+  /// every case group, the compression groups per sub-group (each
+  /// peaks near 5.5 GiB where 12.* together passes 10 GiB). Together
+  /// these match exactly the cases "*" matches (517: groups 8 and 11 do not exist).
+  batches -> List =>
+    v := (Erlang os) getenv: "AUTOBAHN_CASES"
+    v match: [
+      s :: String -> #(s split: ",");
+      l :: List -> #(l asString split: ",");
+      _ -> #(#("1.*"), #("2.*"), #("3.*"), #("4.*"), #("5.*"), #("6.*"), #("7.*"), #("9.*"), #("10.*"), #("12.1.*"), #("12.2.*"), #("12.3.*"), #("12.4.*"), #("12.5.*"), #("13.1.*"), #("13.2.*"), #("13.3.*"), #("13.4.*"), #("13.5.*"), #("13.6.*"), #("13.7.*"))
+    ]
 
   /// The last 4000 characters of text.
   tailOf: text :: String -> String =>
@@ -59,17 +124,13 @@ TestCase subclass: AutobahnTest
     dockerFound ifTrue: [^#docker]
     #local
 
-  /// The fuzzingclient spec: every case unless AUTOBAHN_CASES limits
-  /// them, minus `excludedCases`. Built by hand: the keys are not
-  /// valid Beamtalk symbols.
-  specJson -> String =>
-    v := (Erlang os) getenv: "AUTOBAHN_CASES"
-    cases := v match: [
-      s :: String -> s split: ",";
-      l :: List -> l asString split: ",";
-      _ -> #("*")
-    ]
-    "\{""outdir"": ""./reports"", ""cases"": ["
+  /// The fuzzingclient spec for one batch of cases, minus
+  /// `excludedCases`. Built by hand: the keys are not valid Beamtalk
+  /// symbols.
+  specJson: cases :: List outdir: outdir :: String -> String =>
+    "\{""outdir"": """
+      ++ outdir
+      ++ """, ""cases"": ["
       ++ (self quoted: cases)
       ++ "], ""exclude-cases"": ["
       ++ (self quoted: self excludedCases)
@@ -84,34 +145,42 @@ TestCase subclass: AutobahnTest
   quoted: cases :: List -> String =>
     (cases collect: [:c | """" ++ c ++ """"]) join: ", "
 
-  dockerCmd: dir :: String port: port :: Integer -> String =>
-    "docker run --rm -v "
-      ++ dir
-      ++ "/fuzzingclient.json:/fuzzingclient.json"
+  /// One wstest in a memory-capped container (swap off, so a runaway is
+  /// killed at the cap instead of swapping), under a timeout.
+  dockerCmd: spec :: String reports: reports :: String port: port :: Integer -> String =>
+    "timeout "
+      ++ self batchTimeout asString
+      ++ " docker run --rm --memory="
+      ++ self memoryLimit
+      ++ " --memory-swap="
+      ++ self memoryLimit
       ++ " -v "
-      ++ dir
-      ++ "/reports:/reports"
+      ++ spec
+      ++ ":/fuzzingclient.json"
+      ++ " -v "
+      ++ reports
+      ++ ":/reports"
       ++ " --add-host=host.docker.internal:host-gateway"
       ++ " --name fuzzingclient crossbario/autobahn-testsuite"
       ++ " wstest --mode fuzzingclient -w ws://host.docker.internal:"
       ++ port asString
       ++ " 2>&1; echo EXIT:$?"
 
-  /// Run the local wstest against the same spec; outdir is relative
-  /// so reports land in dir/reports exactly as with docker.
-  localCmd: dir :: String port: port :: Integer -> String =>
-    "cd "
-      ++ dir
-      ++ " && wstest --mode fuzzingclient --spec "
-      ++ dir
-      ++ "/fuzzingclient.json -w ws://127.0.0.1:"
+  /// Run the local wstest against the same spec; outdir is absolute so
+  /// reports land in the batch's directory exactly as with docker.
+  localCmd: spec :: String port: port :: Integer -> String =>
+    "timeout "
+      ++ self batchTimeout asString
+      ++ " wstest --mode fuzzingclient --spec "
+      ++ spec
+      ++ " -w ws://127.0.0.1:"
       ++ port asString
       ++ " 2>&1; echo EXIT:$?"
 
   /// Cases whose behavior pair is not (OK|NON-STRICT|INFORMATIONAL,
   /// OK|INFORMATIONAL).
   failuresIn: dir :: String -> List =>
-    index := (File readAll: (dir ++ "/reports/index.json")) unwrap
+    index := (File readAll: (dir ++ "/index.json")) unwrap
     report := (Json parse: index) unwrap
     parsed :: Dictionary := report
     cases := parsed at: "UnknownServer" ifAbsent: [

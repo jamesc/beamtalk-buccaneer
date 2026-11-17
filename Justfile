@@ -64,7 +64,8 @@ bench-profile *ARGS:
 
 # Autobahn Testsuite fuzzingclient (needs docker): the full suite with
 # the AUTOBAHN=1 gate open (scoped runs cannot see test fixtures).
-# Non-blocking in CI until green; AUTOBAHN_CASES limits cases.
+# Runs one wstest per case group, each in a memory-capped container
+# (BT-4992); AUTOBAHN_CASES limits cases (one invocation).
 autobahn:
     AUTOBAHN=1 beamtalk test --warnings-as-errors
 

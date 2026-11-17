@@ -175,15 +175,51 @@ jobs:
       - name: Build
         run: just build
 
+      # The suite runs as one wstest invocation per case group, each in a
+      # container capped at 8 GiB (test/websocket/autobahn_test.bt,
+      # BT-4992): wstest holds every case's data until it exits, and the
+      # compression groups pass 10 GiB in one process. The sampler records
+      # the peak container memory of each run in the job summary.
       - name: Autobahn Testsuite
-        run: just autobahn
+        run: |
+          mkdir -p /tmp/buccaneer-autobahn
+          (
+            while true; do
+              docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' fuzzingclient 2>/dev/null \
+                >> /tmp/buccaneer-autobahn/memory-samples.txt || true
+              sleep 1
+            done
+          ) &
+          sampler=$!
+          status=0
+          just autobahn || status=$?
+          kill "$sampler" 2>/dev/null || true
+          {
+            echo "### wstest peak container memory"
+            python3 - <<'PY'
+          import re
+          unit = {"B": 1 / 1048576, "KiB": 1 / 1024, "MiB": 1, "GiB": 1024}
+          peak = 0.0
+          try:
+              for line in open("/tmp/buccaneer-autobahn/memory-samples.txt"):
+                  m = re.search(r"([\d.]+)(B|KiB|MiB|GiB) /", line)
+                  if m:
+                      peak = max(peak, float(m.group(1)) * unit[m.group(2)])
+          except FileNotFoundError:
+              pass
+          print("peak %.0f MiB (cap 8192 MiB)" % peak)
+          PY
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit $status
 
       - name: Upload Autobahn reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: autobahn-reports
-          path: /tmp/buccaneer-autobahn/reports
+          path: |
+            /tmp/buccaneer-autobahn/reports
+            /tmp/buccaneer-autobahn/memory-samples.txt
           if-no-files-found: ignore
 
   # Phase 6: h2spec conformance over TLS/ALPN h2.

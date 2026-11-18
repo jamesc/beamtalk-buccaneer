@@ -45,17 +45,20 @@ sealed typed Value subclass: BuccaneerTelemetry
   /// not a package dependency, and the stdlib `Telemetry` facade has no
   /// handler query.
   class sealed requestHandlersAttached -> Boolean =>
-    (Erlang erlang
-      function_exported: #telemetry
-      with: #list_handlers
-      with: 1) ifFalse: [^false]
     [
       handlers :: List(Object) := Erlang erlang
         apply: #telemetry
         with: #list_handlers
         with: #(#(#buccaneer, #request))
       handlers isEmpty not
-    ] on: Error do: [:e | true]
+    ]
+      on: Error
+      do: [:e |
+        Erlang erlang
+          function_exported: #telemetry
+          with: #list_handlers
+          with: 1
+      ]
 
   /// Whether this process's requests emit spans: the connection's flag,
   /// true when none was recorded (HTTP/2 streams, tests).

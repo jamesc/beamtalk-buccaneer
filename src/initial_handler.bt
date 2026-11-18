@@ -153,7 +153,8 @@ sealed typed Object subclass: InitialHandler
   class sealed preface -> Binary =>
     Binary fromIolist: #("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 
-  /// Length of the HTTP/2 connection preface.
+  /// Length of the HTTP/2 connection preface (a literal so the fast path
+  /// builds no binary; `InitialHandlerTest` asserts it equals `preface size`).
   class sealed prefaceSize -> Integer => 24
 
   /// Whether the bytes so far could still be the preface or a

@@ -5,6 +5,9 @@ TestCase subclass: InitialHandlerTest
 
   config => BuccaneerConfig from: #{#handler => [:ex | ex]}
 
+  testPrefaceSizeMatchesPreface =>
+    self assert: InitialHandler prefaceSize equals: InitialHandler preface size
+
   testCleartextSniffsHttp1 =>
     pair := Loopback pairWithReadTimeout: 5000
     (Erlang gen_tcp) send: (pair at: 2) with: "GET / HTTP/1.1\r\n\r\n"

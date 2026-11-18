@@ -54,10 +54,10 @@ sealed typed Value subclass: BuccaneerTelemetry
     ]
       on: Error
       do: [:e |
-        (Erlang erlang
+        Erlang erlang
           function_exported: #telemetry
           with: #list_handlers
-          with: 1) =:= true
+          with: 1
       ]
 
   /// Whether this process's requests emit spans: the connection's flag,

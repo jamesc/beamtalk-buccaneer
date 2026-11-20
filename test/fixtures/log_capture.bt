@@ -9,7 +9,7 @@
 sealed typed Object subclass: LogCapture
 
   /// Start capturing into a file under TMPDIR. Answers the path.
-  class sealed attach: name :: Symbol -> String =>
+  class attach: name :: Symbol -> String =>
     path := (System getEnv: "TMPDIR" default: "/tmp") ++ "/" ++ name asString ++ ".log"
     chars := path toBytes
     result := self
@@ -29,7 +29,7 @@ sealed typed Object subclass: LogCapture
     ]
     path
 
-  class sealed detach: name :: Symbol -> Nil =>
+  class detach: name :: Symbol -> Nil =>
     self serialized: [(Erlang logger) remove_handler: name]
     nil
 
@@ -39,13 +39,13 @@ sealed typed Object subclass: LogCapture
   /// finished, so a concurrent add_handler from another test class is
   /// silently dropped (its process lives on, unregistered, and the test
   /// waits on an empty file).
-  class sealed serialized: block :: Block(Result(Object, Object)) -> Result(Object, Object) =>
+  class serialized: block :: Block(Result(Object, Object)) -> Result(Object, Object) =>
     (Erlang global) trans: {#buccaneerLogCapture, (Erlang erlang) make_ref} with: block
 
   /// The captured output, waiting up to three seconds for `token`
   /// (other test classes share the node, so logging under parallel
   /// load can take a second or more to land).
-  class sealed await: token :: String in: path :: String -> String =>
+  class await: token :: String in: path :: String -> String =>
     content := ""
     60
       timesRepeat: [

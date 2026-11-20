@@ -33,7 +33,7 @@ sealed typed Value subclass: HTTP2Stream
   field: heldHead :: Binary | Nil = nil
 
   /// A stream for the connection process with the negotiated windows.
-  class sealed init: conn :: ConnectionHandler | Nil sid: sid :: Integer sendWindow: sw :: Integer recvWindow: rw :: Integer sendfileChunk: chunk :: Integer contentLength: cl :: Integer | Nil -> HTTP2Stream =>
+  class init: conn :: ConnectionHandler | Nil sid: sid :: Integer sendWindow: sw :: Integer recvWindow: rw :: Integer sendfileChunk: chunk :: Integer contentLength: cl :: Integer | Nil -> HTTP2Stream =>
     ((((((HTTP2Stream new withConnection: conn) withStreamId: sid) withSendWindowSize: sw) withRecvWindowSize: rw) withSendfileChunkSize: chunk) withBytesRemaining: cl)
 
   /// A response header block that needs no HPACK dynamic table, so the
@@ -42,7 +42,7 @@ sealed typed Value subclass: HTTP2Stream
   /// may touch it). :status is a static-table entry where RFC 7541
   /// Appendix A has one, else a literal with the :status name (index
   /// 8); every other field is a literal without indexing (§6.2.2).
-  class sealed encodeHead: status :: Integer headers: headers :: HttpHeaders -> Binary =>
+  class encodeHead: status :: Integer headers: headers :: HttpHeaders -> Binary =>
     index := status match: [
       200 -> 8;
       204 -> 9;

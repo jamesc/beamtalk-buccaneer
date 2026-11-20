@@ -51,23 +51,23 @@ sealed typed Value subclass: ReadBuffer
   field: average :: Integer = 0
 
   /// The sizes a buffer takes, smallest first.
-  class sealed steps -> List(Integer) => #(512, 4096, 16384, 65536, 131072)
+  class steps -> List(Integer) => #(512, 4096, 16384, 65536, 131072)
 
   /// The `buffer` a connection starts with.
-  class sealed minimum -> Integer => 512
+  class minimum -> Integer => 512
 
   /// The process-dictionary key of the connection's state.
-  class sealed key -> Symbol => #buccaneer_read_buffer
+  class key -> Symbol => #buccaneer_read_buffer
 
   /// Start tracking this connection's buffer (the connection process).
-  class sealed begin -> Nil =>
+  class begin -> Nil =>
     ProcessDictionary at: self key put: ReadBuffer new
     nil
 
   /// A read of `n` bytes from `sock` that the buffer limits (`recv: 0`,
   /// an active message): resize the socket's buffer when the ladder moves.
   /// Does nothing on a connection that does not track its buffer.
-  class sealed note: n :: Integer socket: sock :: Socket -> Nil =>
+  class note: n :: Integer socket: sock :: Socket -> Nil =>
     state := ProcessDictionary at: self key
     state match: [
       current :: ReadBuffer -> self
@@ -77,7 +77,7 @@ sealed typed Value subclass: ReadBuffer
       _ -> nil
     ]
 
-  class sealed note: n :: Integer socket: sock :: Socket current: current :: ReadBuffer -> Nil =>
+  class note: n :: Integer socket: sock :: Socket current: current :: ReadBuffer -> Nil =>
     // The common read on an idle fleet: small, at the minimum, no change.
     (n < ReadBuffer minimum and: [
       current size =:= ReadBuffer minimum
@@ -91,7 +91,7 @@ sealed typed Value subclass: ReadBuffer
   /// A read that asked for `n` bytes by length. A plain socket ignores
   /// `buffer` for these, so only TLS (which reads its records through
   /// `buffer`) takes them as a signal.
-  class sealed noteExplicit: n :: Integer socket: sock :: Socket -> Nil =>
+  class noteExplicit: n :: Integer socket: sock :: Socket -> Nil =>
     sock isSecure ifTrue: [self note: n socket: sock]
     nil
 

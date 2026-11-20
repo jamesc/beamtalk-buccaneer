@@ -13,7 +13,7 @@ sealed typed Object subclass: FrameCodec
   /// `<<length::24, type::8, flags::8, _reserved::1, stream_id::31,
   /// rest::binary>>`. Answers `{length, type, flags, streamId, rest}`, or
   /// nil when fewer than 9 bytes are buffered.
-  class sealed h2Header: bin :: Binary -> Tuple | Nil =>
+  class h2Header: bin :: Binary -> Tuple | Nil =>
     bin match: [
       <<len:24, type:8, flags:8, _r:1, sid:31, rest/binary>> -> {len, type, flags, sid, rest};
       _ -> nil
@@ -23,7 +23,7 @@ sealed typed Object subclass: FrameCodec
   /// size from an earlier segment (`payload::binary-size(length)`); the
   /// same pattern here does not compile (BT-4096), so the payload is
   /// matched in a second `match:` with the size in a local.
-  class sealed h2Frame: bin :: Binary -> Tuple | Nil =>
+  class h2Frame: bin :: Binary -> Tuple | Nil =>
     bin match: [
       <<len:24, type:8, flags:8, _r:1, sid:31, rest/binary>> -> self
         h2Payload: rest
@@ -36,7 +36,7 @@ sealed typed Object subclass: FrameCodec
 
   // A size taken only from a parameter counts as unused (BT-4097), so
   // the guard mentions it.
-  class sealed h2Payload: rest :: Binary length: len :: Integer type: type :: Integer flags: flags :: Integer stream: sid :: Integer -> Tuple | Nil =>
+  class h2Payload: rest :: Binary length: len :: Integer type: type :: Integer flags: flags :: Integer stream: sid :: Integer -> Tuple | Nil =>
     rest match: [
       <<payload:len/binary, tail/binary>> when: [len >= 0] -> {type, flags, sid, payload, tail};
       _ -> nil
@@ -45,7 +45,7 @@ sealed typed Object subclass: FrameCodec
   /// `<<byte_size(payload)::24, type::8, flags::8, 0::1, id::31>>` plus
   /// the payload, as iodata: a list of the nine header bytes and the
   /// payload binary, ready for `Socket send:`.
-  class sealed h2Serialize: type :: Integer flags: flags :: Integer stream: sid :: Integer payload: payload :: Binary -> List =>
+  class h2Serialize: type :: Integer flags: flags :: Integer stream: sid :: Integer payload: payload :: Binary -> List =>
     len := (Erlang erlang byte_size: payload)
     #(#(len bitShift: -16, (len bitShift: -8) bitAnd: 255, len bitAnd: 255, type, flags, (sid bitShift: -24) bitAnd: 127, (sid bitShift: -16) bitAnd: 255, (sid bitShift: -8) bitAnd: 255, sid bitAnd: 255), payload)
 
@@ -56,7 +56,7 @@ sealed typed Object subclass: FrameCodec
   /// payload. Answers `{fin, rsv, opcode, maskKey | nil, payload, rest}`
   /// or nil if incomplete. The extended-length and payload segments are
   /// separate matches (BT-4096).
-  class sealed wsFrame: bin :: Binary -> Tuple | Nil =>
+  class wsFrame: bin :: Binary -> Tuple | Nil =>
     bin match: [
       <<fin:1, rsv:3, op:4, masked:1, len7:7, rest/binary>> -> self
         wsLength: rest
@@ -68,7 +68,7 @@ sealed typed Object subclass: FrameCodec
       _ -> nil
     ]
 
-  class sealed wsLength: bin :: Binary short: len7 :: Integer fin: fin :: Integer rsv: rsv :: Integer opcode: op :: Integer masked: masked :: Integer -> Tuple | Nil =>
+  class wsLength: bin :: Binary short: len7 :: Integer fin: fin :: Integer rsv: rsv :: Integer opcode: op :: Integer masked: masked :: Integer -> Tuple | Nil =>
     len7 < 126
       ifTrue: [
         ^self
@@ -103,7 +103,7 @@ sealed typed Object subclass: FrameCodec
       _ -> nil
     ]
 
-  class sealed wsPayload: bin :: Binary length: len :: Integer fin: fin :: Integer rsv: rsv :: Integer opcode: op :: Integer masked: masked :: Integer -> Tuple | Nil =>
+  class wsPayload: bin :: Binary length: len :: Integer fin: fin :: Integer rsv: rsv :: Integer opcode: op :: Integer masked: masked :: Integer -> Tuple | Nil =>
     masked =:= 1
       ifTrue: [
         ^bin match: [
@@ -118,7 +118,7 @@ sealed typed Object subclass: FrameCodec
 
   /// `Bandit.WebSocket.PrimitiveOps.ws_mask/2`: XOR with the key
   /// repeated, through `crypto:exor/2`.
-  class sealed unmask: payload :: Binary key: key :: Binary -> Binary =>
+  class unmask: payload :: Binary key: key :: Binary -> Binary =>
     n := (Erlang erlang byte_size: payload)
     n =:= 0 ifTrue: [^payload]
     whole := Erlang binary copy: key with: n  // 4 + 1
@@ -126,7 +126,7 @@ sealed typed Object subclass: FrameCodec
 
   /// A server frame header (unmasked): FIN, opcode and the length in 7,
   /// 7+16 or 7+64 bits, as iodata.
-  class sealed wsSerialize: opcode :: Integer payload: payload :: Binary -> List =>
+  class wsSerialize: opcode :: Integer payload: payload :: Binary -> List =>
     n := (Erlang erlang byte_size: payload)
     first := 128 bitOr: opcode
     head := n < 126
@@ -139,7 +139,7 @@ sealed typed Object subclass: FrameCodec
     #(head, payload)
 
   /// `n` as `count` big-endian bytes.
-  class sealed bytes: n :: Integer count: count :: Integer -> List(Integer) =>
+  class bytes: n :: Integer count: count :: Integer -> List(Integer) =>
     out := #()
     v := n
     count
@@ -156,7 +156,7 @@ sealed typed Object subclass: FrameCodec
   /// after the flag bits (`<<value::size(prefix), rest::binary>>`);
   /// Beamtalk has no bitstring segments (BT-4097), so the flag bits are
   /// skipped inside the first byte. Answers `{value, rest}` or nil.
-  class sealed hpackInteger: bin :: Binary prefix: p :: Integer -> Tuple | Nil =>
+  class hpackInteger: bin :: Binary prefix: p :: Integer -> Tuple | Nil =>
     skip := 8 - p
     max := (1 bitShift: p) - 1
     bin match: [
@@ -174,7 +174,7 @@ sealed typed Object subclass: FrameCodec
   /// The continuation bytes: `<<0::1, value::7, rest::binary>>` ends,
   /// `<<1::1, ...>>` continues. A literal segment value does not parse
   /// (BT-4097), so the bit is bound and tested in a guard.
-  class sealed hpackRest: bin :: Binary value: acc :: Integer shift: m :: Integer -> Tuple | Nil =>
+  class hpackRest: bin :: Binary value: acc :: Integer shift: m :: Integer -> Tuple | Nil =>
     bin match: [
       <<c:1, v:7, rest/binary>> when: [c =:= 0] -> {acc + (v bitShift: m), rest};
       <<_c:1, v:7, rest/binary>> -> self
@@ -186,7 +186,7 @@ sealed typed Object subclass: FrameCodec
 
   /// RFC 7541 5.1 encoding with an n-bit prefix and the high bits
   /// `flags` (already shifted), as a list of bytes.
-  class sealed hpackEncode: value :: Integer prefix: p :: Integer flags: flags :: Integer -> List(Integer) =>
+  class hpackEncode: value :: Integer prefix: p :: Integer flags: flags :: Integer -> List(Integer) =>
     max := (1 bitShift: p) - 1
     value < max ifTrue: [^#(flags bitOr: value)]
     out := #(flags bitOr: max)

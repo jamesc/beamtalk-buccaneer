@@ -22,7 +22,7 @@ sealed typed Value subclass: HTTP2Protocol
   /// Start a connection: settings come from the #http2 section. The
   /// actor socket-sends initialSettingsBytes, then feeds wire bytes
   /// to serve:.
-  class sealed begin: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike connData: connData :: Tuple(Boolean, Tuple | Symbol) -> HTTP2Protocol =>
+  class begin: config :: BuccaneerConfig handler: handler :: ExchangeHandlerLike connData: connData :: Tuple(Boolean, Tuple | Symbol) -> HTTP2Protocol =>
     conn := HTTP2Connection default
     conn := conn withMaxRequests: (config http2Integer: #maxRequests default: 0)
     conn := conn withMaxHeaderBlockSize: (config http2Integer: #maxHeaderBlockSize default: 50000)
@@ -46,7 +46,7 @@ sealed typed Value subclass: HTTP2Protocol
 
   /// The local settings as a wire dictionary (defaults omitted, exactly
   /// as the frame layer's serialization skips them).
-  class sealed wireSettings: local :: HTTP2Settings -> Dictionary(Symbol, Object) =>
+  class wireSettings: local :: HTTP2Settings -> Dictionary(Symbol, Object) =>
     out := #{}
     local headerTableSize =:= 4096 ifFalse: [
       out := out at: #header_table_size put: local headerTableSize
@@ -70,7 +70,7 @@ sealed typed Value subclass: HTTP2Protocol
     out
 
   /// The local settings merged over the defaults from #defaultLocalSettings.
-  class sealed localSettings: config :: BuccaneerConfig -> HTTP2Settings =>
+  class localSettings: config :: BuccaneerConfig -> HTTP2Settings =>
     base := HTTP2Settings default
     raw := config http2 at: #defaultLocalSettings ifAbsent: [^base]
     raw match: [
@@ -78,7 +78,7 @@ sealed typed Value subclass: HTTP2Protocol
       _ -> Error signal: "Invalid value for #defaultLocalSettings"
     ]
 
-  class sealed mergeLocal: base :: HTTP2Settings params: params :: Dictionary(Symbol, Object) -> HTTP2Settings =>
+  class mergeLocal: base :: HTTP2Settings params: params :: Dictionary(Symbol, Object) -> HTTP2Settings =>
     hts := self
       settingInt: params
       key: #headerTableSize
@@ -107,14 +107,14 @@ sealed typed Value subclass: HTTP2Protocol
     ]) ifTrue: [Error signal: "Invalid #maxFrameSize (RFC9113§6.5)"]
     (((((HTTP2Settings new withHeaderTableSize: hts) withMaxConcurrentStreams: mcs) withInitialWindowSize: iws) withMaxFrameSize: mfs) withMaxHeaderListSize: mhls)
 
-  class sealed settingInt: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer -> Integer =>
+  class settingInt: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer -> Integer =>
     (params includesKey: key) ifFalse: [^fallback]
     (params at: key) match: [
       n :: Integer -> n;
       _ -> Error signal: ("Invalid value for #" ++ key asString)
     ]
 
-  class sealed settingNum: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer | Symbol -> Integer | Symbol =>
+  class settingNum: params :: Dictionary(Symbol, Object) key: key :: Symbol fallback: fallback :: Integer | Symbol -> Integer | Symbol =>
     (params includesKey: key) ifFalse: [^fallback]
     (params at: key) match: [
       n :: Integer -> n;
@@ -123,10 +123,10 @@ sealed typed Value subclass: HTTP2Protocol
     ]
 
   /// Parked sends expire 15 s after (re-)queueing, in native time.
-  class sealed sendTimeoutNative -> Integer => 15 * 1000 * 1000 * 1000
+  class sendTimeoutNative -> Integer => 15 * 1000 * 1000 * 1000
 
   /// The same 15 s budget in milliseconds, for `Timer send:to:after:`.
-  class sealed sendTimeoutMs -> Integer => 15 * 1000
+  class sendTimeoutMs -> Integer => 15 * 1000
 
   /// Our connection preface: an empty SETTINGS frame for the actor to
   /// socket-send before serving (RFC 9113 §3.4).

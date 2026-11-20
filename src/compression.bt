@@ -26,10 +26,10 @@ sealed typed Value subclass: Compression
   field: libContext :: Dynamic = nil
 
   /// The identity context: bodies pass through unchanged.
-  class sealed identity -> Compression => Compression new
+  class identity -> Compression => Compression new
 
   /// Whether this OTP release has the `zstd` module.
-  class sealed zstdAvailable -> Boolean =>
+  class zstdAvailable -> Boolean =>
     ((Erlang code) ensure_loaded: #zstd) match: [
       {#module, _} -> true;
       _ -> false
@@ -37,14 +37,14 @@ sealed typed Value subclass: Compression
 
   /// Bandit's default preference order: zstd first when available, then
   /// gzip, x-gzip and deflate.
-  class sealed defaultEncodings -> List(String) =>
+  class defaultEncodings -> List(String) =>
     base := #("gzip", "x-gzip", "deflate")
     self zstdAvailable ifTrue: [^base addFirst: "zstd"]
     base
 
   /// Whether the `#http` options enable compression (`#compress`, default
   /// true; `false` or `nil` disable it, as Bandit's truthiness check).
-  class sealed enabled: http :: HttpOptions -> Boolean =>
+  class enabled: http :: HttpOptions -> Boolean =>
     flag := http at: #compress ifAbsent: [true]
     (flag =:= false or: [flag isNil]) not
 
@@ -62,13 +62,13 @@ sealed typed Value subclass: Compression
   /// Compression negotiate: "gzip;q=0, deflate" options: #{}   // => "deflate"
   /// Compression negotiate: nil options: #{}                   // => nil
   /// ```
-  class sealed negotiate: acceptEncoding :: Object options: http :: HttpOptions -> String | Nil =>
+  class negotiate: acceptEncoding :: Object options: http :: HttpOptions -> String | Nil =>
     text := Headers text: acceptEncoding
     // No accept-encoding (the common request) leaves without the search below.
     text isNil ifTrue: [nil] ifFalse: [self negotiateText: text options: http]
 
   /// negotiate:options: for a request that sent an accept-encoding value.
-  class sealed negotiateText: text :: String options: http :: HttpOptions -> String | Nil =>
+  class negotiateText: text :: String options: http :: HttpOptions -> String | Nil =>
     (self enabled: http) ifFalse: [^nil]
     accepted := self parseAcceptEncoding: text
     wildcard := self quality: accepted coding: "*"
@@ -87,7 +87,7 @@ sealed typed Value subclass: Compression
     nil
 
   /// The q-value of the first `coding` entry, or nil when absent.
-  class sealed quality: accepted :: List(Tuple(String, Number)) coding: coding :: String -> Number | Nil =>
+  class quality: accepted :: List(Tuple(String, Number)) coding: coding :: String -> Number | Nil =>
     accepted do: [:pair :: Tuple |
       (pair at: 1) =:= coding ifTrue: [^pair at: 2]
     ]
@@ -95,7 +95,7 @@ sealed typed Value subclass: Compression
 
   /// {coding, q} pairs from an `accept-encoding` value (RFC9110§12.5.3):
   /// Plug's list split, codings trimmed and lowercased.
-  class sealed parseAcceptEncoding: value :: String -> List(Tuple(String, Number)) =>
+  class parseAcceptEncoding: value :: String -> List(Tuple(String, Number)) =>
     (Headers splitList: value)
       collect: [:element :: String |
         parts := element split: ";"
@@ -105,7 +105,7 @@ sealed typed Value subclass: Compression
 
   /// The `q` parameter of one coding's params (RFC9110§12.4.2), 1.0 when
   /// absent. A malformed value reads leniently as 1.0, as Bandit does.
-  class sealed qualityValue: params :: List(String) -> Number =>
+  class qualityValue: params :: List(String) -> Number =>
     params
       do: [:param :: String |
         kv := (param trim asciiLowercase) split: "="
@@ -117,7 +117,7 @@ sealed typed Value subclass: Compression
 
   /// Elixir's Float.parse prefix rule for a q-value: leading digits, an
   /// optional fraction, trailing text ignored; no leading digit is 1.0.
-  class sealed parseQuality: value :: String -> Number =>
+  class parseQuality: value :: String -> Number =>
     parsed := Headers parseInteger: value
     parsed isError ifTrue: [^1.0]
     {whole, rest} := parsed unwrap
@@ -144,7 +144,7 @@ sealed typed Value subclass: Compression
   /// - `http` (HttpOptions) — the server's `#http` options.
   /// - `emptyBody` (Boolean) — whether the body is known to be empty.
   /// - `streamable` (Boolean) — whether the body arrives in pieces.
-  class sealed start: encoding :: String | Nil status: status :: Integer headers: hs :: HttpHeaders options: http :: HttpOptions emptyBody: emptyBody :: Boolean streamable: streamable :: Boolean -> Tuple(HttpHeaders, Compression) =>
+  class start: encoding :: String | Nil status: status :: Integer headers: hs :: HttpHeaders options: http :: HttpOptions emptyBody: emptyBody :: Boolean streamable: streamable :: Boolean -> Tuple(HttpHeaders, Compression) =>
     varied := self
       addVary: hs
       status: status
@@ -164,7 +164,7 @@ sealed typed Value subclass: Compression
       ]
 
   /// start:status:headers:options:emptyBody:streamable: once a coding was negotiated.
-  class sealed startCoding: coding :: String status: status :: Integer headers: hs :: HttpHeaders varied: varied :: HttpHeaders options: http :: HttpOptions emptyBody: emptyBody :: Boolean streamable: streamable :: Boolean -> Tuple(HttpHeaders, Compression) =>
+  class startCoding: coding :: String status: status :: Integer headers: hs :: HttpHeaders varied: varied :: HttpHeaders options: http :: HttpOptions emptyBody: emptyBody :: Boolean streamable: streamable :: Boolean -> Tuple(HttpHeaders, Compression) =>
     eligible := (status =/= 204
       and: [
         status =/= 304
@@ -187,7 +187,7 @@ sealed typed Value subclass: Compression
 
   /// `vary: accept-encoding` unless the status is 204, compression is
   /// off, or a `vary` header already names it (any casing).
-  class sealed addVary: hs :: HttpHeaders status: status :: Integer options: http :: HttpOptions -> HttpHeaders =>
+  class addVary: hs :: HttpHeaders status: status :: Integer options: http :: HttpOptions -> HttpHeaders =>
     status =:= 204 ifTrue: [^hs]
     (self enabled: http) ifFalse: [^hs]
     (Headers
@@ -198,14 +198,14 @@ sealed typed Value subclass: Compression
 
   /// A strong validator forbids transforming the body (RFC9110§8.8.1);
   /// only `W/` marks a weak one.
-  class sealed strongEtag: hs :: HttpHeaders -> Boolean =>
+  class strongEtag: hs :: HttpHeaders -> Boolean =>
     etag := Headers getHeader: hs name: "etag"
     etag isNil ifTrue: [^false]
     text := Headers text: etag
     text isNil ifTrue: [^true]
     (text startsWith: "W/") not
 
-  class sealed noTransform: hs :: HttpHeaders -> Boolean =>
+  class noTransform: hs :: HttpHeaders -> Boolean =>
     Headers
       headerContainsToken: hs
       name: "cache-control"
@@ -213,7 +213,7 @@ sealed typed Value subclass: Compression
 
   /// The context for one coding (Bandit's start_stream). gzip and zstd
   /// only for a whole body; anything unsupported is identity.
-  class sealed open: encoding :: String options: http :: HttpOptions streamable: streamable :: Boolean -> Compression =>
+  class open: encoding :: String options: http :: HttpOptions streamable: streamable :: Boolean -> Compression =>
     encoding =:= "deflate" ifTrue: [
       ^self openDeflate: (self section: http key: #deflateOptions)
     ]
@@ -227,7 +227,7 @@ sealed typed Value subclass: Compression
     self identity
 
   /// A nested options Dictionary, empty when absent.
-  class sealed section: http :: HttpOptions key: key :: Symbol -> Dictionary =>
+  class section: http :: HttpOptions key: key :: Symbol -> Dictionary =>
     (http at: key ifAbsent: [#{}]) match: [
       d :: Dictionary -> d;
       _ -> Error signal: "Invalid value for #" ++ key asString
@@ -235,7 +235,7 @@ sealed typed Value subclass: Compression
 
   /// A zlib deflate stream from `#deflateOptions` (`#level`,
   /// `#windowBits`, `#memLevel`, `#strategy`; zlib's defaults otherwise).
-  class sealed openDeflate: opts :: Dictionary -> Compression =>
+  class openDeflate: opts :: Dictionary -> Compression =>
     stream := (Erlang zlib) open
     (Erlang zlib)
       deflateInit: stream
@@ -248,7 +248,7 @@ sealed typed Value subclass: Compression
 
   /// A zstd compression context from `#zstdOptions` (zstd's own
   /// parameter names, e.g. `#checksumFlag`).
-  class sealed openZstd: opts :: Dictionary -> Compression =>
+  class openZstd: opts :: Dictionary -> Compression =>
     context := ((Erlang zstd) context: #compress with: opts) unwrap
     (Compression new withMethod: #zstd) withLibContext: context
 

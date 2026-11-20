@@ -29,12 +29,12 @@ sealed typed Value subclass: BuccaneerTelemetry
   field: enabled :: Boolean = true
 
   /// The process-dictionary key of the connection's `requestsTraced` flag.
-  class sealed tracedKey -> Symbol => #buccaneerRequestsTraced
+  class tracedKey -> Symbol => #buccaneerRequestsTraced
 
   /// Record, once at connection start, whether any `telemetry` handler
   /// listens to `[buccaneer, request, *]`. Handlers attached later reach
   /// the connections opened after them.
-  class sealed noteRequestsTraced -> Nil =>
+  class noteRequestsTraced -> Nil =>
     ProcessDictionary at: self tracedKey put: self requestHandlersAttached
     nil
 
@@ -44,7 +44,7 @@ sealed typed Value subclass: BuccaneerTelemetry
   /// call goes through `apply`: `telemetry` ships with the runtime but is
   /// not a package dependency, and the stdlib `Telemetry` facade has no
   /// handler query.
-  class sealed requestHandlersAttached -> Boolean =>
+  class requestHandlersAttached -> Boolean =>
     [
       handlers :: List(Object) := Erlang erlang
         apply: #telemetry
@@ -62,20 +62,20 @@ sealed typed Value subclass: BuccaneerTelemetry
 
   /// Whether this process's requests emit spans: the connection's flag,
   /// true when none was recorded (HTTP/2 streams, tests).
-  class sealed requestsTraced -> Boolean =>
+  class requestsTraced -> Boolean =>
     (ProcessDictionary at: self tracedKey) =:= false ifTrue: [
       false
     ] ifFalse: [true]
 
   /// A span that emits nothing.
-  class sealed silent -> BuccaneerTelemetry =>
+  class silent -> BuccaneerTelemetry =>
     BuccaneerTelemetry new withEnabled: false
 
   /// Native monotonic time, as `telemetry` expects.
-  class sealed monotonicTime -> Integer => Erlang erlang monotonic_time
+  class monotonicTime -> Integer => Erlang erlang monotonic_time
 
   /// Emit `[buccaneer, span, name]`.
-  class sealed emit: span :: Symbol name: name :: Symbol measurements: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> Nil =>
+  class emit: span :: Symbol name: name :: Symbol measurements: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> Nil =>
     Telemetry
       execute: ((#(#buccaneer) add: span) add: name)
       measurements: measurements
@@ -83,7 +83,7 @@ sealed typed Value subclass: BuccaneerTelemetry
 
   /// Start a span: emit its `start` event and answer it. `measurements`
   /// may supply `#monotonic_time`; otherwise it is now.
-  class sealed startSpan: name :: Symbol measurements: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> BuccaneerTelemetry =>
+  class startSpan: name :: Symbol measurements: measurements :: Dictionary(Symbol, Object) metadata: metadata :: Dictionary(Symbol, Object) -> BuccaneerTelemetry =>
     timed := (measurements includesKey: #monotonic_time) ifTrue: [
       measurements
     ] ifFalse: [measurements at: #monotonic_time put: self monotonicTime]

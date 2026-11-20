@@ -17,18 +17,18 @@
 sealed Object subclass: ServerSocket
 
   /// The server socket's `buffer` option for a TCP client socket.
-  class sealed bufferOf: client =>
+  class bufferOf: client =>
     self bufferAt: ((Erlang inet) sockname: client) unwrap peer: ((Erlang inet) peername: client) unwrap
 
   /// The same for a TLS client socket.
-  class sealed bufferOfTls: client =>
+  class bufferOfTls: client =>
     self bufferAt: ((Erlang ssl) sockname: client) unwrap peer: ((Erlang ssl) peername: client) unwrap
 
   /// The `buffer` option of the inet port that is the other end of the
   /// connection `local` <-> `remote`: its peer is `local`, its own address
   /// `remote`.
   @expect type
-  class sealed bufferAt: local peer: remote =>
+  class bufferAt: local peer: remote =>
     found := ((Erlang erlang) ports)
       select: [:p |
         (((Erlang inet) peername: p) =:= (Result ok: local)) and: [

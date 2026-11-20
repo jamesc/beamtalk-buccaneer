@@ -21,14 +21,14 @@
 sealed typed Object subclass: HttpNode
 
   /// The 64 KiB chunk `/chunked` sends 16 times.
-  class sealed chunk -> Binary => Erlang binary copy: "x" with: 65536
+  class chunk -> Binary => Erlang binary copy: "x" with: 65536
 
   /// The 1 MiB file `/file` sends, relative to the repository root (the
   /// peers' working directory); `bench_node` writes it at boot.
-  class sealed filePath -> String => "_build/bench/buccaneer_bench_1mib"
+  class filePath -> String => "_build/bench/buccaneer_bench_1mib"
 
   /// The beamtalk-http handler: `streamWith:` and `file:` (Buccaneer).
-  class sealed handler -> Block(HTTPRequest, HTTPResponse) =>
+  class handler -> Block(HTTPRequest, HTTPResponse) =>
     piece := self chunk
     path := self filePath
     text := #(#("content-type", "text/plain"))
@@ -71,26 +71,26 @@ sealed typed Object subclass: HttpNode
 
   /// beamtalk-http's `HTTPServer` on Buccaneer, port 0.
   /// Answers the server actor.
-  class sealed startHttp -> Dynamic =>
+  class startHttp -> Dynamic =>
     HTTPServer
       start: 0
       handler: self handler
       options: #{}
 
-  class sealed httpPort: srv :: Dynamic -> Integer => srv port
+  class httpPort: srv :: Dynamic -> Integer => srv port
 
-  class sealed stopHttp: srv :: Dynamic -> Nil =>
+  class stopHttp: srv :: Dynamic -> Nil =>
     srv stop
     nil
 
   /// beamtalk-http's request path behind a TLS Buccaneer listener.
-  class sealed startTls: options :: Dictionary -> ServerSupervisor =>
+  class startTls: options :: Dictionary -> ServerSupervisor =>
     h := self handler
     (Buccaneer start: (self tlsOptions: options) handler: [:ex |
       HttpExchangeAdapter serve: ex handler: h
     ]) unwrap
 
-  class sealed tlsOptions: options :: Dictionary -> Dictionary =>
+  class tlsOptions: options :: Dictionary -> Dictionary =>
     #{
       #port => 0,
       #scheme => #https,
@@ -101,14 +101,14 @@ sealed typed Object subclass: HttpNode
 
   /// Buccaneer standalone with `options` (`Buccaneer start:` options;
   /// `#tls => true` serves https with the test certificate).
-  class sealed startStandalone: options :: Dictionary -> ServerSupervisor =>
+  class startStandalone: options :: Dictionary -> ServerSupervisor =>
     tls := options at: #tls ifAbsent: [false]
     base := (options removeKey: #tls) at: #startupLog put: false
     opts := tls =:= true ifTrue: [self tlsOptions: base] ifFalse: [base]
     (Buccaneer start: opts handler: (self exchangeHandler)) unwrap
 
   /// The routes above as an `Exchange` handler.
-  class sealed exchangeHandler -> Block(Exchange, Object) =>
+  class exchangeHandler -> Block(Exchange, Object) =>
     piece := self chunk
     path := self filePath
     text := #({"content-type", "text/plain"})
@@ -149,12 +149,12 @@ sealed typed Object subclass: HttpNode
     ]
 
   /// The listening port of a Buccaneer server.
-  class sealed port: srv :: ServerSupervisor -> Integer =>
+  class port: srv :: ServerSupervisor -> Integer =>
     {_ip, port} := srv listenerInfo unwrap
     (port isKindOf: Integer) ifFalse: [
       Error signal: "port: needs an IP listener, not a Unix socket"
     ]
     port
 
-  class sealed stop: srv :: ServerSupervisor timeout: ms :: Integer -> Object =>
+  class stop: srv :: ServerSupervisor timeout: ms :: Integer -> Object =>
     srv stop: ms

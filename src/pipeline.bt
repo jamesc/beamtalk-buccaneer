@@ -19,7 +19,7 @@ sealed typed Object subclass: Pipeline
   /// `connectionSpan` is Catalina's connection span (nil in tests);
   /// `connData` is {secure?, peerAddress}; `config` is the server's
   /// BuccaneerConfig.
-  class sealed runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple(Boolean, Tuple | Symbol) options: config :: BuccaneerConfig -> Result(Object, Object) =>
+  class runRequest: transport :: HTTPTransport handler: handler :: ExchangeHandlerLike connectionSpan: connectionSpan :: CatalinaTelemetry | Nil connData: connData :: Tuple(Boolean, Tuple | Symbol) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     // A connection nobody traces skips building its spans (and their clock reads).
     traced := BuccaneerTelemetry requestsTraced
     startTime := traced ifTrue: [BuccaneerTelemetry monotonicTime] ifFalse: [0]
@@ -83,7 +83,7 @@ sealed typed Object subclass: Pipeline
       options: config
 
   /// A head that never parsed gets a span with no conn.
-  class sealed startOuterSpan: meta :: Dictionary(Symbol, Object) startTime: start :: Integer -> BuccaneerTelemetry =>
+  class startOuterSpan: meta :: Dictionary(Symbol, Object) startTime: start :: Integer -> BuccaneerTelemetry =>
     BuccaneerTelemetry requestsTraced ifFalse: [^BuccaneerTelemetry silent]
     BuccaneerTelemetry
       startSpan: #request
@@ -91,7 +91,7 @@ sealed typed Object subclass: Pipeline
       metadata: meta
 
   /// Shared request metadata: the connection span context and the plug.
-  class sealed baseMetadata: connectionSpan :: CatalinaTelemetry | Nil handler: config :: BuccaneerConfig -> Dictionary(Symbol, Object) =>
+  class baseMetadata: connectionSpan :: CatalinaTelemetry | Nil handler: config :: BuccaneerConfig -> Dictionary(Symbol, Object) =>
     context := connectionSpan match: [
       s :: CatalinaTelemetry -> s telemetrySpanContext;
       _ -> nil
@@ -102,7 +102,7 @@ sealed typed Object subclass: Pipeline
     }
 
   /// Call the handler; its answer is ignored.
-  class sealed callHandler: handler :: ExchangeHandlerLike with: ex :: Exchange -> Object =>
+  class callHandler: handler :: ExchangeHandlerLike with: ex :: Exchange -> Object =>
     (handler isKindOf: Block)
       ifTrue: [
         block :: Block(Exchange, Object) := handler
@@ -118,7 +118,7 @@ sealed typed Object subclass: Pipeline
 
   /// The inner request: call the handler, commit, forget the exchange,
   /// stop the span. Errors here all know their conn.
-  class sealed runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
+  class runInner: ex :: Exchange span: span :: BuccaneerTelemetry handler: handler :: ExchangeHandlerLike transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     [
       self callHandler: handler with: ex
       // One load for the common case: a response already sent needs no
@@ -178,7 +178,7 @@ sealed typed Object subclass: Pipeline
   /// maybe_upgrade!, after the handler returns). A failed validation
   /// raises an HTTPError, which the surrounding handler turns into a
   /// 400 exactly like a malformed request.
-  class sealed upgrade: ex :: Exchange span: span :: BuccaneerTelemetry transport: _transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
+  class upgrade: ex :: Exchange span: span :: BuccaneerTelemetry transport: _transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(Object, Object) =>
     (config websocket at: #enabled ifAbsent: [
       true
     ]) =:= false ifTrue: [
@@ -235,7 +235,7 @@ sealed typed Object subclass: Pipeline
   /// A malformed request or a socket failure: stop the span with the
   /// error, log per the #http section, answer the error status unless
   /// answered, and ask the handler to close.
-  class sealed protocolError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
+  class protocolError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Result(HTTPTransport, Object) =>
     _ := span stopWith: #{} metadata: (meta at: #error put: error message)
     BuccaneerLogger
       maybeLogProtocolError: error
@@ -248,7 +248,7 @@ sealed typed Object subclass: Pipeline
   /// Anything else: the span's exception event, a log line when 500 is
   /// configured, a 500 unless answered — then re-signal, so the
   /// connection crashes as in Bandit.
-  class sealed internalError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Never =>
+  class internalError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Never =>
     kind := (error isKindOf: ExitError) ifTrue: [
       #exit
     ] ifFalse: [(error isKindOf: ThrowError) ifTrue: [#throw] ifFalse: [#error]]
@@ -271,7 +271,7 @@ sealed typed Object subclass: Pipeline
 
   /// Whether #logExceptionsWithStatusCodes (default 500-599) covers a
   /// status: an Integer, a List, or anything answering includes:.
-  class sealed logStatus: status :: Integer options: config :: BuccaneerConfig -> Boolean =>
+  class logStatus: status :: Integer options: config :: BuccaneerConfig -> Boolean =>
     raw := config http at: #logExceptionsWithStatusCodes ifAbsent: [nil]
     raw isNil ifTrue: [^status between: 500 and: 599]
     (raw isKindOf: Integer) ifTrue: [^status =:= raw]
@@ -281,7 +281,7 @@ sealed typed Object subclass: Pipeline
 
   /// The stop measurements for a served request: the stamps and byte
   /// counts the request reached, as the adapter's metrics.
-  class sealed metricsFrom: st :: ExchangeState -> Dictionary(Symbol, Object) =>
+  class metricsFrom: st :: ExchangeState -> Dictionary(Symbol, Object) =>
     out :: Dictionary(Symbol, Object) := #{
       #req_header_end_time => st reqHeaderEndTime
     }
@@ -307,7 +307,7 @@ sealed typed Object subclass: Pipeline
 
   /// The exchange state for a parsed head (Bandit's build_conn!, minus
   /// the conn, plus the adapter's negotiated content encoding).
-  class sealed buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: HttpHeaders connData: connData :: Tuple(Boolean, Tuple | Symbol) http: http :: HttpOptions -> ExchangeState =>
+  class buildState: transport :: HTTPTransport method: method :: String target: target :: Tuple headers: headers :: HttpHeaders connData: connData :: Tuple(Boolean, Tuple | Symbol) http: http :: HttpOptions -> ExchangeState =>
     {secure, _} := connData
     scheme := secure =:= true ifTrue: [#https] ifFalse: [#http]
     {host, port} := self
@@ -334,7 +334,7 @@ sealed typed Object subclass: Pipeline
   /// Whether the client waits for `100 Continue` (Bandit's expect_continue?).
   /// Exact match only, as in Bandit: extra tokens or whitespace mean no
   /// auto-100 (and therefore no unhonored-expect close either).
-  class sealed expectsContinue: headers :: HttpHeaders version: ver :: HttpVersion -> Boolean =>
+  class expectsContinue: headers :: HttpHeaders version: ver :: HttpVersion -> Boolean =>
     (ver =:= #http11 or: [ver =:= #http2]) ifFalse: [^false]
     // HTTP/2 request values stay Binary (HPACK decodes opaque); HTTP/1
     // parses them to String. Accept both spellings of 100-continue.
@@ -344,7 +344,7 @@ sealed typed Object subclass: Pipeline
 
   /// {host, port} from an absolute target, else the Host header
   /// (Bandit's determine_host_and_port!).
-  class sealed hostAndPort: scheme :: Scheme version: ver :: HttpVersion target: target :: Tuple headers: headers :: HttpHeaders -> Tuple(String, Integer) =>
+  class hostAndPort: scheme :: Scheme version: ver :: HttpVersion target: target :: Tuple headers: headers :: HttpHeaders -> Tuple(String, Integer) =>
     host := target at: 2
     port := target at: 3
     (host isNil and: [port isNil])
@@ -362,7 +362,7 @@ sealed typed Object subclass: Pipeline
       ]
 
   /// {host, port} from the Host header of a request with a relative target.
-  class sealed hostFromHeader: scheme :: Scheme version: ver :: HttpVersion headers: headers :: HttpHeaders -> Tuple(String, Integer) =>
+  class hostFromHeader: scheme :: Scheme version: ver :: HttpVersion headers: headers :: HttpHeaders -> Tuple(String, Integer) =>
     found := Headers getHostHeader: headers
     found isError
       ifTrue: [
@@ -390,7 +390,7 @@ sealed typed Object subclass: Pipeline
   /// host is rejected: Bandit passes opaque bytes through, but the
   /// state's host is a String. Authority ports arrive as strings
   /// (CONNECT) and are parsed; absolute-form ports arrive parsed.
-  class sealed absoluteHost: host :: Object port: port :: Object scheme: scheme :: Scheme -> Tuple(String, Integer) =>
+  class absoluteHost: host :: Object port: port :: Object scheme: scheme :: Scheme -> Tuple(String, Integer) =>
     h := host match: [
       s :: String -> s;
       _ -> HTTPError signal: "Unable to obtain host and port: invalid host"
@@ -407,7 +407,7 @@ sealed typed Object subclass: Pipeline
     {h, p}
 
   /// {path, query} from a target, without the fragment.
-  class sealed pathAndQuery: target :: Tuple -> Tuple(String, String | Nil) =>
+  class pathAndQuery: target :: Tuple -> Tuple(String, String | Nil) =>
     raw := target at: 4
     raw isNil ifTrue: [
       {"", nil}
@@ -416,7 +416,7 @@ sealed typed Object subclass: Pipeline
     ]
 
   /// Split a path into {path, query} on the first "?".
-  class sealed splitPath: path :: Object -> Tuple(String, String | Nil) =>
+  class splitPath: path :: Object -> Tuple(String, String | Nil) =>
     text := path match: [
       s :: String -> s;
       _ -> HTTPError signal: "Unsupported request target (RFC9112§3.2)"
@@ -427,6 +427,6 @@ sealed typed Object subclass: Pipeline
       {noFragment, nil}
     ] ifFalse: [{(noFragment take: q - 1), (noFragment drop: q)}]
 
-  class sealed defaultPortFor: scheme :: Scheme -> Integer =>
+  class defaultPortFor: scheme :: Scheme -> Integer =>
     scheme =:= #https ifTrue: [^443]
     80

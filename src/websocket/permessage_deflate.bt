@@ -20,14 +20,14 @@ sealed typed Value subclass: PermessageDeflate
   field: maxInflateRatio :: Integer = 25
 
   /// The offer parameter names, as sent on the wire.
-  class sealed validParams -> List(String) =>
+  class validParams -> List(String) =>
     #("server_no_context_takeover", "client_no_context_takeover", "server_max_window_bits", "client_max_window_bits", "max_inflate_ratio")
 
   /// Negotiate the first acceptable permessage-deflate offer in
   /// `extensions` ({name, params} pairs), trying each offer in turn
   /// (Bandit's find_value). Answers {instance|nil, resolved} where
   /// resolved is the accepted parameter list for the response header.
-  class sealed negotiate: extensions :: List options: opts :: Dictionary -> Tuple(Object, List) =>
+  class negotiate: extensions :: List options: opts :: Dictionary -> Tuple(Object, List) =>
     extensions
       do: [:each :: Tuple |
         {name, params} := each
@@ -45,7 +45,7 @@ sealed typed Value subclass: PermessageDeflate
   /// ## Arguments
   /// - `params` (List) — one offer's {name, value} params.
   /// - `opts` (Dictionary) — the deflate options.
-  class sealed negotiateParams: params :: List options: opts :: Dictionary -> Tuple(Object, List) =>
+  class negotiateParams: params :: List options: opts :: Dictionary -> Tuple(Object, List) =>
     normalized := params collect: [:p :: Tuple | self normalize: p]
     (self valid: normalized) ifFalse: [^{nil, #()}]
     serverBits := (self at: normalized name: "server_max_window_bits") match: [
@@ -67,7 +67,7 @@ sealed typed Value subclass: PermessageDeflate
   ///
   /// ## Arguments
   /// - `param` (Tuple) — one {name, value} param.
-  class sealed normalize: param :: Tuple -> Tuple =>
+  class normalize: param :: Tuple -> Tuple =>
     {name, value} := param
     name =:= "server_max_window_bits" ifTrue: [^{name, (self parseBits: value)}]
     name =:= "client_max_window_bits"
@@ -82,7 +82,7 @@ sealed typed Value subclass: PermessageDeflate
   ///
   /// ## Arguments
   /// - `value` (Object) — the offered value.
-  class sealed parseBits: value :: Object -> Object =>
+  class parseBits: value :: Object -> Object =>
     value match: [
       n :: Integer -> value;
       s :: String -> self intOr: value string: s;
@@ -91,7 +91,7 @@ sealed typed Value subclass: PermessageDeflate
 
   /// A cleanly parsed integer for a numeric offer, else the fallback
   /// (callers then reject the offer through valid:).
-  class sealed intOr: fallback :: Object string: s :: String -> Object =>
+  class intOr: fallback :: Object string: s :: String -> Object =>
     parsed := Headers parseInteger: s
     parsed isError ifTrue: [^fallback]
     parts := parsed unwrap
@@ -101,7 +101,7 @@ sealed typed Value subclass: PermessageDeflate
   /// No unknown params, no repeats, and every value in range (Bandit
   /// checks the four deflate params; a ratio, when offered, must be a
   /// positive integer or parse to one).
-  class sealed valid: params :: List -> Boolean =>
+  class valid: params :: List -> Boolean =>
     names := params collect: [:p :: Tuple | p at: 1]
     names do: [:n | (self validParams includes: n) ifFalse: [^false]]
     names size =:= (self deduped: names) size ifFalse: [^false]
@@ -133,7 +133,7 @@ sealed typed Value subclass: PermessageDeflate
   /// The offered max_inflate_ratio as an Integer, or nil when absent
   /// or unusable (Bandit accepts anything here and fails at inflate
   /// time; rejecting the offer then is the same wire outcome).
-  class sealed ratioOf: params :: List -> Integer | Nil =>
+  class ratioOf: params :: List -> Integer | Nil =>
     value := self at: params name: "max_inflate_ratio"
     value isNil ifTrue: [^nil]
     value match: [
@@ -146,7 +146,7 @@ sealed typed Value subclass: PermessageDeflate
   ///
   /// ## Arguments
   /// - `s` (String) — the offered value.
-  class sealed positiveIntOrNil: s :: String -> Integer | Nil =>
+  class positiveIntOrNil: s :: String -> Integer | Nil =>
     (self intOr: nil string: s) match: [
       n :: Integer -> n > 0 ifTrue: [^n] ifFalse: [^nil];
       _ -> nil
@@ -157,7 +157,7 @@ sealed typed Value subclass: PermessageDeflate
   /// ## Arguments
   /// - `params` (List) — the {name, value} params.
   /// - `key` (String) — the param name.
-  class sealed at: params :: List name: key :: String -> Object =>
+  class at: params :: List name: key :: String -> Object =>
     params do: [:p :: Tuple | (p at: 1) =:= key ifTrue: [^(p at: 2)]]
     nil
 
@@ -165,13 +165,13 @@ sealed typed Value subclass: PermessageDeflate
   ///
   /// ## Arguments
   /// - `names` (List) — the offered param names.
-  class sealed deduped: names :: List -> List =>
+  class deduped: names :: List -> List =>
     seen := Dictionary new
     names do: [:n :: Object | seen := seen at: n put: true]
     seen keys
 
   /// Open both zlib streams for the resolved params.
-  class sealed open: resolved :: List serverBits: serverBits :: Integer clientBits: clientBits :: Integer options: opts :: Dictionary -> PermessageDeflate =>
+  class open: resolved :: List serverBits: serverBits :: Integer clientBits: clientBits :: Integer options: opts :: Dictionary -> PermessageDeflate =>
     instance := PermessageDeflate new
     instance := (instance withServerMaxWindowBits: serverBits) withClientMaxWindowBits: clientBits
     instance := instance withServerNoContextTakeover: ((self at: resolved name: "server_no_context_takeover") =:= true)
@@ -194,14 +194,14 @@ sealed typed Value subclass: PermessageDeflate
     ((instance withInflateStream: inflateStream) withDeflateStream: deflateStream)
 
   /// zlib takes -N for raw deflate; -8 is rejected, so it becomes -9.
-  class sealed windowBits: bits :: Integer -> Integer =>
+  class windowBits: bits :: Integer -> Integer =>
     bits =:= 8 ifTrue: [^-9]
     bits negated
 
   /// Inflate one message, appending the RFC7692 trailer first. Answers
   /// `Result ok:` with the bytes, `Result error:` #too_much_inflation
   /// past maxInflateRatio, or the zlib failure.
-  class sealed inflate: data :: Binary with: deflate :: PermessageDeflate | Nil -> Result(Binary, Object) =>
+  class inflate: data :: Binary with: deflate :: PermessageDeflate | Nil -> Result(Binary, Object) =>
     deflate isNil ifTrue: [^Result error: #no_compress]
     full := data concat: (Binary fromBytes: #(0, 0, 255, 255))
     outcome := Result
@@ -227,7 +227,7 @@ sealed typed Value subclass: PermessageDeflate
 
   /// One safeInflate round; recurses on empty input while the ratio
   /// budget lasts. Raises too_much_inflation past it.
-  class sealed doInflate: data :: Binary stream: stream :: ZlibStream budget: budget :: Integer -> List =>
+  class doInflate: data :: Binary stream: stream :: ZlibStream budget: budget :: Integer -> List =>
     ((Erlang zlib) safeInflate: stream with: data) match: [
       {#continue, out} -> self
         continueInflate: out
@@ -248,7 +248,7 @@ sealed typed Value subclass: PermessageDeflate
   /// - `out` (Object) — the round's output.
   /// - `stream` (ZlibStream) — the zlib stream.
   /// - `budget` (Integer) — the output bytes remaining before this round.
-  class sealed continueInflate: out :: Object stream: stream :: ZlibStream budget: budget :: Integer -> List =>
+  class continueInflate: out :: Object stream: stream :: ZlibStream budget: budget :: Integer -> List =>
     budget > 0 ifFalse: [Error signal: "too_much_inflation"]
     (self
       doInflate: (Binary fromBytes: #())
@@ -257,7 +257,7 @@ sealed typed Value subclass: PermessageDeflate
 
   /// Deflate one message with a sync flush, stripping the RFC7692
   /// trailer. Answers `Result ok:` with the bytes or the zlib failure.
-  class sealed deflate: data :: Object with: deflate :: PermessageDeflate | Nil -> Result(Binary, Object) =>
+  class deflate: data :: Object with: deflate :: PermessageDeflate | Nil -> Result(Binary, Object) =>
     deflate isNil ifTrue: [^Result error: #no_compress]
     outcome := Result
       tryDo: [
@@ -281,7 +281,7 @@ sealed typed Value subclass: PermessageDeflate
   ///
   /// ## Arguments
   /// - `deflate` (PermessageDeflate | Nil) — the context, or nil.
-  class sealed close: deflate :: PermessageDeflate | Nil -> Nil =>
+  class close: deflate :: PermessageDeflate | Nil -> Nil =>
     deflate isNil ifTrue: [^nil]
     (Erlang zlib) close: deflate inflateStream
     (Erlang zlib) close: deflate deflateStream

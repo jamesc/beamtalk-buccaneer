@@ -19,7 +19,7 @@ sealed typed Value subclass: SpikeExchange
   /// method with no classState: runs in the caller's process (which is
   /// exactly where this state belongs). Likewise Pid current instead of
   /// erlang:self/0.
-  class sealed open: request :: SpikeRequest socket: sock :: Socket | Nil buffer: buffer :: Binary -> SpikeExchange =>
+  class open: request :: SpikeRequest socket: sock :: Socket | Nil buffer: buffer :: Binary -> SpikeExchange =>
     ex := self ref: Erlang erlang make_ref owner: Pid current
     initial := SpikeExchangeState
       request: request

@@ -8,33 +8,33 @@
 /// Spike-only.
 sealed typed Object subclass: SpikeClient
 
-  class sealed connect: port :: Integer -> Object =>
+  class connect: port :: Integer -> Object =>
     ((Erlang gen_tcp)
       connect: {127, 0, 0, 1}
       with: port
       with: #(#binary, {#active, false}, {#nodelay, true})) unwrap
 
-  class sealed send: sock :: Object data: data :: Binary -> Nil =>
+  class send: sock :: Object data: data :: Binary -> Nil =>
     ((Erlang gen_tcp) send: sock with: data) unwrap
     nil
 
-  class sealed close: sock :: Object -> Nil =>
+  class close: sock :: Object -> Nil =>
     (Erlang gen_tcp) close: sock
     nil
 
   /// A GET (or any bodyless request) with extra header lines.
-  class sealed get: target :: String headers: extra :: String -> Binary =>
+  class get: target :: String headers: extra :: String -> Binary =>
     nl := SpikeParser crlf
     "GET {target} HTTP/1.1{nl}host: localhost{nl}{extra}{nl}"
 
   /// A POST with a content-length body.
-  class sealed post: target :: String headers: extra :: String body: body :: Binary -> Binary =>
+  class post: target :: String headers: extra :: String body: body :: Binary -> Binary =>
     nl := SpikeParser crlf
     "POST {target} HTTP/1.1{nl}host: localhost{nl}content-length: {(Erlang erlang byte_size: body)}{nl}{extra}{nl}" concat: body
 
   /// Read one response. Answers `{status, headers, body, rest}`, or
   /// `{0, #(), reason, ""}` if the connection closed or timed out first.
-  class sealed read: sock :: Object buffer: buffer :: Binary -> Tuple =>
+  class read: sock :: Object buffer: buffer :: Binary -> Tuple =>
     (Erlang erlang
       decode_packet: #http_bin
       with: buffer
@@ -51,7 +51,7 @@ sealed typed Object subclass: SpikeClient
       _ -> {0, #(), "bad status line", ""}
     ]
 
-  class sealed readHeaders: sock :: Object buffer: buffer :: Binary status: status :: Integer headers: headers :: List(Tuple) -> Tuple =>
+  class readHeaders: sock :: Object buffer: buffer :: Binary status: status :: Integer headers: headers :: List(Tuple) -> Tuple =>
     (Erlang erlang
       decode_packet: #httph_bin
       with: buffer
@@ -79,7 +79,7 @@ sealed typed Object subclass: SpikeClient
       _ -> {0, #(), "bad header", ""}
     ]
 
-  class sealed readBody: sock :: Object buffer: buffer :: Binary status: status :: Integer headers: headers :: List(Tuple) -> Tuple =>
+  class readBody: sock :: Object buffer: buffer :: Binary status: status :: Integer headers: headers :: List(Tuple) -> Tuple =>
     chunked := headers anySatisfy: [:h | (h at: 1) =:= "transfer-encoding"]
     chunked
       ifTrue: [
@@ -101,7 +101,7 @@ sealed typed Object subclass: SpikeClient
     buf size < length ifTrue: [^{0, headers, "closed in body", ""}]
     {status, headers, buf part: 0 size: length, buf part: length size: buf size - length}
 
-  class sealed readChunks: sock :: Object buffer: buffer :: Binary status: status :: Integer headers: headers :: List(Tuple) body: body :: Binary -> Tuple =>
+  class readChunks: sock :: Object buffer: buffer :: Binary status: status :: Integer headers: headers :: List(Tuple) body: body :: Binary -> Tuple =>
     nl := SpikeParser crlf
     found := Erlang binary match: buffer with: nl
     found match: [
@@ -125,7 +125,7 @@ sealed typed Object subclass: SpikeClient
         ]
     ]
 
-  class sealed chunk: sock :: Object buffer: buffer :: Binary sizeEnd: at :: Integer status: status :: Integer headers: headers :: List(Tuple) body: body :: Binary -> Tuple =>
+  class chunk: sock :: Object buffer: buffer :: Binary sizeEnd: at :: Integer status: status :: Integer headers: headers :: List(Tuple) body: body :: Binary -> Tuple =>
     len := Erlang erlang binary_to_integer: (buffer part: 0 size: at) with: 16
     need := at + 2 + len + 2
     buf := self
@@ -143,7 +143,7 @@ sealed typed Object subclass: SpikeClient
       body: (body concat: (buf part: at + 2 size: len))
 
   /// Read until `buffer` holds at least `n` bytes, or the socket fails.
-  class sealed fill: sock :: Object buffer: buffer :: Binary to: n :: Integer -> Binary =>
+  class fill: sock :: Object buffer: buffer :: Binary to: n :: Integer -> Binary =>
     buf := buffer
     failed := false
     [failed not and: [buf size < n]]
@@ -156,7 +156,7 @@ sealed typed Object subclass: SpikeClient
       ]
     buf
 
-  class sealed more: sock :: Object buffer: buffer :: Binary then: k :: Block(Binary, Tuple) -> Tuple =>
+  class more: sock :: Object buffer: buffer :: Binary then: k :: Block(Binary, Tuple) -> Tuple =>
     r := (Erlang gen_tcp)
       recv: sock
       with: 0
@@ -165,7 +165,7 @@ sealed typed Object subclass: SpikeClient
     k value: (buffer concat: r value)
 
   /// Whether the peer has closed: a recv answers `{error, closed}`.
-  class sealed isClosed: sock :: Object -> Boolean =>
+  class isClosed: sock :: Object -> Boolean =>
     r := (Erlang gen_tcp)
       recv: sock
       with: 0

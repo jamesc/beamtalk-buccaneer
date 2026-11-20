@@ -51,14 +51,14 @@ sealed typed Value subclass: HTTP2Connection
   field: resetByUs :: List(Integer) = #()
 
   /// How many closed stream ids each record keeps.
-  class sealed closedRecordLimit -> Integer => 100
+  class closedRecordLimit -> Integer => 100
 
   /// Bandit's defaults: 65535 windows, HPACK 4096, limits as configured.
-  class sealed default -> HTTP2Connection => HTTP2Connection new
+  class default -> HTTP2Connection => HTTP2Connection new
 
   /// The header list size (RFC 9113 §6.5.2): name plus value plus 32
   /// per entry, in bytes.
-  class sealed headerListSize: headers :: List(Tuple) -> Integer =>
+  class headerListSize: headers :: List(Tuple) -> Integer =>
     total := 0
     headers
       do: [:h :: Tuple |
@@ -66,7 +66,7 @@ sealed typed Value subclass: HTTP2Connection
       ]
     total
 
-  class sealed entryBytes: value :: Object -> Integer =>
+  class entryBytes: value :: Object -> Integer =>
     value match: [
       b :: Binary -> b size;
       s :: String -> Erlang erlang byte_size: s;

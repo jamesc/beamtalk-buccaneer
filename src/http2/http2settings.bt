@@ -10,10 +10,10 @@ sealed typed Value subclass: HTTP2Settings
   field: maxFrameSize :: Integer = 16384
   field: maxHeaderListSize :: Integer | Symbol = #infinity
 
-  class sealed default -> HTTP2Settings => HTTP2Settings new
+  class default -> HTTP2Settings => HTTP2Settings new
 
-  class sealed maxWindowSize -> Integer => 2147483647
+  class maxWindowSize -> Integer => 2147483647
 
-  class sealed minFrameSize -> Integer => 16384
+  class minFrameSize -> Integer => 16384
 
-  class sealed maxFrameSizeLimit -> Integer => 16777215
+  class maxFrameSizeLimit -> Integer => 16777215

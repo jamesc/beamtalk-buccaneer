@@ -12,7 +12,7 @@
 /// listener, so it stays safe to call afterwards.
 sealed Object subclass: Loopback
 
-  class sealed pairWithReadTimeout: ms :: Integer -> Tuple =>
+  class pairWithReadTimeout: ms :: Integer -> Tuple =>
     listener := ((Erlang gen_tcp) listen: 0 with: #(#binary, {#packet, #raw}, {#active, false}, {#reuseaddr, true})) unwrap
     port := ((Erlang inet) port: listener) unwrap
     client := ((Erlang gen_tcp)
@@ -28,24 +28,24 @@ sealed Object subclass: Loopback
       span: nil
     {server, client, listener}
 
-  class sealed close: pair :: Tuple -> Nil =>
+  class close: pair :: Tuple -> Nil =>
     (Erlang gen_tcp) close: (pair at: 2)
     (Erlang gen_tcp) close: (pair at: 3)
     nil
 
   /// Exactly n bytes from the raw client side.
-  class sealed clientRead: pair :: Tuple bytes: n :: Integer -> Binary =>
+  class clientRead: pair :: Tuple bytes: n :: Integer -> Binary =>
     ((Erlang gen_tcp)
       recv: (pair at: 2)
       with: n
       with: 2000) unwrap
 
   /// A response head plus `n` body bytes from the raw client side.
-  class sealed responseOf: pair :: Tuple body: n :: Integer -> String =>
+  class responseOf: pair :: Tuple body: n :: Integer -> String =>
     self responseOn: (pair at: 2) body: n
 
   /// A response head plus `n` body bytes from a raw client socket.
-  class sealed responseOn: client :: Object body: n :: Integer -> String =>
+  class responseOn: client :: Object body: n :: Integer -> String =>
     head := ""
     [(head includesSubstring: "\r\n\r\n") not]
       whileTrue: [

@@ -7,7 +7,7 @@
 sealed typed Object subclass: SpikeServer
 
   /// Answers `{server, port}`.
-  class sealed start: handlerOptions :: Dictionary -> Tuple =>
+  class start: handlerOptions :: Dictionary -> Tuple =>
     srv := (Catalina start: #{
       #port => 0,
       #handler => SpikeHandler,
@@ -18,11 +18,11 @@ sealed typed Object subclass: SpikeServer
 
   /// Start with `handler` (passed directly, so its parameter is typed
   /// from this signature) and an optional probe.
-  class sealed serve: handler :: Block(SpikeExchange, Object) probe: probe :: SpikeProbe | Nil -> Tuple =>
+  class serve: handler :: Block(SpikeExchange, Object) probe: probe :: SpikeProbe | Nil -> Tuple =>
     opts :: Dictionary(Symbol, Object) := #{#handler => handler, #gcEvery => 5}
     probe isNil ifFalse: [opts := opts at: #probe put: probe]
     self start: opts
 
-  class sealed stop: srv :: ServerSupervisor -> Nil =>
+  class stop: srv :: ServerSupervisor -> Nil =>
     srv stop
     nil

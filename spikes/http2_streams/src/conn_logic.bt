@@ -23,7 +23,7 @@ sealed typed Value subclass: ConnLogic
   // {tag, streamId, data, replyTo}, oldest first.
   field: sends :: List(Tuple) = #()
 
-  class sealed window: window :: Integer sendTimeout: ms :: Integer -> ConnLogic =>
+  class window: window :: Integer sendTimeout: ms :: Integer -> ConnLogic =>
     (self new withWindow: window) withSendTimeout: ms
 
   /// A sync call, parked: answer it now or keep `from` for later.

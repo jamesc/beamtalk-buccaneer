@@ -17,40 +17,40 @@ sealed typed Value subclass: WebSocketResult
   field: status :: Object = #ok
   field: reason :: Object = #normal
 
-  class sealed ok: state :: Object -> WebSocketResult =>
+  class ok: state :: Object -> WebSocketResult =>
     WebSocketResult new withState: state
 
-  class sealed push: frames :: Tuple(Symbol, Binary) | List state: state :: Object -> WebSocketResult =>
+  class push: frames :: Tuple(Symbol, Binary) | List state: state :: Object -> WebSocketResult =>
     ((WebSocketResult new withKind: #push) withState: state) withFrames: (self listOf: frames)
 
-  class sealed reply: status :: Object frames: frames :: Tuple(Symbol, Binary) | List state: state :: Object -> WebSocketResult =>
+  class reply: status :: Object frames: frames :: Tuple(Symbol, Binary) | List state: state :: Object -> WebSocketResult =>
     ((((WebSocketResult new withKind: #reply) withState: state) withFrames: (self listOf: frames)) withStatus: status)
 
-  class sealed stop: state :: Object -> WebSocketResult =>
+  class stop: state :: Object -> WebSocketResult =>
     (WebSocketResult new withKind: #stop) withState: state
 
-  class sealed stop: state :: Object code: code :: Integer -> WebSocketResult =>
+  class stop: state :: Object code: code :: Integer -> WebSocketResult =>
     ((WebSocketResult new withKind: #stop) withState: state) withCode: code
 
-  class sealed stop: state :: Object code: code :: Integer frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
+  class stop: state :: Object code: code :: Integer frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
     (((WebSocketResult new withKind: #stop) withState: state) withCode: code) withFrames: (self listOf: frames)
 
-  class sealed stop: state :: Object code: code :: Integer detail: detail :: String -> WebSocketResult =>
+  class stop: state :: Object code: code :: Integer detail: detail :: String -> WebSocketResult =>
     (((WebSocketResult new withKind: #stop) withState: state) withCode: code) withDetail: detail
 
-  class sealed stop: state :: Object code: code :: Integer detail: detail :: String frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
+  class stop: state :: Object code: code :: Integer detail: detail :: String frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
     ((((WebSocketResult new withKind: #stop) withState: state) withCode: code) withDetail: detail) withFrames: (self listOf: frames)
 
-  class sealed stopError: reason :: Object state: state :: Object -> WebSocketResult =>
+  class stopError: reason :: Object state: state :: Object -> WebSocketResult =>
     (((WebSocketResult new withKind: #stopError) withState: state) withCode: 1011) withReason: reason
 
-  class sealed stopError: reason :: Object state: state :: Object code: code :: Integer -> WebSocketResult =>
+  class stopError: reason :: Object state: state :: Object code: code :: Integer -> WebSocketResult =>
     (((WebSocketResult new withKind: #stopError) withState: state) withCode: code) withReason: reason
 
-  class sealed stopError: reason :: Object state: state :: Object code: code :: Integer frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
+  class stopError: reason :: Object state: state :: Object code: code :: Integer frames: frames :: Tuple(Symbol, Binary) | List -> WebSocketResult =>
     ((((WebSocketResult new withKind: #stopError) withState: state) withCode: code) withReason: reason) withFrames: (self listOf: frames)
 
   /// One frame tuple or a List of them, normalized to a List.
-  class sealed listOf: frames :: Object -> List =>
+  class listOf: frames :: Object -> List =>
     (frames isKindOf: List) ifTrue: [^frames]
     #(frames)

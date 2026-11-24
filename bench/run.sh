@@ -22,6 +22,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=bench/spike_files.sh
+. "$root/bench/spike_files.sh"
 main="$1"
 shift
 
@@ -56,7 +58,8 @@ fi
 # beamtalk-http tracks origin/main so the gate always measures current
 # beamtalk-http (override with BENCH_HTTP_REV_PIN to pin a revision).
 HTTP_REV="${BENCH_HTTP_REV_PIN:-origin/main}"
-http="$root/_build/bench/beamtalk-http"
+http_sub="_build/bench/beamtalk-http"
+http="$root/$http_sub"
 if [ ! -d "$http/.git" ]; then
   mkdir -p "$root/_build/bench"
   git clone -q https://github.com/jamesc/beamtalk-http "$http"
@@ -70,9 +73,10 @@ fi
 # The path must be relative (BT-4825): the compiler's single-version policy
 # compares a package's path dependency by its spelling, so an absolute path
 # here conflicts with http_node's own `buccaneer = { path = "../.." }` (the
-# same directory) and the build fails with "Source conflict". $http is
-# $root/_build/bench/beamtalk-http, so $root is three levels up.
-sed -i.orig 's|^buccaneer = .*|buccaneer = { path = "../../.." }|' "$http/beamtalk.toml"
+# same directory) and the build fails with "Source conflict". Walk up one
+# level per component of $http_sub to get from $http back to $root.
+http_up="$(sed 's|[^/][^/]*|..|g' <<<"$http_sub")"
+sed -i.orig "s|^buccaneer = .*|buccaneer = { path = \"$http_up\" }|" "$http/beamtalk.toml"
 
 (cd "$root/bench/http_node" && beamtalk build >/dev/null)
 
@@ -80,6 +84,11 @@ sed -i.orig 's|^buccaneer = .*|buccaneer = { path = "../../.." }|' "$http/beamta
 # now); fail on a lint failure or a discarded update.
 if [ "$main" = lint_bench ]; then
   status=0
+  # buccaneer_node's SpikeHandler and SpikeExchange are tracked in
+  # spikes/engine_spikes/src; they are copied into bench/buccaneer_node
+  # (which gitignores them) by stage_spike_sources, as spike.sh does. Without
+  # them the lint sees unresolved classes and an unannotated block parameter.
+  stage_spike_sources "$root"
   for app in "$root"/bench/*_node; do
     rc=0
     out="$(cd "$app" && beamtalk lint 2>&1)" || rc=$?

@@ -22,6 +22,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=bench/spike_files.sh
+. "$root/bench/spike_files.sh"
 main="$1"
 shift
 
@@ -82,12 +84,11 @@ sed -i.orig "s|^buccaneer = .*|buccaneer = { path = \"$http_up\" }|" "$http/beam
 # now); fail on a lint failure or a discarded update.
 if [ "$main" = lint_bench ]; then
   status=0
-  # buccaneer_node's SpikeHandler and SpikeExchange are copied in from
-  # spikes/engine_spikes/src by spike.sh (gitignored there); without them
-  # the lint sees unresolved classes and an unannotated block parameter.
-  for f in spike_parser spike_request spike_exchange spike_exchange_state spike_not_owner spike_probe spike_handler; do
-    cp "$root/spikes/engine_spikes/src/$f.bt" "$root/bench/buccaneer_node/src/$f.bt"
-  done
+  # buccaneer_node's SpikeHandler and SpikeExchange are tracked in
+  # spikes/engine_spikes/src; they are copied into bench/buccaneer_node
+  # (which gitignores them) by stage_spike_sources, as spike.sh does. Without
+  # them the lint sees unresolved classes and an unannotated block parameter.
+  stage_spike_sources "$root"
   for app in "$root"/bench/*_node; do
     rc=0
     out="$(cd "$app" && beamtalk lint 2>&1)" || rc=$?

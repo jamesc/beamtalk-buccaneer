@@ -14,10 +14,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=bench/spike_files.sh
+. "$root/bench/spike_files.sh"
 
-for f in spike_parser spike_request spike_exchange spike_exchange_state spike_not_owner spike_probe spike_handler; do
-  cp "$root/spikes/engine_spikes/src/$f.bt" "$root/bench/buccaneer_node/src/$f.bt"
-done
+stage_spike_sources "$root"
 (cd "$root/bench/buccaneer_node" && beamtalk build >/dev/null)
 (cd "$root/bench/cowboy_node" && beamtalk build >/dev/null)
 (cd "$root/bench/bandit" \

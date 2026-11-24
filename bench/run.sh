@@ -18,7 +18,7 @@
 # beamtalk-http pins Buccaneer by git rev, and a path dependency does not
 # override a transitive one, so the harness clones beamtalk-http into
 # _build/bench/beamtalk-http and points its buccaneer dependency at this
-# checkout.
+# checkout (by a relative path, see below).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -67,7 +67,12 @@ if [ "$(git -C "$http" rev-parse HEAD)" != "$want" ]; then
   git -C "$http" checkout -q -- beamtalk.toml beamtalk.lock 2>/dev/null || true
   git -C "$http" checkout -q "$want"
 fi
-sed -i.orig "s|^buccaneer = .*|buccaneer = { path = \"$root\" }|" "$http/beamtalk.toml"
+# The path must be relative (BT-4825): the compiler's single-version policy
+# compares a package's path dependency by its spelling, so an absolute path
+# here conflicts with http_node's own `buccaneer = { path = "../.." }` (the
+# same directory) and the build fails with "Source conflict". $http is
+# $root/_build/bench/beamtalk-http, so $root is three levels up.
+sed -i.orig 's|^buccaneer = .*|buccaneer = { path = "../../.." }|' "$http/beamtalk.toml"
 
 (cd "$root/bench/http_node" && beamtalk build >/dev/null)
 

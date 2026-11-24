@@ -20,7 +20,16 @@ TestCase subclass: H2SpecTest
         #catalina => #{
           #transportOptions => #({#alpn_preferred_protocols, #("h2")})
         },
+        // Read the request body before answering (BT-4825). A handler
+        // that answers first can finish the response before the client's
+        // frames are read, so the server resets the stream with
+        // RST_STREAM(NO_ERROR) (RFC 9113 8.1) and then rightly drops a
+        // late malformed HEADERS frame as a raced frame (5.4.2) instead
+        // of answering it with PROTOCOL_ERROR; 8.1 #1 would flake under
+        // CPU load. Draining first keeps the stream open until then.
+        // The result is ignored: a protocol error ends the read early.
         #handler => [:ex |
+          ex readAll: 8000000
           ex
             sendResp: 200
             headers: #()

@@ -249,9 +249,11 @@ sealed typed Object subclass: Pipeline
   /// configured, a 500 unless answered — then re-signal, so the
   /// connection crashes as in Bandit.
   class internalError: error :: Exception span: span :: BuccaneerTelemetry transport: transport :: HTTPTransport metadata: meta :: Dictionary(Symbol, Object) options: config :: BuccaneerConfig -> Never =>
-    kind := (error isKindOf: ExitError) ifTrue: [
-      #exit
-    ] ifFalse: [(error isKindOf: ThrowError) ifTrue: [#throw] ifFalse: [#error]]
+    kind := error match: [
+      _e :: ExitError -> #exit;
+      _t :: ThrowError -> #throw;
+      _ -> #error
+    ]
     _ := span
       exceptionKind: kind
       reason: error

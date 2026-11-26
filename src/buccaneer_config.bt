@@ -456,10 +456,8 @@ typed Value subclass: BuccaneerConfig
     (value isKindOf: String) ifFalse: [Error signal: "Invalid value for #port"]
     parsed := Headers parseInteger: value
     parsed isError ifTrue: [Error signal: "Invalid value for #port"]
-    parts := parsed unwrap
-    rest := parts at: 2
+    {n, rest} := parsed unwrap
     rest isEmpty ifFalse: [Error signal: "Invalid value for #port"]
-    n := parts at: 1
     n
 
   class section: opts :: ConfigOptions name: key :: Symbol keys: known :: List(Symbol) -> ConfigOptions =>

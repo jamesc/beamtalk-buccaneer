@@ -401,17 +401,14 @@ sealed typed Value subclass: HTTP2Protocol
   wakeDataReader: sid :: Integer -> HTTP2Protocol =>
     {conn, parked} := self connection takeDataReader: sid
     parked isNil ifTrue: [^self withConnection: conn]
-    tok := parked at: 1
-    max := parked at: 2
+    {tok, max} := parked
     {conn2, taken} := conn
       takeBufferedData: sid
       maxBytes: (max match: [
         n :: Integer -> n;
         _ -> 8000000
       ])
-    data := taken at: 1
-    drained := taken at: 2
-    ended := taken at: 3
+    {data, drained, ended} := taken
     more := (drained and: [ended]) not
     (self withConnection: conn2)
       withReply: #ok
@@ -572,11 +569,12 @@ sealed typed Value subclass: HTTP2Protocol
     out := Binary fromBytes: #()
     sends
       do: [:item :: Tuple |
+        {queuedSid, queuedRest, queuedEnd, queuedTok, _expiresAt} := item
         {bytes, next} := proto
-          sendQueued: (item at: 1)
-          rest: (item at: 2)
-          endStream: (item at: 3)
-          token: (item at: 4)
+          sendQueued: queuedSid
+          rest: queuedRest
+          endStream: queuedEnd
+          token: queuedTok
         out := out concat: bytes
         proto := next
       ]
@@ -607,13 +605,14 @@ sealed typed Value subclass: HTTP2Protocol
   /// Socket-send the fitted head now, re-queue the remainder under the
   /// same token with a fresh 15 s expiry. Answers {bytes, protocol}.
   parkQueued: sid :: Integer payload: payload :: Tuple token: tok :: ReplyTo | Nil -> Tuple(Binary, HTTP2Protocol) =>
+    {head, rest, endStream} := payload
     conn := self connection
       queueSend: sid
-      rest: (payload at: 2)
-      endStream: (payload at: 3)
+      rest: rest
+      endStream: endStream
       replyTo: tok
       expiresAt: (BuccaneerTelemetry monotonicTime + self class sendTimeoutNative)
-    {(payload at: 1), (self withConnection: conn)}
+    {head, (self withConnection: conn)}
 
   /// PING: answer non-acks, ignore acks.
   pingFor: frame :: H2Ping -> Tuple(Binary, List(Integer), Boolean, HTTP2Protocol) =>
@@ -687,9 +686,8 @@ sealed typed Value subclass: HTTP2Protocol
 
   readDataOpen: sid :: Integer maxBytes: max :: Integer -> Tuple(Symbol, Object, HTTP2Protocol) =>
     {conn, taken} := self connection takeBufferedData: sid maxBytes: max
-    data := taken at: 1
-    drained := taken at: 2
-    ended := (taken at: 3) or: [conn reqEndedFor: sid]
+    {data, drained, bodyEnded} := taken
+    ended := bodyEnded or: [conn reqEndedFor: sid]
     (drained and: [data size =:= 0 and: [ended not]])
       ifTrue: [{#park, nil, (self withConnection: conn)}]
       ifFalse: [

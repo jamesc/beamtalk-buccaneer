@@ -349,7 +349,7 @@ sealed typed Value subclass: HTTP1Socket
       unframed reject: [:h | (h at: 1) =:= "transfer-encoding"]
     ] ifFalse: [unframed]
     hasContentLength := (Headers getHeader: finalHeaders name: "content-length") notNil
-    disposition match: [
+    disposition matchExhaustive: [
       #raw -> (socket withWriteState: #writing) withSendBuffer: #(respLine, self encodeHeaders: finalHeaders);
       #chunkEncoded -> hasContentLength
         ifTrue: [

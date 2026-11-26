@@ -63,8 +63,7 @@ sealed typed Value subclass: HTTP2Stream
       ifFalse: [HPACK encodeIndexed: index]
     fields := headers
       collect: [:h :: Tuple |
-        name := h at: 1
-        value := h at: 2
+        {name, value} := h
         // hpack 0.1.1 removed `validateHeader:value:` (BT-4362 perf);
         // `literalPlainNew:` takes Binary params, so non-binary
         // names/values still raise at that boundary.
@@ -103,7 +102,8 @@ sealed typed Value subclass: HTTP2Stream
   stringHeaders: headers :: List(Tuple) -> List(Tuple) =>
     headers
       collect: [:h :: Tuple |
-        name := Headers stringOrOpaque: (h at: 1)
+        {rawName, rawValue} := h
+        name := Headers stringOrOpaque: rawName
         (name isKindOf: String)
           ifFalse: [
             H2StreamError
@@ -113,10 +113,9 @@ sealed typed Value subclass: HTTP2Stream
           ]
         // The HPACK static table decodes an entry with no value (an
         // indexed user-agent, say) as nil: an empty value.
-        value := h at: 2
-        {name, (value isNil ifTrue: [
+        {name, (rawValue isNil ifTrue: [
           ""
-        ] ifFalse: [Headers stringOrOpaque: value])}
+        ] ifFalse: [Headers stringOrOpaque: rawValue])}
       ]
 
   /// Split leading pseudo-headers from regular ones; a pseudo-header

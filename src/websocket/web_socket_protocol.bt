@@ -37,9 +37,8 @@ sealed typed Value subclass: WebSocketProtocol
     base := self withExtractor: ext2
     popped match: [
       #more -> base keepReading;
-      r :: Result -> r isError ifTrue: [
-        base failed: {#deserializing, r error} socket: sock
-      ] ifFalse: [base frame: r value socket: sock]
+      Result ok: frame -> base frame: frame socket: sock;
+      Result error: reason -> base failed: {#deserializing, reason} socket: sock
     ]
 
   /// One parsed frame: continue popping, or close on a terminal outcome

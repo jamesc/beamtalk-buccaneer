@@ -534,14 +534,14 @@ sealed typed Value subclass: Exchange
 
   /// Bandit's commit_response!: raises NotSentError when the handler
   /// sent nothing (the pipeline answers it with a 500). Every response
-  /// state is named, so a state Phase 3 adds without extending this
-  /// fails loudly instead of hanging the response.
+  /// state is named, so a state added without extending this fails to
+  /// compile instead of hanging the response.
   commit -> Exchange =>
-    self state match: [
+    self state matchExhaustive: [
       #unset -> NotSentError signal: "a response was neither set nor sent from the connection";
       #sent -> self;
       #chunked -> self closeChunked;
-      _ -> Error signal: "commit: unhandled response state"
+      #upgraded -> Error signal: "commit: unhandled response state"
     ]
 
   /// Bandit's commit for a chunked response: the encoder's tail, then

@@ -445,8 +445,6 @@ sealed typed Value subclass: HTTP2Connection
   /// string when it would exceed the maximum, nil when applied.
   withConnWindowOpened: n :: Integer -> Tuple(HTTP2Connection, String | Nil) =>
     (FlowControl updateSendWindow: self sendWindowSize increment: n) match: [
-      r :: Result -> r isOk ifTrue: [
-        {(self withSendWindowSize: r value), nil}
-      ] ifFalse: [{self, r error}];
-      _ -> {self, "Invalid WINDOW_UPDATE increment (RFC9113§6.9.1)"}
+      Result ok: window -> {(self withSendWindowSize: window), nil};
+      Result error: reason -> {self, reason}
     ]

@@ -17,9 +17,10 @@ typed Object subclass: Headers
   /// Mirrored in SpikeParser (engine_spikes cannot depend on this
   /// library): keep the two behavior-identical.
   class stringOrOpaque: value :: Object -> Object =>
-    (value isKindOf: String) ifTrue: [^value]
-    (value isKindOf: Binary) ifFalse: [^value]
-    self checkedBinary: value
+    value match: [
+      _b :: Binary -> self checkedBinary: value;
+      _ -> value
+    ]
 
   /// Valid UTF-8 as a String, invalid bytes passed through opaque.
   /// `Binary>>asString` answers a bare String on success while dispatch
@@ -29,7 +30,7 @@ typed Object subclass: Headers
   class checkedBinary: bin :: Binary -> Object =>
     bin asString match: [
       s :: String -> s;
-      r :: Result -> r isError ifTrue: [bin] ifFalse: [r value];
+      Result ok: v -> v;
       _ -> bin
     ]
 

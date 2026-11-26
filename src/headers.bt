@@ -31,7 +31,6 @@ typed Object subclass: Headers
     bin asString match: [
       s :: String -> s;
       Result ok: v -> v;
-      Result error: _ -> bin;
       _ -> bin
     ]
 
